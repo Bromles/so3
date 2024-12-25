@@ -1,0 +1,30 @@
+[graph]
+
+[advisories]
+version = 2
+ignore = []
+
+[licenses]
+version = 2
+allow = [
+    "Apache-2.0",
+    "MIT",
+]
+
+exceptions = []
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+# Certain crates that we don't want multiple versions of in the dependency tree
+deny = [
+    { name = "ahash", deny-multiple-versions = true },
+    { name = "glam", deny-multiple-versions = true },
+    { name = "raw-window-handle", deny-multiple-versions = true },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

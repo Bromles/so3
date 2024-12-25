@@ -5,5 +5,32 @@ members = ["src/so3"]
 
 default-members = ["src/so3"]
 
-[workspace.dependencies]
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
 
+[workspace.dependencies]
+zstd = { version = "0.13", default-features = false }
+async-compression = { version = "0.4", features = ["tokio", "zstd"] }
+tokio = { version = "1.42", default-features = false, features = ["net", "rt", "rt-multi-thread", "io-util", "time", "macros", "sync", "signal", "fs"] }
+serde = { version = "1.0", features = ["derive", 'rc'] }
+serde_bytes = "0.11"
+quick-xml = { version = "0.37", features = ["async-tokio", "serialize"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+heed = "0.21"
+chrono = "0.4"
+uuid = { version = "1.11", features = ["serde"] }
+deadpool = { version = "0.12", features = ["rt_tokio_1"] }
+toml = { version = "0.8", default-features = false, features = ["parse"] }
+http = "1.2"
+hyper = { version = "1.5", default-features = false }
+hyper-util = { version = "0.1", features = ["full"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = "s"
+strip = true
