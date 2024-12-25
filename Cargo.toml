@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+
+members = ["src/so3"]
+
+default-members = ["src/so3"]
+
+[workspace.dependencies]
+
