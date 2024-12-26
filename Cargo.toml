@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 
-members = ["src/so3"]
+members = [ "src/accord","src/so3"]
 
 default-members = ["src/so3"]
 
@@ -10,8 +10,11 @@ version = "0.1.0"
 authors = ["Bromles <bromles@yandex.ru>"]
 edition = "2021"
 license = "MIT OR Apache-2.0"
+publish = false
 
 [workspace.dependencies]
+so3-accord = {path = "src/accord"}
+
 zstd = { version = "0.13", default-features = false }
 async-compression = { version = "0.4", features = ["tokio", "zstd"] }
 tokio = { version = "1.42", default-features = false, features = ["net", "rt", "rt-multi-thread", "io-util", "time", "macros", "sync", "signal", "fs"] }

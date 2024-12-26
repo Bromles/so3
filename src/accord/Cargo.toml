@@ -1,5 +1,5 @@
 [package]
-name = "so3"
+name = "so3-accord"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -7,6 +7,3 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-so3-accord.workspace = true
-
-tokio.workspace = true

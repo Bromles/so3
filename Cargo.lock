@@ -134,8 +134,13 @@ dependencies = [
 name = "so3"
 version = "0.1.0"
 dependencies = [
+ "so3-accord",
  "tokio",
 ]
+
+[[package]]
+name = "so3-accord"
+version = "0.1.0"
 
 [[package]]
 name = "socket2"
