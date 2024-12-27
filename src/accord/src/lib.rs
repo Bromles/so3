@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 
+mod message;
+mod primitive;
+
 pub fn add(left: u64, right: u64) -> u64 {
     left + right
 }
