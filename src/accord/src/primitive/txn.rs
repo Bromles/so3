@@ -51,7 +51,7 @@ impl TxnKind {
                 is_sync_point: true,
                 is_system: true,
                 await_only_deps: true,
-            }
+            },
         }
     }
 }

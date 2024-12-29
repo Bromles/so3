@@ -3,9 +3,7 @@ use crate::primitive::routable::Routable;
 pub enum Slice {
     Overlapping,
     Minimal,
-    Maximal
+    Maximal,
 }
 
-pub trait Routables<K: Routable>: Iterator {
-    
-}
+pub trait Routables<K: Routable>: Iterator {}

@@ -9,8 +9,8 @@ pub enum Domain {
 impl Domain {
     pub fn short_name(&self) -> &str {
         match self {
-            Domain::Key => { "K" }
-            Domain::Range => { "R" }
+            Domain::Key => "K",
+            Domain::Range => "R",
         }
     }
 }
