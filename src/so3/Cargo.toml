@@ -10,3 +10,4 @@ publish.workspace = true
 so3-accord.workspace = true
 
 tokio.workspace = true
+clap.workspace = true
