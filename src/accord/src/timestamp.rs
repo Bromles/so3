@@ -1,4 +1,5 @@
 use std::time::Instant;
+
 use uuid::Uuid;
 
 pub struct Timestamp {

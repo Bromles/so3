@@ -10,7 +10,7 @@ mod cli;
 async fn main() {
     let cli = CliArgs::parse();
     handle_cli(cli);
-    
+
     println!("Hello, world!");
 }
 

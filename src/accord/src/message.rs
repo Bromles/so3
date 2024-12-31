@@ -1,74 +1,74 @@
-use std::any::Any;
+use crate::primitives::{Ballot, Dependency, TxnId};
 use crate::timestamp::Timestamp;
 
 pub enum ConsensusMessageType {
     PreAccept {
-        txn_id: u64,
-        proposed_timestamp: Timestamp
+        txn_id: TxnId,
+        proposed_timestamp: Timestamp,
     },
     PreAcceptOk {
         accepted_timestamp: Timestamp,
-        deps: Vec<Box<dyn Any>>
+        deps: Vec<Dependency>,
     },
     Accept {
-        ballot: u64,
-        txn_id: u64,
+        ballot: Ballot,
+        txn_id: TxnId,
         proposed_timestamp: Timestamp,
         accepted_timestamp: Timestamp,
-        deps: Vec<Box<dyn Any>>
+        deps: Vec<Dependency>,
     },
     Nack,
     AcceptOk {
-        deps: Vec<Box<dyn Any>>
+        deps: Vec<Dependency>
     },
 }
 
 pub enum ExecutionMessageType {
     Commit {
-        txn_id: u64,
+        txn_id: TxnId,
         proposed_timestamp: Timestamp,
         accepted_timestamp: Timestamp,
-        deps: Vec<Box<dyn Any>>
+        deps: Vec<Dependency>,
     },
     Read {
-        txn_id: u64,
+        txn_id: TxnId,
         accepted_timestamp: Timestamp,
-        deps: Vec<Box<dyn Any>>
+        deps: Vec<Dependency>,
     },
     ReadOk {
-        result: Vec<Box<dyn Any>>
+        result: Vec<Dependency>
     },
     Apply {
-        txn_id: u64,
+        txn_id: TxnId,
         proposed_timestamp: Timestamp,
         accepted_timestamp: Timestamp,
-        result: Vec<Box<dyn Any>>
+        result: Vec<Dependency>,
     },
 }
 
 pub enum ReconfigurationMessageType {
     JoinElectorate {
-        txn_ids: Vec<u64>,
-        epoch: u64
+        txn_ids: Vec<TxnId>,
+        epoch: u64,
     },
     JoinShard {
-        txn_ids: Vec<u64>,
-        epoch: u64
+        txn_ids: Vec<TxnId>,
+        epoch: u64,
     },
 }
 
 pub enum RecoveryMessageType {
     Recover {
-        ballot: u64,
-        txn_id: u64,
-        proposed_timestamp: Timestamp
+        ballot: Ballot,
+        txn_id: TxnId,
+        proposed_timestamp: Timestamp,
     },
     Nack {
-        ballot: u64
+        ballot: Ballot
     },
     RecoverOk {
-        txn_id: u64,
-        superseding_txn_ids: Vec<u64>,
-        wait_txn_ids: Vec<u64>,
+        txn_id: TxnId,
+        superseding_txn_ids: Vec<TxnId>,
+        wait_txn_ids: Vec<TxnId>,
     },
 }
