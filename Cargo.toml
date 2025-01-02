@@ -15,24 +15,39 @@ publish = false
 [workspace.dependencies]
 so3-accord = { path = "src/accord" }
 
+# compression
 zstd = { version = "0.13", default-features = false }
 async-compression = { version = "0.4", features = ["tokio", "zstd"] }
+
+# async runtime
 tokio = { version = "1.42", default-features = false, features = ["net", "rt", "rt-multi-thread", "io-util", "time", "macros", "sync", "signal", "fs", "parking_lot"] }
+
+# serialization/deserialization
 serde = { version = "1.0", features = ["derive", 'rc'] }
 serde_bytes = "0.11"
 serde_json = "1.0"
 quick-xml = { version = "0.37", features = ["async-tokio", "serialize"] }
+toml = { version = "0.8", default-features = false, features = ["parse"] }
+
+# logging and tracing
 tracing = "0.1"
 tracing-subscriber = "0.3"
+
+# db
 heed = "0.21"
-chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1.11", features = ["serde"] }
 deadpool = { version = "0.12", features = ["rt_tokio_1"] }
-toml = { version = "0.8", default-features = false, features = ["parse"] }
+
+# http
 http = "1.2"
 hyper = { version = "1.5", default-features = false }
 hyper-util = { version = "0.1", features = ["full"] }
+
+# cli
 clap = { version = "4.5", features = ["derive", "env"] }
+
+# utils
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.11", features = ["serde"] }
 bitflags = "2.6"
 
 [profile.release]
