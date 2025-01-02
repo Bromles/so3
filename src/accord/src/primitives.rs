@@ -1,15 +1,19 @@
+use std::hash::Hash;
+
 pub struct TxnId(pub u64);
 
 pub struct Ballot(pub u64);
 
+#[derive(Eq, PartialEq, Hash)]
 pub struct SimpleObjectKey(pub String);
 
+#[derive(Eq, PartialEq, Hash)]
 pub struct RangedObjectKey {
     pub from: SimpleObjectKey,
     pub to: SimpleObjectKey,
 }
 
-pub trait ObjectKey {
+pub trait ObjectKey: Hash {
     fn match_objects(&self) -> Vec<&SimpleObjectKey>;
 }
 

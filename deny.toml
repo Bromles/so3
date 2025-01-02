@@ -9,6 +9,7 @@ version = 2
 allow = [
     "Apache-2.0",
     "MIT",
+    "Unicode-3.0"
 ]
 
 exceptions = []
@@ -16,11 +17,11 @@ exceptions = []
 [bans]
 multiple-versions = "allow"
 wildcards = "deny"
-# Certain crates that we don't want multiple versions of in the dependency tree
+allow-wildcard-paths = true
 deny = [
     { name = "ahash", deny-multiple-versions = true },
-    { name = "glam", deny-multiple-versions = true },
-    { name = "raw-window-handle", deny-multiple-versions = true },
+    { crate = "openssl", use-instead = "rustls" },
+    { crate = "openssl-sys", use-instead = "rustls" },
 ]
 
 [sources]

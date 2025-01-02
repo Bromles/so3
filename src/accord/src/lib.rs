@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod message;
-mod txn;
-mod timestamp;
 mod primitives;
+mod reorder_buffer;
+mod timestamp;
+mod txn;

@@ -13,6 +13,6 @@ pub enum CliSubcommands {
     Serve {
         /// url to serve
         #[arg(short, long)]
-        url: String
-    }
+        url: String,
+    },
 }
