@@ -9,3 +9,9 @@ pub struct Timestamp {
     pub seq: u64,
     pub id: Uuid,
 }
+
+impl Timestamp {
+    pub fn is_older(&self, other: &Self) -> bool {
+        self.time > other.time
+    }
+}

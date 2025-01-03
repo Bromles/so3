@@ -1,5 +1,6 @@
 use std::hash::Hash;
 
+#[derive(Debug)]
 pub struct TxnId(pub u64);
 
 pub struct Ballot(pub u64);

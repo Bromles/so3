@@ -42,6 +42,10 @@ http = "1.2"
 hyper = { version = "1.5", default-features = false }
 hyper-util = { version = "0.1", features = ["full"] }
 
+# tmp for PoC
+axum = { version = "0.8" }
+reqwest = { version = "0.12", features = ["rustls-tls"] }
+
 # cli
 clap = { version = "4.5", features = ["derive", "env"] }
 
@@ -49,6 +53,7 @@ clap = { version = "4.5", features = ["derive", "env"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.11", features = ["serde"] }
 bitflags = "2.6"
+async-trait = "0.1"
 
 [profile.release]
 lto = true
