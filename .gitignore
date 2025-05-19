@@ -2,3 +2,6 @@
 /.idea
 /maelstrom
 /store
+
+/tla/*
+!/tla/*.tla
