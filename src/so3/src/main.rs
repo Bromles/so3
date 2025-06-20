@@ -1,28 +1,26 @@
 #![forbid(unsafe_code)]
 
-use clap::Parser;
+use axum::{Json, Router, routing::get};
+use tokio::runtime;
 
-use crate::cli::{CliArgs, CliSubcommands};
+fn main() {
+    let rt = runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
 
-mod cli;
-
-#[tokio::main]
-async fn main() {
-    let cli = CliArgs::parse();
-    handle_cli(cli);
-
-    println!("Hello, world!");
+    rt.block_on(app());
 }
 
-fn handle_cli(cli: CliArgs) {
-    match &cli.command {
-        Some(CliSubcommands::Serve { url }) => {
-            if !url.is_empty() {
-                println!("Provided url: {}", url);
-            } else {
-                println!("Url not provided...");
-            }
-        }
-        None => {}
-    }
+async fn app() {
+    tracing_subscriber::fmt::init();
+
+    let app = Router::new().route("/", get(root));
+
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
+
+async fn root() -> Json<&'static str> {
+    Json("Hello, World!")
 }
