@@ -28,6 +28,7 @@ deadpool.workspace = true
 http.workspace = true
 
 axum.workspace = true
+axum-extra.workspace = true
 reqwest.workspace = true
 
 chrono.workspace = true

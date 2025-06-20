@@ -51,6 +51,7 @@ hyper-util = { version = "0.1", features = ["full"] }
 
 # tmp for PoC
 axum = { version = "0.8" }
+axum-extra = { version = "0.10", features = ["multipart"] }
 reqwest = { version = "0.12", features = ["rustls-tls"] }
 
 # cli
