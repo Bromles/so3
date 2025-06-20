@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+mod xml;
+
 use axum::{Json, Router, routing::get};
 use tokio::runtime;
 

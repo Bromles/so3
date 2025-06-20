@@ -34,3 +34,4 @@ reqwest.workspace = true
 chrono.workspace = true
 uuid.workspace = true
 async-trait.workspace = true
+thiserror.workspace = true

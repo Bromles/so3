@@ -1892,6 +1892,7 @@ dependencies = [
  "serde_bytes",
  "serde_json",
  "so3-accord",
+ "thiserror",
  "tokio",
  "toml",
  "tracing",
