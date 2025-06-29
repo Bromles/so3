@@ -1,27 +1,26 @@
-use std::ops::{Deref, DerefMut};
-use axum::body;
-use axum::body::{Bytes, HttpBody};
-use axum::extract::{FromRequest, Request};
+use axum::body::{Body, Bytes, HttpBody};
 use axum::extract::rejection::BytesRejection;
+use axum::extract::{FromRequest, Request};
 use axum::response::{IntoResponse, Response};
-use http::{header, HeaderValue, StatusCode};
-use serde::de::DeserializeOwned;
+use http::{HeaderValue, StatusCode, header};
 use serde::Serialize;
+use serde::de::DeserializeOwned;
+use std::ops::{Deref, DerefMut};
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Xml<T>(pub T);
 
 impl<T, B> FromRequest<B> for Xml<T>
-where 
+where
     T: DeserializeOwned,
-    B: HttpBody + Send
+    B: HttpBody + Send + Sync,
 {
     type Rejection = XmlRejection;
 
-    fn from_request(req: Request, state: &B) -> impl Future<Output=Result<Self, Self::Rejection>> + Send {
-        if xml_content_type(req) {
-            let bytes = Bytes::from_request(req).await?;
+    async fn from_request(req: Request, state: &B) -> Result<Self, Self::Rejection> {
+        if xml_content_type(&req) {
+            let bytes = Bytes::from_request(req, state).await?;
 
             let value = quick_xml::de::from_reader(&*bytes)?;
 
@@ -32,7 +31,7 @@ where
     }
 }
 
-fn xml_content_type<B>(req: &RequestParts<B>) -> bool {
+fn xml_content_type(req: &Request) -> bool {
     let content_type = if let Some(content_type) = req.headers().get(header::CONTENT_TYPE) {
         content_type
     } else {
@@ -82,14 +81,14 @@ where
     T: Serialize,
 {
     fn into_response(self) -> Response {
-        let mut bytes = Vec::new();
-        match quick_xml::se::to_writer(&mut bytes, &self.0) {
+        let mut res = String::new();
+        match quick_xml::se::to_writer(&mut res, &self.0) {
             Ok(_) => (
                 [(
                     header::CONTENT_TYPE,
                     HeaderValue::from_static("application/xml"),
                 )],
-                bytes,
+                res,
             )
                 .into_response(),
             Err(err) => (
@@ -119,12 +118,12 @@ impl IntoResponse for XmlRejection {
     fn into_response(self) -> Response {
         match self {
             e @ XmlRejection::InvalidXMLBody(_) => {
-                let mut res = Response::new(body::boxed(Full::from(format!("{}", e))));
+                let mut res = Response::new(Body::new(format!("{}", e)));
                 *res.status_mut() = StatusCode::UNPROCESSABLE_ENTITY;
                 res
             }
             e @ XmlRejection::MissingXMLContentType => {
-                let mut res = Response::new(body::boxed(Full::from(format!("{}", e))));
+                let mut res = Response::new(Body::new(format!("{}", e)));
                 *res.status_mut() = StatusCode::UNSUPPORTED_MEDIA_TYPE;
                 res
             }

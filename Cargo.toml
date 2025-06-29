@@ -26,7 +26,18 @@ zstd = { version = "0.13", default-features = false }
 async-compression = { version = "0.4", features = ["tokio", "zstd"] }
 
 # async runtime
-tokio = { version = "1.45", default-features = false, features = ["net", "rt", "rt-multi-thread", "io-util", "time", "macros", "sync", "signal", "fs", "parking_lot"] }
+tokio = { version = "1.45", default-features = false, features = [
+    "net",
+    "rt",
+    "rt-multi-thread",
+    "io-util",
+    "time",
+    "macros",
+    "sync",
+    "signal",
+    "fs",
+    "parking_lot",
+] }
 
 # serialization/deserialization
 serde = { version = "1.0", features = ["derive", 'rc'] }
@@ -63,3 +74,4 @@ uuid = { version = "1.17", features = ["serde"] }
 bitflags = "2.9"
 async-trait = "0.1"
 thiserror = "2.0"
+mime = "0.3"

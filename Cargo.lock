@@ -1885,6 +1885,7 @@ dependencies = [
  "deadpool",
  "heed",
  "http",
+ "mime",
  "quick-xml",
  "reqwest",
  "rusqlite",
