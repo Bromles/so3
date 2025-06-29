@@ -3,6 +3,7 @@
 mod xml;
 
 use axum::{Router, routing::get};
+use axum_extra::{TypedHeader, headers::UserAgent};
 use serde::Serialize;
 use tokio::runtime;
 
@@ -35,11 +36,11 @@ struct Example {
     body: String,
 }
 
-async fn root() -> Xml<Example> {
+async fn root(TypedHeader(user_agent): TypedHeader<UserAgent>) -> Xml<Example> {
     Xml(Example {
         to: "Tove".to_string(),
         from: "Jani".to_string(),
         heading: "Reminder".to_string(),
-        body: "Don't forget me this weekend!".to_string(),
+        body: format!("Don't forget me this weekend! User-Agent: {}", user_agent),
     })
 }
