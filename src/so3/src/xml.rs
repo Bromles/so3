@@ -119,7 +119,7 @@ impl IntoResponse for XmlRejection {
         match self {
             e @ XmlRejection::InvalidXMLBody(_) => {
                 let mut res = Response::new(Body::new(format!("{}", e)));
-                *res.status_mut() = StatusCode::UNPROCESSABLE_ENTITY;
+                *res.status_mut() = StatusCode::BAD_REQUEST;
                 res
             }
             e @ XmlRejection::MissingXMLContentType => {
