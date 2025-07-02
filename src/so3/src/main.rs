@@ -6,6 +6,7 @@ use axum::{Router, routing::get};
 use axum_extra::{TypedHeader, headers::UserAgent};
 use serde::Serialize;
 use tokio::runtime;
+use tracing::info;
 
 use crate::xml::Xml;
 
@@ -23,7 +24,12 @@ async fn app() {
 
     let app = Router::new().route("/", get(root));
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    let addr_str = "0.0.0.0:3000";
+
+    let listener = tokio::net::TcpListener::bind(addr_str).await.unwrap();
+
+    info!("Server is listening on {}", addr_str);
+
     axum::serve(listener, app).await.unwrap();
 }
 
