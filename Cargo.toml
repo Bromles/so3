@@ -28,7 +28,7 @@ async-compression = { version = "0.4", features = ["tokio", "zstd"] }
 # encoding
 sha2 = { version = "0.10" }
 hmac = { version = "0.12" }
-hex = { version = "0.4", features = ["serde"] }
+const-hex = {version = "1.14"}
 
 # async runtime
 tokio = { version = "1.45", default-features = false, features = [
