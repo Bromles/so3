@@ -1,28 +1,45 @@
-#![forbid(unsafe_code)]
-
+mod routes;
 mod xml;
+
+use std::sync::Arc;
 
 use axum::{Router, routing::get};
 use axum_extra::{TypedHeader, headers::UserAgent};
+use heed::{Env, EnvOpenOptions};
 use serde::Serialize;
 use tokio::runtime;
 use tracing::info;
 
-use crate::xml::Xml;
+use crate::{routes::bucket::create_bucket, xml::Xml};
+
+pub struct State {
+    db: Env,
+}
+
+pub type AppState = Arc<State>;
 
 fn main() {
+    tracing_subscriber::fmt::init();
+
     let rt = runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .unwrap();
 
-    rt.block_on(app());
+    let dir = tempfile::tempdir().unwrap();
+    info!("Using tempdir {}", dir.path().display());
+
+    let db = unsafe { EnvOpenOptions::new().open(dir.path()).unwrap() };
+    let state = Arc::new(State { db });
+
+    rt.block_on(app(state));
 }
 
-async fn app() {
-    tracing_subscriber::fmt::init();
-
-    let app = Router::new().route("/", get(root));
+async fn app(state: Arc<State>) {
+    let app = Router::new()
+        .route("/", get(root))
+        .nest("/bucket", create_bucket())
+        .with_state(state);
 
     let addr_str = "0.0.0.0:3000";
 

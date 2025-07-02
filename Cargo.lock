@@ -2044,6 +2044,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "so3-accord",
+ "tempfile",
  "thiserror",
  "tokio",
  "toml",
