@@ -9,9 +9,12 @@ publish.workspace = true
 [dependencies]
 so3-accord.workspace = true
 
+md-5.workspace = true
 sha2.workspace = true
 hmac.workspace = true
 const-hex.workspace = true
+crc32c.workspace = true
+crc32fast.workspace = true
 
 tokio.workspace = true
 clap.workspace = true
