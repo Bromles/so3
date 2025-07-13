@@ -1,10 +1,32 @@
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac, digest::MacError};
+use http::HeaderName;
 use sha2::Sha256;
 
 use crate::signature::Credentials;
 
+pub const X_AMZ_ALGORITHM_NAME: HeaderName = HeaderName::from_static("x-amz-algorithm");
+pub const X_AMZ_CREDENTIAL_NAME: HeaderName = HeaderName::from_static("x-amz-credential");
+pub const X_AMZ_DATE_NAME: HeaderName = HeaderName::from_static("x-amz-date");
+pub const X_AMZ_EXPIRES_NAME: HeaderName = HeaderName::from_static("x-amz-expires");
+pub const X_AMZ_SIGNATURE_NAME: HeaderName = HeaderName::from_static("x-amz-signature");
+pub const X_AMZ_SIGNED_HEADERS_NAME: HeaderName = HeaderName::from_static("x-amz-signed-headers");
+pub const X_AMZ_TRAILER_NAME: HeaderName = HeaderName::from_static("x-amz-trailer");
+
+pub const AWS4_HMAC_SHA256_NAME: &str = "AWS4-HMAC-SHA256";
 type HmacSha256 = Hmac<Sha256>;
+
+pub enum ContentSha256Header {
+    UnsignedPayload,
+    Sha256Checksum(Vec<u8>),
+    StreamingPayload { trailer: bool, signed: bool },
+}
+
+impl ContentSha256Header {
+    pub const UNSIGNED_PAYLOAD_NAME: &str = "UNSIGNED-PAYLOAD";
+    pub const STREAMING_UNSIGNED_PAYLOAD_TRAILER_NAME: &str = "STREAMING_UNSIGNED_PAYLOAD_TRAILER";
+    pub const STREAMING_AWS4_HMAC_SHA256_PAYLOAD_NAME: &str = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD";
+}
 
 pub struct SignRequestInput {
     payload_hash: Vec<u8>,
