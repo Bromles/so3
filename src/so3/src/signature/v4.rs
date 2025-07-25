@@ -13,7 +13,7 @@ pub const X_AMZ_SIGNATURE_NAME: HeaderName = HeaderName::from_static("x-amz-sign
 pub const X_AMZ_SIGNED_HEADERS_NAME: HeaderName = HeaderName::from_static("x-amz-signed-headers");
 pub const X_AMZ_TRAILER_NAME: HeaderName = HeaderName::from_static("x-amz-trailer");
 
-pub const EMPTY_BODY_HASH: &str =
+pub const EMPTY_BODY_SHA256: &str =
     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 pub const AWS4_HMAC_SHA256_NAME: &str = "AWS4-HMAC-SHA256";
