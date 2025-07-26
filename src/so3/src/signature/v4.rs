@@ -12,6 +12,7 @@ pub const X_AMZ_EXPIRES_NAME: HeaderName = HeaderName::from_static("x-amz-expire
 pub const X_AMZ_SIGNATURE_NAME: HeaderName = HeaderName::from_static("x-amz-signature");
 pub const X_AMZ_SIGNED_HEADERS_NAME: HeaderName = HeaderName::from_static("x-amz-signed-headers");
 pub const X_AMZ_TRAILER_NAME: HeaderName = HeaderName::from_static("x-amz-trailer");
+pub const X_AMZ_CONTENT_SHA256_NAME: HeaderName = HeaderName::from_static("x-amz-content-sha256");
 
 pub const EMPTY_BODY_SHA256: &str =
     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
