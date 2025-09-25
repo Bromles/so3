@@ -2194,10 +2194,6 @@ name = "so3-meta-store-sqlite"
 version = "0.1.0"
 
 [[package]]
-name = "so3-types"
-version = "0.1.0"
-
-[[package]]
 name = "socket2"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
