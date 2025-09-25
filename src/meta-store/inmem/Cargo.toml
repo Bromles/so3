@@ -1,0 +1,9 @@
+[package]
+name = "so3-meta-store-inmem"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]

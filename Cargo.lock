@@ -503,6 +503,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "enum_dispatch"
+version = "0.3.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa18ce2bc66555b3218614519ac839ddb759a7d6720732f979ef8d13be147ecd"
+dependencies = [
+ "once_cell",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "env_logger"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2112,6 +2124,7 @@ dependencies = [
  "crc32c",
  "crc32fast",
  "deadpool",
+ "enum_dispatch",
  "heed",
  "hmac",
  "http",
@@ -2124,7 +2137,6 @@ dependencies = [
  "serde_bytes",
  "serde_json",
  "sha2",
- "so3-accord",
  "tempfile",
  "thiserror",
  "tokio",
@@ -2136,7 +2148,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "so3-accord"
+name = "so3-api-core"
+version = "0.1.0"
+
+[[package]]
+name = "so3-api-s3"
+version = "0.1.0"
+
+[[package]]
+name = "so3-blob-store-core"
+version = "0.1.0"
+
+[[package]]
+name = "so3-blob-store-fs"
+version = "0.1.0"
+
+[[package]]
+name = "so3-consensus-accord"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -2144,6 +2172,30 @@ dependencies = [
  "tokio",
  "uuid",
 ]
+
+[[package]]
+name = "so3-consensus-core"
+version = "0.1.0"
+
+[[package]]
+name = "so3-core"
+version = "0.1.0"
+
+[[package]]
+name = "so3-meta-store-core"
+version = "0.1.0"
+
+[[package]]
+name = "so3-meta-store-inmem"
+version = "0.1.0"
+
+[[package]]
+name = "so3-meta-store-sqlite"
+version = "0.1.0"
+
+[[package]]
+name = "so3-types"
+version = "0.1.0"
 
 [[package]]
 name = "socket2"

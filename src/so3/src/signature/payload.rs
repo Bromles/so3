@@ -217,6 +217,22 @@ pub fn check_presigned(
     verify_signed_headers(req.headers(), &signed_headers).unwrap();
 
     query_data.remove(&X_AMZ_SIGNATURE_NAME);
-    
-    
+    let canonical_req = canonical_request().unwrap();
+}
+
+fn canonical_request() -> Result<String, Error> {
+    let method = req.method().as_str();
+    let uri = req.uri().path_and_query().unwrap().as_str();
+    let headers = req.headers().iter().collect::<Vec<_>>();
+    let signed_headers = signed_headers.join(";");
+
+    format!(
+        "{}\n{}\n{}\n{}\n{}\n{}",
+        method,
+        uri,
+        headers.join("\n"),
+        signed_headers,
+        headers.join("\n"),
+        headers.join("\n")
+    )
 }

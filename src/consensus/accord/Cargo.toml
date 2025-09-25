@@ -1,5 +1,5 @@
 [package]
-name = "so3-accord"
+name = "so3-consensus-accord"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

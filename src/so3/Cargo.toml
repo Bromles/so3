@@ -7,8 +7,6 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-so3-accord.workspace = true
-
 md-5.workspace = true
 sha2.workspace = true
 hmac.workspace = true
@@ -45,3 +43,4 @@ thiserror.workspace = true
 mime.workspace = true
 tempfile.workspace = true
 url.workspace = true
+enum_dispatch = "0.3.13"

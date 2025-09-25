@@ -1,7 +1,20 @@
 [workspace]
 resolver = "2"
 
-members = ["src/accord", "src/so3"]
+members = [
+    "src/api/core",
+    "src/api/s3",
+    "src/blob-store/core",
+    "src/blob-store/fs",
+    "src/consensus/accord",
+    "src/consensus/core",
+    "src/core",
+    "src/meta-store/core",
+    "src/meta-store/inmem",
+    "src/meta-store/sqlite",
+    "src/so3",
+    "src/types"
+]
 
 default-members = ["src/so3"]
 
@@ -19,7 +32,17 @@ opt-level = "s"
 strip = true
 
 [workspace.dependencies]
-so3-accord = { path = "src/accord" }
+so3-api-core = { path = "src/api/core" }
+so3-api-s3 = { path = "src/api/s3" }
+so3-blob-store-core = { path = "src/blob-store/core" }
+so3-blob-store-fs = { path = "src/blob-store/fs" }
+so3-consensus-core = { path = "src/consensus/core" }
+so3-consensus-accord = { path = "src/consensus/accord" }
+so3-core = { path = "src/core" }
+so3-meta-store-core = { path = "src/meta-store/core" }
+so3-meta-store-inmem = { path = "src/meta-store/inmem" }
+so3-meta-store-sqlite = { path = "src/meta-store/sqlite" }
+so3-types = { path = "src/types" }
 
 # compression
 zstd = { version = "0.13", default-features = false }
@@ -89,3 +112,4 @@ thiserror = "2.0"
 mime = "0.3"
 tempfile = "3.20"
 url = "2.5"
+enum-dependencies = "0.3"
