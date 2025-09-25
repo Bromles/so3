@@ -13,7 +13,6 @@ members = [
     "src/meta-store/inmem",
     "src/meta-store/sqlite",
     "src/so3",
-    "src/types"
 ]
 
 default-members = ["src/so3"]
@@ -42,7 +41,6 @@ so3-core = { path = "src/core" }
 so3-meta-store-core = { path = "src/meta-store/core" }
 so3-meta-store-inmem = { path = "src/meta-store/inmem" }
 so3-meta-store-sqlite = { path = "src/meta-store/sqlite" }
-so3-types = { path = "src/types" }
 
 # compression
 zstd = { version = "0.13", default-features = false }
