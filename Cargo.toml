@@ -34,6 +34,7 @@ opt-level = "s"
 strip = true
 
 [workspace.dependencies]
+so3-core = { path = "src/core" }
 so3-api-types = { path = "src/api/types" }
 so3-api-core = { path = "src/api/core" }
 so3-api-s3 = { path = "src/api/s3" }
@@ -43,7 +44,6 @@ so3-blob-store-fs = { path = "src/blob-store/fs" }
 so3-consensus-types = { path = "src/consensus/types" }
 so3-consensus-core = { path = "src/consensus/core" }
 so3-consensus-accord = { path = "src/consensus/accord" }
-so3-core = { path = "src/core" }
 so3-meta-store-types = { path = "src/meta-store/types" }
 so3-meta-store-core = { path = "src/meta-store/core" }
 so3-meta-store-inmem = { path = "src/meta-store/inmem" }
