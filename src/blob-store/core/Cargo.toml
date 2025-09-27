@@ -7,3 +7,5 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+so3-blob-store-types.workspace = true
+so3-blob-store-fs.workspace = true

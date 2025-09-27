@@ -3,15 +3,18 @@ resolver = "2"
 
 members = [
     "src/api/core",
-    "src/api/s3",
+    "src/api/s3", "src/api/types",
     "src/blob-store/core",
     "src/blob-store/fs",
+    "src/blob-store/types",
     "src/consensus/accord",
     "src/consensus/core",
+    "src/consensus/types",
     "src/core",
     "src/meta-store/core",
     "src/meta-store/inmem",
     "src/meta-store/sqlite",
+    "src/meta-store/types",
     "src/so3",
 ]
 
@@ -31,13 +34,17 @@ opt-level = "s"
 strip = true
 
 [workspace.dependencies]
+so3-api-types = { path = "src/api/types" }
 so3-api-core = { path = "src/api/core" }
 so3-api-s3 = { path = "src/api/s3" }
+so3-blob-store-types = { path = "src/blob-store/types" }
 so3-blob-store-core = { path = "src/blob-store/core" }
 so3-blob-store-fs = { path = "src/blob-store/fs" }
+so3-consensus-types = { path = "src/consensus/types" }
 so3-consensus-core = { path = "src/consensus/core" }
 so3-consensus-accord = { path = "src/consensus/accord" }
 so3-core = { path = "src/core" }
+so3-meta-store-types = { path = "src/meta-store/types" }
 so3-meta-store-core = { path = "src/meta-store/core" }
 so3-meta-store-inmem = { path = "src/meta-store/inmem" }
 so3-meta-store-sqlite = { path = "src/meta-store/sqlite" }
@@ -107,7 +114,9 @@ uuid = { version = "1.17", features = ["serde"] }
 bitflags = "2.9"
 async-trait = "0.1"
 thiserror = "2.0"
+anyhow = "1.0"
 mime = "0.3"
 tempfile = "3.20"
 url = "2.5"
 enum-dispatch = "0.3"
+bytes = "1.10"

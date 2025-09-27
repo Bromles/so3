@@ -275,9 +275,9 @@ checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "bytes"
-version = "1.9.0"
+version = "1.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "325918d6fe32f23b19878fe4b34794ae41fc19ddbe53b10571a4874d44ffd39b"
+checksum = "d71b6127be86fdcfddb610f7182ac57211d4b18a3e9c82eb2d17662f2227ad6a"
 
 [[package]]
 name = "cc"
@@ -2137,6 +2137,7 @@ dependencies = [
  "serde_bytes",
  "serde_json",
  "sha2",
+ "so3-core",
  "tempfile",
  "thiserror",
  "tokio",
@@ -2150,17 +2151,39 @@ dependencies = [
 [[package]]
 name = "so3-api-core"
 version = "0.1.0"
+dependencies = [
+ "so3-api-s3",
+ "so3-api-types",
+]
 
 [[package]]
 name = "so3-api-s3"
+version = "0.1.0"
+dependencies = [
+ "so3-api-types",
+]
+
+[[package]]
+name = "so3-api-types"
 version = "0.1.0"
 
 [[package]]
 name = "so3-blob-store-core"
 version = "0.1.0"
+dependencies = [
+ "so3-blob-store-fs",
+ "so3-blob-store-types",
+]
 
 [[package]]
 name = "so3-blob-store-fs"
+version = "0.1.0"
+dependencies = [
+ "so3-blob-store-types",
+]
+
+[[package]]
+name = "so3-blob-store-types"
 version = "0.1.0"
 
 [[package]]
@@ -2169,6 +2192,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "maelstrom-node",
+ "so3-consensus-types",
  "tokio",
  "uuid",
 ]
@@ -2176,21 +2200,52 @@ dependencies = [
 [[package]]
 name = "so3-consensus-core"
 version = "0.1.0"
+dependencies = [
+ "so3-consensus-accord",
+ "so3-consensus-types",
+]
+
+[[package]]
+name = "so3-consensus-types"
+version = "0.1.0"
 
 [[package]]
 name = "so3-core"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "so3-api-core",
+ "so3-blob-store-core",
+ "so3-consensus-core",
+ "so3-meta-store-core",
+]
 
 [[package]]
 name = "so3-meta-store-core"
 version = "0.1.0"
+dependencies = [
+ "so3-meta-store-inmem",
+ "so3-meta-store-sqlite",
+ "so3-meta-store-types",
+]
 
 [[package]]
 name = "so3-meta-store-inmem"
 version = "0.1.0"
+dependencies = [
+ "so3-meta-store-types",
+]
 
 [[package]]
 name = "so3-meta-store-sqlite"
+version = "0.1.0"
+dependencies = [
+ "so3-meta-store-types",
+]
+
+[[package]]
+name = "so3-meta-store-types"
 version = "0.1.0"
 
 [[package]]

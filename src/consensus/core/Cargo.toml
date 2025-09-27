@@ -7,3 +7,5 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+so3-consensus-types.workspace = true
+so3-consensus-accord.workspace = true

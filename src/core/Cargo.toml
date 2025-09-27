@@ -7,3 +7,10 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+so3-api-core.workspace = true
+so3-meta-store-core.workspace = true
+so3-consensus-core.workspace = true
+so3-blob-store-core.workspace = true
+
+async-trait.workspace = true
+bytes = { workspace = true }
