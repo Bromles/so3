@@ -47,3 +47,6 @@ thiserror = { workspace = true }
 mime = { workspace = true }
 tempfile = { workspace = true }
 url = { workspace = true }
+
+[dev-dependencies]
+mockall = { workspace = true }
