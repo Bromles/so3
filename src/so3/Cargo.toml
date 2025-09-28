@@ -17,6 +17,8 @@ crc32c = { workspace = true }
 crc32fast = { workspace = true }
 
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync", "macros"] }
+tokio-util = { workspace = true }
+
 clap = { workspace = true, features = ["std", "derive"] }
 
 serde = { workspace = true }

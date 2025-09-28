@@ -64,6 +64,7 @@ crc32fast = { version = "1.4", default-features = false }
 # async
 futures-core = { version = "0.3", default-features = false }
 tokio = { version = "1.45", default-features = false }
+tokio-util = { version = "0.7", default-features = false }
 
 # serialization/deserialization
 serde = { version = "1.0", default-features = false }
