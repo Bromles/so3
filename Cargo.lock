@@ -1671,6 +1671,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "futures-core",
+ "thiserror",
 ]
 
 [[package]]
@@ -1691,6 +1692,9 @@ dependencies = [
 [[package]]
 name = "so3-blob-store-types"
 version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
 
 [[package]]
 name = "so3-consensus-accord"
@@ -1714,6 +1718,9 @@ dependencies = [
 [[package]]
 name = "so3-consensus-types"
 version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
 
 [[package]]
 name = "so3-core"
@@ -1725,6 +1732,7 @@ dependencies = [
  "so3-blob-store-core",
  "so3-consensus-core",
  "so3-meta-store-core",
+ "thiserror",
 ]
 
 [[package]]
@@ -1753,6 +1761,9 @@ dependencies = [
 [[package]]
 name = "so3-meta-store-types"
 version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
 
 [[package]]
 name = "socket2"

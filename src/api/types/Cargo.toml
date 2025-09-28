@@ -10,3 +10,4 @@ publish.workspace = true
 futures-core = { workspace = true }
 bytes = { workspace = true }
 async-trait = { workspace = true }
+thiserror = { workspace = true }
