@@ -1667,6 +1667,11 @@ dependencies = [
 [[package]]
 name = "so3-api-types"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "futures-core",
+]
 
 [[package]]
 name = "so3-blob-store-core"

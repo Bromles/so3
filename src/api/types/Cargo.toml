@@ -7,3 +7,6 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+futures-core = { workspace = true }
+bytes = { workspace = true }
+async-trait = { workspace = true }
