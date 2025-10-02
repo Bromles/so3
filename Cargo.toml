@@ -2,23 +2,24 @@
 resolver = "2"
 
 members = [
-    "src/api/core",
-    "src/api/s3", "src/api/types",
-    "src/blob-store/core",
-    "src/blob-store/fs",
-    "src/blob-store/types",
-    "src/consensus/accord",
-    "src/consensus/core",
-    "src/consensus/types",
-    "src/core",
-    "src/meta-store/core",
-    "src/meta-store/inmem",
-    "src/meta-store/sqlite",
-    "src/meta-store/types",
-    "src/so3",
+    "crates/api/core",
+    "crates/api/s3", 
+    "crates/api/types",
+    "crates/blob-store/core",
+    "crates/blob-store/fs",
+    "crates/blob-store/types",
+    "crates/consensus/accord",
+    "crates/consensus/core",
+    "crates/consensus/types",
+    "crates/core",
+    "crates/meta-store/core",
+    "crates/meta-store/inmem",
+    "crates/meta-store/sqlite",
+    "crates/meta-store/types",
+    "crates/so3",
 ]
 
-default-members = ["src/so3"]
+default-members = ["crates/so3"]
 
 [workspace.package]
 version = "0.1.0"
@@ -34,20 +35,20 @@ opt-level = "s"
 strip = true
 
 [workspace.dependencies]
-so3-core = { path = "src/core" }
-so3-api-types = { path = "src/api/types" }
-so3-api-core = { path = "src/api/core" }
-so3-api-s3 = { path = "src/api/s3" }
-so3-blob-store-types = { path = "src/blob-store/types" }
-so3-blob-store-core = { path = "src/blob-store/core" }
-so3-blob-store-fs = { path = "src/blob-store/fs" }
-so3-consensus-types = { path = "src/consensus/types" }
-so3-consensus-core = { path = "src/consensus/core" }
-so3-consensus-accord = { path = "src/consensus/accord" }
-so3-meta-store-types = { path = "src/meta-store/types" }
-so3-meta-store-core = { path = "src/meta-store/core" }
-so3-meta-store-inmem = { path = "src/meta-store/inmem" }
-so3-meta-store-sqlite = { path = "src/meta-store/sqlite" }
+so3-core = { path = "crates/core" }
+so3-api-types = { path = "crates/api/types" }
+so3-api-core = { path = "crates/api/core" }
+so3-api-s3 = { path = "crates/api/s3" }
+so3-blob-store-types = { path = "crates/blob-store/types" }
+so3-blob-store-core = { path = "crates/blob-store/core" }
+so3-blob-store-fs = { path = "crates/blob-store/fs" }
+so3-consensus-types = { path = "crates/consensus/types" }
+so3-consensus-core = { path = "crates/consensus/core" }
+so3-consensus-accord = { path = "crates/consensus/accord" }
+so3-meta-store-types = { path = "crates/meta-store/types" }
+so3-meta-store-core = { path = "crates/meta-store/core" }
+so3-meta-store-inmem = { path = "crates/meta-store/inmem" }
+so3-meta-store-sqlite = { path = "crates/meta-store/sqlite" }
 
 # compression
 zstd = { version = "0.13", default-features = false }
