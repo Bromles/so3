@@ -1,0 +1,287 @@
+@startuml
+!pragma layout smetana
+
+top to bottom direction
+
+package bins {
+    class NodeMain <<bin>> {
+        +main()
+    }
+
+    class MaelstromMain <<bin>> {
+        +main()
+    }
+}
+
+package "crates/node" {
+    class Node {
+        -state: Arc<AppState>
+        -s3: Arc<S3Server>
+        -rpc: Arc<RPCServer>
+        +run(): Result
+    }
+
+    class NodeBuilder {
+        +from_config(cfg: NodeConfig): NodeBuilder
+        +build(): Result<Node>
+    }
+
+    class NodeConfig {
+        +node_id: NodeId
+        +s3_bind: SocketAddr
+        +rpc_bind: SocketAddr
+        +meta_storage: MetaStorageConfig
+        +blob_storage: BlobStorageConfig
+        +cluster: ClusterConfig
+    }
+
+    class MetaStorageConfig {
+        +kind: String
+        +path: String
+    }
+
+    class BlobStorageConfig {
+        +kind: String
+        +root_dir: String
+    }
+
+    class ClusterConfig {
+        +peers: List<PeerAddr>
+        +replication_factor: int
+    }
+}
+
+package "crates/core" {
+    class AppState {
+        +core: Arc<Core>
+        +node_id: NodeId
+        +cluster: ClusterConfig
+    }
+
+    class Core {
+        -meta_storage: Arc<MetaStorage>
+        -blob_storage: Arc<BlobStorage>
+        -consensus: Arc<Consensus>
+        +put_object(bucket: BucketName, key: ObjectKey, data: Bytes): Result
+        +get_object(bucket: BucketName, key: ObjectKey): Result<Bytes?>
+    }
+}
+
+package "crates/domain" {
+    class NodeId
+    class PeerAddr
+    class ObjectMeta {
+        +etag: String
+        +size_bytes: long
+        +content_type: String
+        +last_modified: Timestamp
+        +blob_id: String
+    }
+
+    class BucketName
+    class ObjectKey
+    class BlobId
+    class Timestamp
+}
+
+package "crates/storage-meta" {
+    interface MetaStorage {
+        +put_object_meta(bucket: BucketName, key: ObjectKey, meta: ObjectMeta): Result
+        +get_object_meta(bucket: BucketName, key: ObjectKey): Result<ObjectMeta?>
+    }
+
+    class SQLiteMetaStorage {
+        -path: String
+    }
+
+    class InMemMetaStorage {
+        -map: HashMap
+    }
+
+    MetaStorage <|.. SQLiteMetaStorage
+    MetaStorage <|.. InMemMetaStorage
+}
+
+package "crates/storage-blob" {
+    interface BlobStorage {
+        +put_blob(blob_id: BlobId, data: Bytes): Result
+        +get_blob(blob_id: BlobId): Result<Bytes?>
+    }
+
+    class FsBlobStorage {
+        -root_dir: String
+    }
+
+    class InMemBlobStorage {
+        -map: HashMap
+    }
+
+    BlobStorage <|.. FsBlobStorage
+    BlobStorage <|.. InMemBlobStorage
+}
+
+package "crates/consensus" {
+    interface Consensus {
+        +submit(cmd: Command): Result<TxnId>
+        +read(txn_id: TxnId): Result<TxnState>
+    }
+
+    class Command {
+        +kind: CommandKind
+        +key: CommandKey
+        +payload: Bytes
+    }
+
+    enum CommandKind {
+        PutObjectMeta
+        DeleteObjectMeta
+        TxnBarrier
+    }
+
+    class CommandKey {
+        +bucket: BucketName
+        +key: ObjectKey
+    }
+
+    class TxnId
+    enum TxnState {
+        Proposed
+        Commited
+        Executed
+        Applied
+        Aborted
+    }
+
+    class SingleNodeConsensus
+    class AccordConsensus
+
+    Consensus <|.. SingleNodeConsensus
+    Consensus <|.. AccordConsensus
+}
+
+package "crates/api-s3" {
+    class S3API {
+        -s3: S3Controller
+        +build_router(state: Arc<AppState>): Router
+    }
+
+    class S3Controller {
+        +put_object(state: Arc<AppState>): Response
+        +get_object(state: Arc<AppState>): Response
+    }
+}
+
+package "crates/transport-http" {
+    interface S3Server {
+        +run(state: Arc<AppState>, shutdown: Shutdown): Result
+    }
+
+    class AxumS3Server {
+        -bind: SocketAddr
+    }
+
+    S3Server <|..AxumS3Server
+}
+
+package "crates/api-rpc" {
+    interface NodeRPC {
+        +ping(): String
+        +replicate(): Result
+    }
+
+    class NodeRPCImpl {
+        -core: Arc<Core>
+    }
+
+    NodeRPC <|.. NodeRPCImpl
+}
+
+package "crates/transport-rpc" {
+    interface RPCServer {
+        +run(state: Arc<AppState>, shutdown: Shutdown): Result
+    }
+
+    class TonicRPCServer {
+        -bind: SocketAddr
+    }
+
+    RPCServer <|.. TonicRPCServer
+}
+
+package "crates/maelstrom" {
+    class MaelstromRunner {
+        -core: Arc<Core>
+        +run_stdio(): Result
+    }
+}
+
+package "crates/util" {
+    class Shutdown {
+        +cancel()
+        +cancelled(): Future
+    }
+}
+
+NodeMain --> NodeConfig: loads
+NodeMain --> NodeBuilder: builds
+NodeBuilder --> Node: creates
+
+NodeConfig o-- ClusterConfig
+NodeConfig --> NodeId
+ClusterConfig o-- PeerAddr
+
+Node --> AppState
+Node --> S3Server
+Node --> RPCServer
+
+AppState --> NodeId
+AppState o-- ClusterConfig
+
+MaelstromMain --> MaelstromRunner: runs
+MaelstromRunner --> Core
+
+AppState --> Core
+Core --> MetaStorage
+Core --> BlobStorage
+Core --> Consensus
+Core ..> BucketName
+Core ..> ObjectKey
+
+ObjectMeta --> BucketName
+ObjectMeta --> ObjectKey
+ObjectMeta --> BlobId
+ObjectMeta --> Timestamp
+
+MetaStorage ..> BucketName
+MetaStorage ..> ObjectKey
+MetaStorage ..> ObjectMeta
+
+BlobStorage ..> BlobId
+
+Consensus ..> Command
+Consensus ..> TxnId
+Consensus ..> TxnState
+
+Command --> CommandKind
+Command --> CommandKey
+
+CommandKey --> BucketName
+CommandKey --> ObjectKey
+
+Core ..> Command: submits
+
+S3API --> S3Controller
+S3Controller ..> BucketName
+S3Controller ..> ObjectKey
+
+AxumS3Server ..> S3API: serves
+
+TonicRPCServer ..> NodeRPC: serves
+NodeRPCImpl --> Core
+NodeRPCImpl --> NodeId
+NodeRPC ..> BlobId
+
+S3Server ..> Shutdown
+RPCServer ..> Shutdown
+
+@enduml
