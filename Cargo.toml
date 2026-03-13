@@ -3,7 +3,7 @@ resolver = "2"
 
 members = [
     "crates/api/core",
-    "crates/api/s3", 
+    "crates/api/s3",
     "crates/api/types",
     "crates/blob-store/core",
     "crates/blob-store/fs",
@@ -59,20 +59,22 @@ md-5 = { version = "0.10", default-features = false }
 sha2 = { version = "0.10", default-features = false }
 hmac = { version = "0.12", default-features = false }
 const-hex = { version = "1.17", default-features = false }
-crc32c = { version = "0.6", default-features = false }
-crc32fast = { version = "1.5", default-features = false }
+crc-fast = { version = "1.10", default-features = false }
 
 # async
 futures-core = { version = "0.3", default-features = false }
 tokio = { version = "1.49", default-features = false }
 tokio-util = { version = "0.7", default-features = false }
+tokio-stream = { version = "0.1", default-features = false }
+async-channel = { version = "2.5", default-features = false }
 
 # serialization/deserialization
 serde = { version = "1.0", default-features = false }
 serde_bytes = { version = "0.11", default-features = false }
 serde_json = { version = "1.0", default-features = false }
 quick-xml = { version = "0.39", default-features = false }
-toml = { version = "0.9", default-features = false }
+postcard = { version = "1.1", default-features = false }
+toml = { version = "1.0", default-features = false }
 
 # logging and tracing
 tracing = { version = "0.1", default-features = false }
@@ -80,13 +82,17 @@ tracing-subscriber = { version = "0.3", default-features = false }
 
 # db
 heed = { version = "0.22", default-features = false }
+redb = { version = "3.1", default-features = false }
 rusqlite = { version = "0.38", default-features = false }
-deadpool = { version = "0.12", default-features = false }
+deadpool = { version = "0.13", default-features = false }
 
 # http
 http = { version = "1.4", default-features = false }
 hyper = { version = "1.8", default-features = false }
 hyper-util = { version = "0.1", default-features = false }
+
+# rpc
+tonic = { version = "0.14", default-features = false }
 
 # tmp for PoC
 axum = { version = "0.8" }

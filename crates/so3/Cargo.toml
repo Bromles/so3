@@ -13,8 +13,7 @@ md-5 = { workspace = true }
 sha2 = { workspace = true }
 hmac = { workspace = true }
 const-hex = { workspace = true }
-crc32c = { workspace = true }
-crc32fast = { workspace = true }
+crc-fast = { workspace = true, features = ["std", 'panic-handler'] }
 
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync", "macros", "parking_lot", "test-util"] }
 tokio-util = { workspace = true }
