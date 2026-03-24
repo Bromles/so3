@@ -24,6 +24,7 @@ deny = [
     { name = "ahash", deny-multiple-versions = true },
     { crate = "openssl", use-instead = "rustls" },
     { crate = "openssl-sys", use-instead = "rustls" },
+    { crate = "bincode", use-instead = "postcard" }
 ]
 
 [sources]

@@ -2,21 +2,8 @@
 resolver = "2"
 
 members = [
-    "crates/api/core",
-    "crates/api/s3",
-    "crates/api/types",
-    "crates/blob-store/core",
-    "crates/blob-store/fs",
-    "crates/blob-store/types",
-    "crates/consensus/accord",
-    "crates/consensus/core",
-    "crates/consensus/types",
     "crates/core",
-    "crates/meta-store/core",
-    "crates/meta-store/inmem",
-    "crates/meta-store/sqlite",
-    "crates/meta-store/types",
-    "crates/so3",
+    "crates/so3"
 ]
 
 default-members = ["crates/so3"]
@@ -36,19 +23,6 @@ strip = true
 
 [workspace.dependencies]
 so3-core = { path = "crates/core" }
-so3-api-types = { path = "crates/api/types" }
-so3-api-core = { path = "crates/api/core" }
-so3-api-s3 = { path = "crates/api/s3" }
-so3-blob-store-types = { path = "crates/blob-store/types" }
-so3-blob-store-core = { path = "crates/blob-store/core" }
-so3-blob-store-fs = { path = "crates/blob-store/fs" }
-so3-consensus-types = { path = "crates/consensus/types" }
-so3-consensus-core = { path = "crates/consensus/core" }
-so3-consensus-accord = { path = "crates/consensus/accord" }
-so3-meta-store-types = { path = "crates/meta-store/types" }
-so3-meta-store-core = { path = "crates/meta-store/core" }
-so3-meta-store-inmem = { path = "crates/meta-store/inmem" }
-so3-meta-store-sqlite = { path = "crates/meta-store/sqlite" }
 
 # compression
 zstd = { version = "0.13", default-features = false }
@@ -83,8 +57,7 @@ tracing-subscriber = { version = "0.3", default-features = false }
 # db
 heed = { version = "0.22", default-features = false }
 redb = { version = "3.1", default-features = false }
-rusqlite = { version = "0.38", default-features = false }
-deadpool = { version = "0.13", default-features = false }
+sqlx = { version = "0.8", default-features = false }
 
 # http
 http = { version = "1.4", default-features = false }
@@ -93,6 +66,9 @@ hyper-util = { version = "0.1", default-features = false }
 
 # rpc
 tonic = { version = "0.14", default-features = false }
+prost = { version = "0.14", default-features = false }
+tonic-prost = { version = "0.14", default-features = false }
+tonic-prost-build = { version = "0.14", default-features = false }
 
 # tmp for PoC
 axum = { version = "0.8" }

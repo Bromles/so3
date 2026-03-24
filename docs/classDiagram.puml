@@ -7,10 +7,6 @@ package bins {
     class NodeMain <<bin>> {
         +main()
     }
-
-    class MaelstromMain <<bin>> {
-        +main()
-    }
 }
 
 package "crates/node" {
@@ -53,23 +49,58 @@ package "crates/node" {
 
 package "crates/core" {
     class AppState {
-        +core: Arc<Core>
+        +core: Arc<Services>
         +node_id: NodeId
         +cluster: ClusterConfig
     }
 
-    class Core {
-        -meta_storage: Arc<MetaStorage>
-        -blob_storage: Arc<BlobStorage>
-        -consensus: Arc<Consensus>
-        +put_object(bucket: BucketName, key: ObjectKey, data: Bytes): Result
-        +get_object(bucket: BucketName, key: ObjectKey): Result<Bytes?>
+    class Services {
+        +auth: Arc<AuthService>
+        +objects: Arc<ObjectService>
+        +buckets: Arc<BucketService>
+        +cluster: Arc<ClusterService>
     }
+
+    interface AuthService {
+
+    }
+
+    interface ObjectService {
+
+    }
+
+    interface BucketService {
+
+    }
+
+    interface ClusterService {
+
+    }
+
+    class AuthServiceImpl {
+
+    }
+
+    class ObjectServiceImpl {
+
+    }
+
+    class BucketServiceImpl {
+
+    }
+
+    class ClusterServiceImpl {
+
+    }
+
+    AuthService <|.. AuthServiceImpl
+    ObjectService <|.. ObjectServiceImpl
+    BucketService <|.. BucketServiceImpl
+    ClusterService <|.. ClusterServiceImpl
 }
 
 package "crates/domain" {
     class NodeId
-    class PeerAddr
     class ObjectMeta {
         +etag: String
         +size_bytes: long
@@ -81,7 +112,6 @@ package "crates/domain" {
     class BucketName
     class ObjectKey
     class BlobId
-    class Timestamp
 }
 
 package "crates/storage-meta" {
@@ -132,26 +162,6 @@ package "crates/consensus" {
         +payload: Bytes
     }
 
-    enum CommandKind {
-        PutObjectMeta
-        DeleteObjectMeta
-        TxnBarrier
-    }
-
-    class CommandKey {
-        +bucket: BucketName
-        +key: ObjectKey
-    }
-
-    class TxnId
-    enum TxnState {
-        Proposed
-        Commited
-        Executed
-        Applied
-        Aborted
-    }
-
     class SingleNodeConsensus
     class AccordConsensus
 
@@ -190,7 +200,7 @@ package "crates/api-rpc" {
     }
 
     class NodeRPCImpl {
-        -core: Arc<Core>
+        -core: Arc<Services>
     }
 
     NodeRPC <|.. NodeRPCImpl
@@ -208,27 +218,14 @@ package "crates/transport-rpc" {
     RPCServer <|.. TonicRPCServer
 }
 
-package "crates/maelstrom" {
-    class MaelstromRunner {
-        -core: Arc<Core>
-        +run_stdio(): Result
-    }
-}
-
-package "crates/util" {
-    class Shutdown {
-        +cancel()
-        +cancelled(): Future
-    }
-}
-
 NodeMain --> NodeConfig: loads
 NodeMain --> NodeBuilder: builds
 NodeBuilder --> Node: creates
 
 NodeConfig o-- ClusterConfig
+NodeConfig o-- MetaStorageConfig
+NodeConfig o-- BlobStorageConfig
 NodeConfig --> NodeId
-ClusterConfig o-- PeerAddr
 
 Node --> AppState
 Node --> S3Server
@@ -237,38 +234,22 @@ Node --> RPCServer
 AppState --> NodeId
 AppState o-- ClusterConfig
 
-MaelstromMain --> MaelstromRunner: runs
-MaelstromRunner --> Core
-
-AppState --> Core
-Core --> MetaStorage
-Core --> BlobStorage
-Core --> Consensus
-Core ..> BucketName
-Core ..> ObjectKey
+AppState --> Services
+Services --> MetaStorage
+Services --> BlobStorage
+Services --> Consensus
+Services ..> BucketName
+Services ..> ObjectKey
 
 ObjectMeta --> BucketName
 ObjectMeta --> ObjectKey
 ObjectMeta --> BlobId
-ObjectMeta --> Timestamp
 
 MetaStorage ..> BucketName
 MetaStorage ..> ObjectKey
 MetaStorage ..> ObjectMeta
 
 BlobStorage ..> BlobId
-
-Consensus ..> Command
-Consensus ..> TxnId
-Consensus ..> TxnState
-
-Command --> CommandKind
-Command --> CommandKey
-
-CommandKey --> BucketName
-CommandKey --> ObjectKey
-
-Core ..> Command: submits
 
 S3API --> S3Controller
 S3Controller ..> BucketName
@@ -277,11 +258,8 @@ S3Controller ..> ObjectKey
 AxumS3Server ..> S3API: serves
 
 TonicRPCServer ..> NodeRPC: serves
-NodeRPCImpl --> Core
+NodeRPCImpl --> Services
 NodeRPCImpl --> NodeId
 NodeRPC ..> BlobId
-
-S3Server ..> Shutdown
-RPCServer ..> Shutdown
 
 @enduml

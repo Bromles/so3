@@ -7,45 +7,4 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-so3-core = { workspace = true }
-
-md-5 = { workspace = true }
-sha2 = { workspace = true }
-hmac = { workspace = true }
-const-hex = { workspace = true }
-crc-fast = { workspace = true, features = ["std", 'panic-handler'] }
-
-tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync", "macros", "parking_lot", "test-util"] }
-tokio-util = { workspace = true }
-
-clap = { workspace = true, features = ["std", "derive"] }
-
-serde = { workspace = true, features = ["derive"] }
-serde_bytes = { workspace = true }
-serde_json = { workspace = true }
-quick-xml = { workspace = true, features = ["serialize", "async-tokio"] }
-toml = { workspace = true }
-
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
-
-heed = { workspace = true }
-rusqlite = { workspace = true }
-deadpool = { workspace = true }
-
-http = { workspace = true }
-
-axum = { workspace = true }
-axum-extra = { workspace = true, features = ["typed-header"] }
-reqwest = { workspace = true }
-
-chrono = { workspace = true, features = ["serde", "std", "clock"] }
-uuid = { workspace = true }
-async-trait = { workspace = true }
-thiserror = { workspace = true }
-mime = { workspace = true }
-tempfile = { workspace = true }
-url = { workspace = true }
-
-[dev-dependencies]
-mockall = { workspace = true }
+so3-core.workspace = true
