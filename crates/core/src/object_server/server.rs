@@ -1,3 +1,4 @@
+use axum::serve as axum_serve;
 use std::sync::Arc;
 
 use tokio::net::TcpListener;
@@ -28,7 +29,7 @@ impl ObjectServer {
         state_machine: Arc<LocalStateMachine>,
         cancellation_token: CancellationToken,
     ) -> So3Result<()> {
-        axum::serve(
+        axum_serve(
             listener,
             object_controller(ObjectApiState {
                 state_machine,

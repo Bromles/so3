@@ -11,6 +11,7 @@ const DEFAULT_OBJECT_API_ADDR: &str = "127.0.0.1:3000";
 const DEFAULT_RPC_API_ADDR: &str = "127.0.0.1:4000";
 const DEFAULT_DATA_DIR: &str = "./var/so3";
 const DEFAULT_OBJECT_REQUEST_TIMEOUT_SECS: u64 = 10;
+const CLUSTER_PEERS_SEPARATOR: char = ',';
 
 #[derive(Clone, Debug)]
 pub struct NodeConfig {
@@ -47,6 +48,9 @@ impl NodeConfig {
         let node_id = get_var("SO3_NODE_ID")
             .and_then(|value| Uuid::parse_str(&value).ok())
             .unwrap_or_else(Uuid::new_v4);
+        let cluster = ClusterConfig {
+            peers: read_socket_addr_list(&get_var, "SO3_CLUSTER_PEERS")?,
+        };
 
         Ok(Self {
             node_id,
@@ -54,7 +58,7 @@ impl NodeConfig {
             rpc_api_addr,
             object_request_timeout,
             data_dir,
-            cluster: ClusterConfig::default(),
+            cluster,
         })
     }
 }
@@ -83,6 +87,26 @@ fn read_duration_secs(
     Ok(Duration::from_secs(seconds))
 }
 
+fn read_socket_addr_list(
+    get_var: &impl Fn(&str) -> Option<String>,
+    name: &str,
+) -> So3Result<Vec<SocketAddr>> {
+    let Some(value) = get_var(name) else {
+        return Ok(Vec::new());
+    };
+
+    value
+        .split(CLUSTER_PEERS_SEPARATOR)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            SocketAddr::from_str(value).map_err(|error| {
+                So3Error::InvalidRequest(format!("failed to parse {name} entry {value}: {error}"))
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -108,6 +132,7 @@ mod tests {
             "SO3_OBJECT_REQUEST_TIMEOUT_SECS" => Some("25".to_owned()),
             "SO3_DATA_DIR" => Some("./tmp/so3".to_owned()),
             "SO3_NODE_ID" => Some("123e4567-e89b-12d3-a456-426614174000".to_owned()),
+            "SO3_CLUSTER_PEERS" => Some("127.0.0.1:4101, 127.0.0.1:4102".to_owned()),
             _ => None,
         })
         .unwrap();
@@ -120,6 +145,9 @@ mod tests {
             config.node_id.to_string(),
             "123e4567-e89b-12d3-a456-426614174000"
         );
+        assert_eq!(config.cluster.peers.len(), 2);
+        assert_eq!(config.cluster.peers[0].to_string(), "127.0.0.1:4101");
+        assert_eq!(config.cluster.peers[1].to_string(), "127.0.0.1:4102");
     }
 
     #[test]
@@ -146,5 +174,16 @@ mod tests {
                 .to_string()
                 .contains("SO3_OBJECT_REQUEST_TIMEOUT_SECS")
         );
+    }
+
+    #[test]
+    fn from_env_with_reports_invalid_cluster_peer() {
+        let error = NodeConfig::from_env_with(|name| match name {
+            "SO3_CLUSTER_PEERS" => Some("127.0.0.1:4101,not-an-address".to_owned()),
+            _ => None,
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("SO3_CLUSTER_PEERS"));
     }
 }

@@ -53,7 +53,7 @@ mod tests {
     use crate::domain::error::So3Result;
     use crate::domain::types::{
         CasCommand, CasResult, ObjectCommand, ObjectKey, ObjectRecord, ObjectResult, ObjectVersion,
-        ReadCommand, StoredObject, WriteCommand,
+        ReadCommand, ReadResult, StoredObject, WriteCommand,
     };
     use crate::storage::repository::{CasWriteOutcome, ObjectRepository};
 
@@ -185,7 +185,7 @@ mod tests {
 
         assert_eq!(
             result,
-            ObjectResult::Read(crate::domain::types::ReadResult { object: None })
+            ObjectResult::Read(ReadResult { object: None })
         );
     }
 }

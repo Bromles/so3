@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use tokio::net::TcpListener;
+use tokio::pin;
 use tokio::spawn;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -61,8 +62,33 @@ impl Node {
         });
         let rpc_task = spawn(async move { rpc_server.run(rpc_listener, rpc_token).await });
 
-        tokio::try_join!(flatten_join(object_task), flatten_join(rpc_task))?;
-        Ok(())
+        fail_fast_join(cancellation_token, object_task, rpc_task).await
+    }
+}
+
+async fn fail_fast_join(
+    cancellation_token: CancellationToken,
+    object_task: JoinHandle<So3Result<()>>,
+    rpc_task: JoinHandle<So3Result<()>>,
+) -> So3Result<()> {
+    let object_task = flatten_join(object_task);
+    let rpc_task = flatten_join(rpc_task);
+    pin!(object_task);
+    pin!(rpc_task);
+
+    tokio::select! {
+        object_result = &mut object_task => {
+            cancellation_token.cancel();
+            let rpc_result = (&mut rpc_task).await;
+            object_result?;
+            rpc_result
+        }
+        rpc_result = &mut rpc_task => {
+            cancellation_token.cancel();
+            let object_result = (&mut object_task).await;
+            rpc_result?;
+            object_result
+        }
     }
 }
 
@@ -74,12 +100,18 @@ async fn flatten_join<T>(handle: JoinHandle<So3Result<T>>) -> So3Result<T> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use std::time::Duration;
 
     use tempfile::TempDir;
+    use tokio::spawn;
+    use tokio::sync::Notify;
+    use tokio::time::timeout;
+    use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
 
-    use super::Node;
+    use super::{Node, fail_fast_join};
+    use crate::domain::error::So3Error;
     use crate::node::config::{ClusterConfig, NodeConfig};
 
     #[tokio::test]
@@ -97,5 +129,40 @@ mod tests {
         let node = Node::new(config).await;
 
         assert!(node.is_ok());
+    }
+
+    #[tokio::test]
+    async fn fail_fast_join_cancels_peer_when_first_task_fails() {
+        let cancellation_token = CancellationToken::new();
+        let peer_stopped = Arc::new(Notify::new());
+        let peer_stopped_waiter = peer_stopped.clone();
+        let peer_token = cancellation_token.child_token();
+
+        let object_task = spawn(async move { Err(So3Error::RpcNotImplemented) });
+        let rpc_task = spawn(async move {
+            peer_token.cancelled().await;
+            peer_stopped.notify_one();
+            Ok(())
+        });
+
+        let result = fail_fast_join(cancellation_token.clone(), object_task, rpc_task).await;
+
+        assert!(matches!(result, Err(So3Error::RpcNotImplemented)));
+        assert!(cancellation_token.is_cancelled());
+        timeout(Duration::from_secs(1), peer_stopped_waiter.notified())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn fail_fast_join_returns_ok_after_both_tasks_finish_cleanly() {
+        let cancellation_token = CancellationToken::new();
+        let object_task = spawn(async move { Ok(()) });
+        let rpc_task = spawn(async move { Ok(()) });
+
+        let result = fail_fast_join(cancellation_token.clone(), object_task, rpc_task).await;
+
+        assert!(result.is_ok());
+        assert!(cancellation_token.is_cancelled());
     }
 }

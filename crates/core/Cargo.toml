@@ -9,13 +9,14 @@ publish.workspace = true
 [dependencies]
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
 tokio-util = { workspace = true }
+tokio-stream = { workspace = true, features = ["net"] }
 axum = { workspace = true }
 tower-http = { workspace = true, features = ["trace", "timeout"] }
 tower = { workspace = true, features = ["util"] }
 bytes = { workspace = true }
 serde = { workspace = true, features = ["derive", "std"] }
 serde_json = { workspace = true, features = ["std"] }
-tonic = { workspace = true, features = ["codegen"] }
+tonic = { workspace = true, features = ["codegen", "router", "transport"] }
 tonic-prost = { workspace = true }
 prost = { workspace = true, features = ["derive", "std"] }
 tracing = { workspace = true }
