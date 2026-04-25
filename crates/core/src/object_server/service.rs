@@ -85,11 +85,18 @@ mod tests {
     use super::ObjectService;
     use crate::consensus::state_machine::LocalStateMachine;
     use crate::domain::{CasResult, ObjectKey, ObjectVersion};
-    use crate::storage::sqlite_fs::PersistentObjectStore;
+    use crate::storage::persistent_object_repository::PersistentObjectRepository;
 
     async fn test_service() -> (ObjectService, TempDir) {
         let temp_dir = TempDir::new().unwrap();
-        let repository = Arc::new(PersistentObjectStore::new(temp_dir.path()).await.unwrap());
+        let repository = Arc::new(
+            PersistentObjectRepository::new(
+                temp_dir.path().join("metadata"),
+                temp_dir.path().join("blobs"),
+            )
+            .await
+            .unwrap(),
+        );
         let state_machine = Arc::new(LocalStateMachine::new(repository));
         (ObjectService::new(state_machine), temp_dir)
     }

@@ -156,7 +156,7 @@ mod tests {
     use super::{ObjectApiState, WriteResponse, object_controller};
     use crate::consensus::state_machine::LocalStateMachine;
     use crate::object_server::service::ObjectService;
-    use crate::storage::sqlite_fs::PersistentObjectStore;
+    use crate::storage::persistent_object_repository::PersistentObjectRepository;
 
     const TEST_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
     const TEST_MAX_RESPONSE_BYTES: usize = usize::MAX;
@@ -173,7 +173,12 @@ mod tests {
     async fn test_app() -> (axum::Router, TempDir) {
         let temp_dir = TempDir::new().unwrap();
         let state_machine = Arc::new(LocalStateMachine::new(Arc::new(
-            PersistentObjectStore::new(temp_dir.path()).await.unwrap(),
+            PersistentObjectRepository::new(
+                temp_dir.path().join("metadata"),
+                temp_dir.path().join("blobs"),
+            )
+            .await
+            .unwrap(),
         )));
         let service = Arc::new(ObjectService::new(state_machine));
 

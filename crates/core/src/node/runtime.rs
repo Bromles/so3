@@ -14,7 +14,7 @@ use crate::object_server::server::ObjectServer;
 use crate::object_server::service::ObjectService;
 use crate::rpc_server::server::RpcServer;
 use crate::rpc_server::transport::RejectingConsensusTransport;
-use crate::storage::sqlite_fs::PersistentObjectStore;
+use crate::storage::persistent_object_repository::PersistentObjectRepository;
 
 pub struct Node {
     config: NodeConfig,
@@ -30,7 +30,9 @@ impl Node {
     pub async fn new(config: NodeConfig) -> So3Result<Self> {
         config.validate()?;
         let node_id = config.node_id;
-        let repository = Arc::new(PersistentObjectStore::new(&config.data_dir).await?);
+        let repository = Arc::new(
+            PersistentObjectRepository::new(&config.metadata_dir, &config.blob_dir).await?,
+        );
         let state_machine = Arc::new(LocalStateMachine::new(repository));
         let object_service = Arc::new(ObjectService::new(state_machine));
 
@@ -53,7 +55,8 @@ impl Node {
             node_id = %self.config.node_id,
             object_api_addr = %self.config.object_api_addr,
             rpc_api_addr = %self.config.rpc_api_addr,
-            data_dir = %self.config.data_dir.display(),
+            metadata_dir = %self.config.metadata_dir.display(),
+            blob_dir = %self.config.blob_dir.display(),
             peer_count = self.config.cluster.peers.len(),
             "node started"
         );
@@ -138,7 +141,8 @@ mod tests {
             object_api_addr: OBJECT_API_ADDR.parse().unwrap(),
             rpc_api_addr: RPC_API_ADDR.parse().unwrap(),
             object_request_timeout: Duration::from_secs(REQUEST_TIMEOUT_SECS),
-            data_dir: temp_dir.path().to_path_buf(),
+            metadata_dir: temp_dir.path().join("metadata"),
+            blob_dir: temp_dir.path().join("blobs"),
             cluster: ClusterConfig::default(),
         };
 

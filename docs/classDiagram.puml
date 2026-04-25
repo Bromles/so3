@@ -28,10 +28,12 @@ package "crates/core::node" {
         +object_api_addr: SocketAddr
         +rpc_api_addr: SocketAddr
         +object_request_timeout: Duration
-        +data_dir: PathBuf
+        +metadata_dir: PathBuf
+        +blob_dir: PathBuf
         +cluster: ClusterConfig
         +from_env(): Result<NodeConfig>
         +from_env_with(get_var): Result<NodeConfig>
+        +validate(): Result<()>
     }
 
     class ClusterConfig {
@@ -168,24 +170,49 @@ package "crates/core::consensus" {
 }
 
 package "crates/core::storage" {
+    interface BlobRepository {
+        +store(value): Result<BlobMetadata>
+        +load(blob_id): Result<Vec<u8>>
+    }
+
+    interface ObjectMetadataRepository {
+        +read(key): Result<Option<ObjectRecord>>
+        +write(record): Result<()>
+    }
+
     interface ObjectRepository {
         +read(key): Result<Option<StoredObject>>
         +write(key, value): Result<StoredObject>
         +cas(key, expected_version, value): Result<CasWriteOutcome>
     }
 
-    class PersistentObjectStore {
-        -pool: SqlitePool
-        -blob_dir: PathBuf
+    class PersistentObjectRepository {
+        -metadata_repository: Arc<ObjectMetadataRepository>
+        -blob_repository: Arc<BlobRepository>
         -write_lock: Mutex<()>
-        +new(data_dir): Result<PersistentObjectStore>
+        +new(metadata_dir, blob_dir): Result<PersistentObjectRepository>
+        -write_next_version(key, version, value): Result<StoredObject>
+    }
+
+    class SqliteObjectMetadataRepository {
+        -pool: SqlitePool
+        +new(metadata_dir): Result<SqliteObjectMetadataRepository>
         -init_schema(): Result<()>
         -migrate_to_v1(): Result<()>
-        -persist_blob(value): Result<(String, u64, String)>
-        -load_blob(blob_id): Result<Vec<u8>>
-        -load_record(key): Result<Option<ObjectRecord>>
         -row_to_record(row): Result<ObjectRecord>
-        -write_record(key, version, value): Result<StoredObject>
+    }
+
+    class FileSystemBlobRepository {
+        -blob_dir: PathBuf
+        +new(blob_dir): Result<FileSystemBlobRepository>
+        -temp_path(blob_id): PathBuf
+        -committed_path(blob_id): PathBuf
+    }
+
+    class BlobMetadata {
+        +blob_id: String
+        +content_length: u64
+        +checksum: String
     }
 
     enum CasWriteOutcome {
@@ -276,7 +303,7 @@ Node *-- NodeConfig
 Node *-- ObjectServer
 Node *-- RpcServer
 Node --> ObjectService
-Node ..> PersistentObjectStore : constructs local backend
+Node ..> PersistentObjectRepository : constructs local backend
 Node ..> RejectingConsensusTransport : constructs current rpc handler
 Node ..> FailFastJoin : orchestrates shutdown
 FailFastJoin ..> FlattenJoin
@@ -321,11 +348,17 @@ LocalStateMachine ..> ObjectCommand
 LocalStateMachine ..> ObjectResult
 LocalStateMachine ..> CasWriteOutcome
 
-ObjectRepository <|.. PersistentObjectStore
-PersistentObjectStore ..> ReadContentLength
-PersistentObjectStore ..> ContentLengthToI64
-PersistentObjectStore ..> ChecksumHex
-PersistentObjectStore ..> So3Error
+ObjectRepository <|.. PersistentObjectRepository
+ObjectMetadataRepository <|.. SqliteObjectMetadataRepository
+BlobRepository <|.. FileSystemBlobRepository
+PersistentObjectRepository --> ObjectMetadataRepository
+PersistentObjectRepository --> BlobRepository
+PersistentObjectRepository ..> BlobMetadata
+SqliteObjectMetadataRepository ..> ReadContentLength
+SqliteObjectMetadataRepository ..> ContentLengthToI64
+FileSystemBlobRepository ..> ChecksumHex
+SqliteObjectMetadataRepository ..> So3Error
+FileSystemBlobRepository ..> So3Error
 So3Result ..> So3Error
 
 ObjectCommand --> ReadCommand
@@ -359,11 +392,12 @@ Current composition:
 - no separate consensus engine yet
 end note
 
-note right of PersistentObjectStore
+note right of PersistentObjectRepository
 Current durability model:
-- SQLite stores current object metadata
-- blobs are immutable files on local FS
-- blob is persisted before metadata points to it
+- SQLite metadata and filesystem blobs are separate repositories
+- composition repository writes blob first, then metadata
+- metadata store tracks the current committed object version
+- blob store keeps immutable committed blob files
 - schema version is explicit via PRAGMA user_version
 - write/cas are serialized with write_lock
 end note

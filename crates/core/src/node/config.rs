@@ -11,6 +11,8 @@ use crate::domain::error::{So3Error, So3Result};
 const OBJECT_ADDR_ENV: &str = "SO3_OBJECT_ADDR";
 const RPC_ADDR_ENV: &str = "SO3_RPC_ADDR";
 const DATA_DIR_ENV: &str = "SO3_DATA_DIR";
+const METADATA_DIR_ENV: &str = "SO3_METADATA_DIR";
+const BLOB_DIR_ENV: &str = "SO3_BLOB_DIR";
 const NODE_ID_ENV: &str = "SO3_NODE_ID";
 const CLUSTER_PEERS_ENV: &str = "SO3_CLUSTER_PEERS";
 const OBJECT_REQUEST_TIMEOUT_SECS_ENV: &str = "SO3_OBJECT_REQUEST_TIMEOUT_SECS";
@@ -19,6 +21,8 @@ const OBJECT_REQUEST_TIMEOUT_SECS_ENV: &str = "SO3_OBJECT_REQUEST_TIMEOUT_SECS";
 const DEFAULT_OBJECT_API_ADDR: &str = "127.0.0.1:3000";
 const DEFAULT_RPC_API_ADDR: &str = "127.0.0.1:4000";
 const DEFAULT_DATA_DIR: &str = "./var/so3";
+const DEFAULT_METADATA_DIR_NAME: &str = "metadata";
+const DEFAULT_BLOB_DIR_NAME: &str = "blobs";
 const DEFAULT_OBJECT_REQUEST_TIMEOUT_SECS: u64 = 10;
 
 // Delimiters and formatting.
@@ -30,7 +34,8 @@ pub struct NodeConfig {
     pub object_api_addr: SocketAddr,
     pub rpc_api_addr: SocketAddr,
     pub object_request_timeout: Duration,
-    pub data_dir: PathBuf,
+    pub metadata_dir: PathBuf,
+    pub blob_dir: PathBuf,
     pub cluster: ClusterConfig,
 }
 
@@ -58,8 +63,14 @@ impl NodeConfig {
             OBJECT_REQUEST_TIMEOUT_SECS_ENV,
             DEFAULT_OBJECT_REQUEST_TIMEOUT_SECS,
         )?;
-        let data_dir =
+        let base_data_dir =
             get_var(DATA_DIR_ENV).map_or_else(|| PathBuf::from(DEFAULT_DATA_DIR), PathBuf::from);
+        let metadata_dir = get_var(METADATA_DIR_ENV).map_or_else(
+            || base_data_dir.join(DEFAULT_METADATA_DIR_NAME),
+            PathBuf::from,
+        );
+        let blob_dir = get_var(BLOB_DIR_ENV)
+            .map_or_else(|| base_data_dir.join(DEFAULT_BLOB_DIR_NAME), PathBuf::from);
         let node_id = get_var(NODE_ID_ENV)
             .and_then(|value| Uuid::parse_str(&value).ok())
             .unwrap_or_else(Uuid::new_v4);
@@ -72,7 +83,8 @@ impl NodeConfig {
             object_api_addr,
             rpc_api_addr,
             object_request_timeout,
-            data_dir,
+            metadata_dir,
+            blob_dir,
             cluster,
         })
     }
@@ -85,6 +97,12 @@ impl NodeConfig {
             return Err(So3Error::InvalidRequest(format!(
                 "SO3_OBJECT_ADDR and SO3_RPC_ADDR must differ, both resolved to {}",
                 self.object_api_addr
+            )));
+        }
+        if self.metadata_dir == self.blob_dir {
+            return Err(So3Error::InvalidRequest(format!(
+                "SO3_METADATA_DIR and SO3_BLOB_DIR must differ, both resolved to {}",
+                self.metadata_dir.display()
             )));
         }
 
@@ -138,6 +156,7 @@ fn read_socket_addr_list(
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
     use std::time::Duration;
 
     use super::NodeConfig;
@@ -150,6 +169,8 @@ mod tests {
     const PEER_TWO_ADDR: &str = "127.0.0.1:4102";
     const OVERRIDE_TIMEOUT_SECS: u64 = 25;
     const OVERRIDE_DATA_DIR: &str = "./tmp/so3";
+    const OVERRIDE_METADATA_DIR: &str = "./tmp/so3-metadata";
+    const OVERRIDE_BLOB_DIR: &str = "./tmp/so3-blobs";
     const FIXED_NODE_ID: &str = "123e4567-e89b-12d3-a456-426614174000";
     const INVALID_SOCKET_ADDR: &str = "not-an-address";
     const INVALID_TIMEOUT: &str = "NaN";
@@ -165,7 +186,14 @@ mod tests {
             config.object_request_timeout,
             Duration::from_secs(super::DEFAULT_OBJECT_REQUEST_TIMEOUT_SECS)
         );
-        assert_eq!(config.data_dir.to_string_lossy(), "./var/so3");
+        assert_eq!(
+            config.metadata_dir,
+            PathBuf::from(super::DEFAULT_DATA_DIR).join(super::DEFAULT_METADATA_DIR_NAME)
+        );
+        assert_eq!(
+            config.blob_dir,
+            PathBuf::from(super::DEFAULT_DATA_DIR).join(super::DEFAULT_BLOB_DIR_NAME)
+        );
         assert!(config.cluster.peers.is_empty());
     }
 
@@ -176,6 +204,8 @@ mod tests {
             super::RPC_ADDR_ENV => Some(OVERRIDE_RPC_ADDR.to_owned()),
             super::OBJECT_REQUEST_TIMEOUT_SECS_ENV => Some(OVERRIDE_TIMEOUT_SECS.to_string()),
             super::DATA_DIR_ENV => Some(OVERRIDE_DATA_DIR.to_owned()),
+            super::METADATA_DIR_ENV => Some(OVERRIDE_METADATA_DIR.to_owned()),
+            super::BLOB_DIR_ENV => Some(OVERRIDE_BLOB_DIR.to_owned()),
             super::NODE_ID_ENV => Some(FIXED_NODE_ID.to_owned()),
             super::CLUSTER_PEERS_ENV => Some(format!("{PEER_ONE_ADDR}, {PEER_TWO_ADDR}")),
             _ => None,
@@ -189,7 +219,8 @@ mod tests {
             config.object_request_timeout,
             Duration::from_secs(OVERRIDE_TIMEOUT_SECS)
         );
-        assert_eq!(config.data_dir.to_string_lossy(), OVERRIDE_DATA_DIR);
+        assert_eq!(config.metadata_dir.to_string_lossy(), OVERRIDE_METADATA_DIR);
+        assert_eq!(config.blob_dir.to_string_lossy(), OVERRIDE_BLOB_DIR);
         assert_eq!(config.node_id.to_string(), FIXED_NODE_ID);
         assert_eq!(config.cluster.peers.len(), 2);
         assert_eq!(config.cluster.peers[0].to_string(), PEER_ONE_ADDR);
@@ -240,5 +271,18 @@ mod tests {
         let error = config.validate().unwrap_err();
 
         assert!(error.to_string().contains("must differ"));
+    }
+
+    #[test]
+    fn validate_rejects_same_metadata_and_blob_directories() {
+        let config = NodeConfig::from_env_with(|name| match name {
+            super::METADATA_DIR_ENV | super::BLOB_DIR_ENV => Some(OVERRIDE_DATA_DIR.to_owned()),
+            _ => None,
+        })
+        .unwrap();
+
+        let error = config.validate().unwrap_err();
+
+        assert!(error.to_string().contains("SO3_METADATA_DIR"));
     }
 }
