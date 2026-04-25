@@ -11,13 +11,13 @@ use crate::node::config::NodeConfig;
 use crate::object_server::server::ObjectServer;
 use crate::object_server::service::ObjectService;
 use crate::rpc_server::server::RpcServer;
-use crate::rpc_server::transport::RejectingConsensusTransport;
+use crate::rpc_server::transport::ApplyingConsensusTransport;
 use crate::storage::object::persistent::SqliteFsObjectRepository;
 
 pub struct Node {
     config: NodeConfig,
     object_server: ObjectServer,
-    rpc_server: RpcServer<RejectingConsensusTransport>,
+    rpc_server: RpcServer<ApplyingConsensusTransport<SqliteFsObjectRepository>>,
     object_service: ObjectService<SqliteFsObjectRepository>,
 }
 
@@ -26,7 +26,7 @@ pub struct BoundNode {
     object_listener: TcpListener,
     rpc_listener: TcpListener,
     object_server: ObjectServer,
-    rpc_server: RpcServer<RejectingConsensusTransport>,
+    rpc_server: RpcServer<ApplyingConsensusTransport<SqliteFsObjectRepository>>,
     object_service: ObjectService<SqliteFsObjectRepository>,
 }
 
@@ -40,12 +40,13 @@ impl Node {
         let repository =
             SqliteFsObjectRepository::new(&config.metadata_dir, &config.blob_dir).await?;
         let state_machine = LocalStateMachine::new(repository);
+        let rpc_state_machine = state_machine.clone();
         let object_service = ObjectService::new(state_machine);
 
         Ok(Self {
             config,
             object_server: ObjectServer::new(),
-            rpc_server: RpcServer::new(RejectingConsensusTransport::new(node_id)),
+            rpc_server: RpcServer::new(ApplyingConsensusTransport::new(node_id, rpc_state_machine)),
             object_service,
         })
     }
@@ -170,6 +171,10 @@ mod tests {
     use crate::domain::error::So3Error;
     use crate::node::config::{ClusterConfig, NodeConfig};
 
+    const NODE_ID_NIL: Uuid = Uuid::nil();
+    const METADATA_DIR_NAME: &str = "metadata";
+    const BLOB_DIR_NAME: &str = "blobs";
+    const MISSING_OBJECT_PATH: &str = "/objects/missing";
     const OBJECT_API_ADDR: &str = "127.0.0.1:3000";
     const RPC_API_ADDR: &str = "127.0.0.1:4000";
     const EPHEMERAL_LOOPBACK_ADDR: &str = "127.0.0.1:0";
@@ -184,12 +189,12 @@ mod tests {
     async fn new_initializes_node_with_persistent_storage() {
         let temp_dir = TempDir::new().unwrap();
         let config = NodeConfig {
-            node_id: Uuid::nil(),
+            node_id: NODE_ID_NIL,
             object_api_addr: OBJECT_API_ADDR.parse().unwrap(),
             rpc_api_addr: RPC_API_ADDR.parse().unwrap(),
             object_request_timeout: Duration::from_secs(REQUEST_TIMEOUT_SECS),
-            metadata_dir: temp_dir.path().join("metadata"),
-            blob_dir: temp_dir.path().join("blobs"),
+            metadata_dir: temp_dir.path().join(METADATA_DIR_NAME),
+            blob_dir: temp_dir.path().join(BLOB_DIR_NAME),
             cluster: ClusterConfig::default(),
         };
 
@@ -208,8 +213,14 @@ mod tests {
             .await
             .unwrap();
 
-        assert_ne!(bound_node.config().object_api_addr.to_string(), EPHEMERAL_LOOPBACK_ADDR);
-        assert_ne!(bound_node.config().rpc_api_addr.to_string(), EPHEMERAL_LOOPBACK_ADDR);
+        assert_ne!(
+            bound_node.config().object_api_addr.to_string(),
+            EPHEMERAL_LOOPBACK_ADDR
+        );
+        assert_ne!(
+            bound_node.config().rpc_api_addr.to_string(),
+            EPHEMERAL_LOOPBACK_ADDR
+        );
     }
 
     #[tokio::test]
@@ -286,8 +297,8 @@ mod tests {
             Duration::from_secs(PEER_SHUTDOWN_TIMEOUT_SECS),
             peer_stopped_waiter.notified(),
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -304,18 +315,18 @@ mod tests {
 
     fn test_config(data_dir: &std::path::Path) -> NodeConfig {
         NodeConfig {
-            node_id: Uuid::nil(),
+            node_id: NODE_ID_NIL,
             object_api_addr: EPHEMERAL_LOOPBACK_ADDR.parse().unwrap(),
             rpc_api_addr: EPHEMERAL_LOOPBACK_ADDR.parse().unwrap(),
             object_request_timeout: Duration::from_secs(REQUEST_TIMEOUT_SECS),
-            metadata_dir: data_dir.join("metadata"),
-            blob_dir: data_dir.join("blobs"),
+            metadata_dir: data_dir.join(METADATA_DIR_NAME),
+            blob_dir: data_dir.join(BLOB_DIR_NAME),
             cluster: ClusterConfig::default(),
         }
     }
 
     async fn wait_for_http_ready(client: &Client, base_url: &str) {
-        let health_url = format!("{base_url}/objects/missing");
+        let health_url = format!("{base_url}{MISSING_OBJECT_PATH}");
 
         for _ in 0..SERVER_START_RETRIES {
             if let Ok(response) = client.get(&health_url).send().await

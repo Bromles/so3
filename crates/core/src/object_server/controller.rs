@@ -15,6 +15,11 @@ use crate::domain::{CasResult, ObjectKey, StoredObject};
 use crate::object_server::service::ObjectService;
 use crate::storage::object::repository::ObjectRepository;
 
+const OBJECT_ROUTE_PATH: &str = "/objects/{key}";
+const VERSION_HEADER: &str = "x-so3-version";
+const ETAG_HEADER: &str = "etag";
+const DEFAULT_ERROR_LABEL: &str = "error";
+
 #[derive(Clone)]
 pub struct ObjectApiState<R: ObjectRepository> {
     pub service: ObjectService<R>,
@@ -58,7 +63,7 @@ where
     let request_timeout = state.request_timeout;
 
     Router::new()
-        .route("/objects/{key}", get(handle_get).put(handle_put))
+        .route(OBJECT_ROUTE_PATH, get(handle_get).put(handle_put))
         .with_state(state)
         .layer((
             TraceLayer::new_for_http(),
@@ -80,12 +85,12 @@ where
 
     let mut response = object.value.into_response();
     response.headers_mut().insert(
-        "x-so3-version",
+        VERSION_HEADER,
         HeaderValue::from_str(&object.record.version.get().to_string())
             .map_err(|error| ApiError::from(So3Error::InvalidRequest(error.to_string())))?,
     );
     response.headers_mut().insert(
-        "etag",
+        ETAG_HEADER,
         HeaderValue::from_str(&object.record.checksum)
             .map_err(|error| ApiError::from(So3Error::InvalidRequest(error.to_string())))?,
     );
@@ -108,19 +113,19 @@ where
             let object = state.service.write(key, body.to_vec()).await?;
             Ok(Json(WriteResponse::from_object(object)))
         }
-        Some(expected_version) => match state
-            .service
-            .cas(key.clone(), expected_version.try_into()?, body.to_vec())
-            .await?
-        {
-            CasResult::Applied(object) => Ok(Json(WriteResponse::from_object(object))),
-            CasResult::NotFound => Err(ApiError::from(So3Error::not_found(&key))),
-            CasResult::Mismatch { current_version } => Err(ApiError::from(So3Error::cas_mismatch(
-                &key,
-                expected_version.try_into()?,
-                current_version,
-            ))),
-        },
+        Some(expected_version) => {
+            match state
+                .service
+                .cas(key.clone(), expected_version.try_into()?, body.to_vec())
+                .await?
+            {
+                CasResult::Applied(object) => Ok(Json(WriteResponse::from_object(object))),
+                CasResult::NotFound => Err(ApiError::from(So3Error::not_found(&key))),
+                CasResult::Mismatch { current_version } => Err(ApiError::from(
+                    So3Error::cas_mismatch(&key, expected_version.try_into()?, current_version),
+                )),
+            }
+        }
     }
 }
 
@@ -144,7 +149,10 @@ impl IntoResponse for ApiError {
         };
 
         let body = Json(ErrorResponse {
-            error: status.canonical_reason().unwrap_or("error").to_lowercase(),
+            error: status
+                .canonical_reason()
+                .unwrap_or(DEFAULT_ERROR_LABEL)
+                .to_lowercase(),
             detail: error.to_string(),
         });
 
@@ -161,7 +169,7 @@ mod tests {
     use tempfile::TempDir;
     use tower::util::ServiceExt;
 
-    use super::{ObjectApiState, WriteResponse, object_controller};
+    use super::{ObjectApiState, VERSION_HEADER, WriteResponse, object_controller};
     use crate::consensus::state_machine::LocalStateMachine;
     use crate::object_server::service::ObjectService;
     use crate::storage::object::persistent::SqliteFsObjectRepository;
@@ -175,8 +183,13 @@ mod tests {
     const FIRST_VALUE: &str = "first";
     const SECOND_VALUE: &str = "second";
     const HELLO_VALUE: &str = "hello";
+    const ALPHA_KEY: &str = "alpha";
+    const VERSION_ONE_HEADER: &str = "1";
+    const VERSION_TWO_HEADER: &str = "2";
+    const REQUEST_BODY_VALUE: &str = "value";
     const FIRST_VERSION: i64 = 1;
     const SECOND_VERSION: i64 = 2;
+    const VERSION_INCREMENT: i64 = 1;
 
     async fn test_app() -> (axum::Router, TempDir) {
         let temp_dir = TempDir::new().unwrap();
@@ -218,7 +231,7 @@ mod tests {
             .await
             .unwrap();
         let write: WriteResponse = serde_json::from_slice(&write_body).unwrap();
-        assert_eq!(write.key, "alpha");
+        assert_eq!(write.key, ALPHA_KEY);
         assert_eq!(write.version, FIRST_VERSION);
 
         let get_response = app
@@ -230,11 +243,11 @@ mod tests {
         assert_eq!(
             get_response
                 .headers()
-                .get("x-so3-version")
+                .get(VERSION_HEADER)
                 .unwrap()
                 .to_str()
                 .unwrap(),
-            "1"
+            VERSION_ONE_HEADER
         );
         let get_body = to_bytes(get_response.into_body(), TEST_MAX_RESPONSE_BYTES)
             .await
@@ -305,7 +318,10 @@ mod tests {
         let cas_response = app
             .clone()
             .oneshot(
-                Request::put(format!("/objects/alpha?expected_version={}", initial.version))
+                Request::put(format!(
+                    "/objects/alpha?expected_version={}",
+                    initial.version
+                ))
                 .body(Body::from(SECOND_VALUE))
                 .unwrap(),
             )
@@ -316,7 +332,7 @@ mod tests {
             .await
             .unwrap();
         let cas: WriteResponse = serde_json::from_slice(&cas_body).unwrap();
-        assert_eq!(cas.version, initial.version + 1);
+        assert_eq!(cas.version, initial.version + VERSION_INCREMENT);
 
         let get_response = app
             .oneshot(Request::get(OBJECT_PATH).body(Body::empty()).unwrap())
@@ -326,11 +342,11 @@ mod tests {
         assert_eq!(
             get_response
                 .headers()
-                .get("x-so3-version")
+                .get(VERSION_HEADER)
                 .unwrap()
                 .to_str()
                 .unwrap(),
-            "2"
+            VERSION_TWO_HEADER
         );
         let get_body = to_bytes(get_response.into_body(), TEST_MAX_RESPONSE_BYTES)
             .await
@@ -346,7 +362,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::put(INVALID_VERSION_PATH)
-                    .body(Body::from("value"))
+                    .body(Body::from(REQUEST_BODY_VALUE))
                     .unwrap(),
             )
             .await

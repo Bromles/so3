@@ -94,7 +94,9 @@ mod tests {
     #[tokio::test]
     async fn store_then_load_roundtrips_blob() {
         let temp_dir = TempDir::new().unwrap();
-        let repository = FileSystemBlobRepository::new(temp_dir.path()).await.unwrap();
+        let repository = FileSystemBlobRepository::new(temp_dir.path())
+            .await
+            .unwrap();
 
         let metadata = repository.store(TEST_PAYLOAD).await.unwrap();
         let loaded = repository.load(&metadata.blob_id).await.unwrap();

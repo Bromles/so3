@@ -84,6 +84,14 @@ mod tests {
     use crate::domain::{CasResult, ObjectKey, ObjectVersion};
     use crate::storage::object::persistent::SqliteFsObjectRepository;
 
+    const MISSING_KEY: &str = "missing";
+    const ALPHA_KEY: &str = "alpha";
+    const FIRST_VALUE: &[u8] = b"first";
+    const SECOND_VALUE: &[u8] = b"second";
+    const INITIAL_VERSION: i64 = 1;
+    const NEXT_VERSION: i64 = 2;
+    const VERSION_INCREMENT: i64 = 1;
+
     async fn test_service() -> (ObjectService<SqliteFsObjectRepository>, TempDir) {
         let temp_dir = TempDir::new().unwrap();
         let repository = SqliteFsObjectRepository::new(
@@ -100,7 +108,10 @@ mod tests {
     async fn read_returns_none_for_missing_key() {
         let (service, _temp_dir) = test_service().await;
 
-        let loaded = service.read(ObjectKey::new("missing").unwrap()).await.unwrap();
+        let loaded = service
+            .read(ObjectKey::new(MISSING_KEY).unwrap())
+            .await
+            .unwrap();
 
         assert!(loaded.is_none());
     }
@@ -108,27 +119,33 @@ mod tests {
     #[tokio::test]
     async fn write_persists_and_increments_version() {
         let (service, _temp_dir) = test_service().await;
-        let key = ObjectKey::new("alpha").unwrap();
+        let key = ObjectKey::new(ALPHA_KEY).unwrap();
 
-        let first = service.write(key.clone(), b"first".to_vec()).await.unwrap();
-        let second = service.write(key, b"second".to_vec()).await.unwrap();
+        let first = service
+            .write(key.clone(), FIRST_VALUE.to_vec())
+            .await
+            .unwrap();
+        let second = service.write(key, SECOND_VALUE.to_vec()).await.unwrap();
 
-        assert_eq!(first.record.version.get(), 1);
-        assert_eq!(second.record.version.get(), 2);
-        assert_eq!(second.value, b"second".to_vec());
+        assert_eq!(first.record.version.get(), INITIAL_VERSION);
+        assert_eq!(second.record.version.get(), NEXT_VERSION);
+        assert_eq!(second.value, SECOND_VALUE.to_vec());
     }
 
     #[tokio::test]
     async fn cas_returns_structured_mismatch() {
         let (service, _temp_dir) = test_service().await;
-        let key = ObjectKey::new("alpha").unwrap();
-        let written = service.write(key.clone(), b"first".to_vec()).await.unwrap();
+        let key = ObjectKey::new(ALPHA_KEY).unwrap();
+        let written = service
+            .write(key.clone(), FIRST_VALUE.to_vec())
+            .await
+            .unwrap();
 
         let result = service
             .cas(
                 key,
-                ObjectVersion::try_from(written.record.version.get() + 1).unwrap(),
-                b"second".to_vec(),
+                ObjectVersion::try_from(written.record.version.get() + VERSION_INCREMENT).unwrap(),
+                SECOND_VALUE.to_vec(),
             )
             .await
             .unwrap();

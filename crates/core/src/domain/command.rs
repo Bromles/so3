@@ -52,6 +52,22 @@ pub enum ObjectResult {
     Cas(CasResult),
 }
 
+impl ObjectResult {
+    /// # Errors
+    ///
+    /// Returns [`So3Error::Serialization`] when postcard cannot encode the result.
+    pub fn to_bytes(&self) -> So3Result<Vec<u8>> {
+        postcard_to_allocvec(self).map_err(So3Error::from)
+    }
+
+    /// # Errors
+    ///
+    /// Returns [`So3Error::Serialization`] when postcard cannot decode the result payload.
+    pub fn from_bytes(bytes: &[u8]) -> So3Result<Self> {
+        postcard_from_bytes(bytes).map_err(So3Error::from)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadResult {
     pub object: Option<StoredObject>,
@@ -72,7 +88,8 @@ pub enum CasResult {
 #[cfg(test)]
 mod tests {
     use crate::domain::{
-        CasCommand, ObjectCommand, ObjectKey, ObjectVersion, ReadCommand, WriteCommand,
+        CasCommand, ObjectCommand, ObjectKey, ObjectResult, ObjectVersion, ReadCommand, ReadResult,
+        WriteCommand,
     };
 
     const KEY_ALPHA: &str = "alpha";
@@ -108,5 +125,15 @@ mod tests {
 
         assert!(matches!(read, ObjectCommand::Read(_)));
         assert!(matches!(write, ObjectCommand::Write(_)));
+    }
+
+    #[test]
+    fn object_result_roundtrip_is_stable() {
+        let result = ObjectResult::Read(ReadResult { object: None });
+
+        let encoded = result.to_bytes().unwrap();
+        let decoded = ObjectResult::from_bytes(&encoded).unwrap();
+
+        assert_eq!(decoded, result);
     }
 }

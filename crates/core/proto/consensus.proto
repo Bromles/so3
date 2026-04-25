@@ -43,7 +43,9 @@ message ApplyRequest {
   ApplyHashes hashes = 6;
 }
 
-message ApplyResponse {}
+message ApplyResponse {
+  bytes result = 1;
+}
 
 message ApplyHashes {
   bytes transaction_hash = 1;
@@ -63,7 +65,9 @@ message CommitRequest {
   DependencySet dependencies = 5;
 }
 
-message CommitResponse {}
+message CommitResponse {
+  bytes result = 1;
+}
 
 message EventPayload {
   bytes command = 1;

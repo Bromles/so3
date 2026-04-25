@@ -56,7 +56,10 @@ impl PersistentObjectRepository<SqliteObjectMetadataRepository, FileSystemBlobRe
     /// # Errors
     ///
     /// Returns an error if the local metadata or blob repositories cannot be created.
-    pub async fn new(metadata_dir: impl AsRef<Path>, blob_dir: impl AsRef<Path>) -> So3Result<Self> {
+    pub async fn new(
+        metadata_dir: impl AsRef<Path>,
+        blob_dir: impl AsRef<Path>,
+    ) -> So3Result<Self> {
         let metadata_repository = SqliteObjectMetadataRepository::new(metadata_dir).await?;
         let blob_repository = FileSystemBlobRepository::new(blob_dir).await?;
 
@@ -141,7 +144,10 @@ mod tests {
         )
         .await
         .unwrap();
-        let written = repository.write(&key, HELLO_PAYLOAD.to_vec()).await.unwrap();
+        let written = repository
+            .write(&key, HELLO_PAYLOAD.to_vec())
+            .await
+            .unwrap();
         assert_eq!(written.record.version, ObjectVersion::initial());
         drop(repository);
 
@@ -168,7 +174,10 @@ mod tests {
         .await
         .unwrap();
 
-        let written = repository.write(&key, FIRST_PAYLOAD.to_vec()).await.unwrap();
+        let written = repository
+            .write(&key, FIRST_PAYLOAD.to_vec())
+            .await
+            .unwrap();
         let outcome = repository
             .cas(
                 &key,
@@ -200,7 +209,10 @@ mod tests {
         .await
         .unwrap();
 
-        let written = repository.write(&key, FIRST_PAYLOAD.to_vec()).await.unwrap();
+        let written = repository
+            .write(&key, FIRST_PAYLOAD.to_vec())
+            .await
+            .unwrap();
         let outcome = repository
             .cas(&key, written.record.version, SECOND_PAYLOAD.to_vec())
             .await

@@ -144,20 +144,14 @@ impl NodeConfig {
             file_config.and_then(|config| config.object_api_addr.as_deref()),
             DEFAULT_OBJECT_API_ADDR,
         );
-        let object_api_addr = parse_socket_addr(
-            OBJECT_ADDR_ENV,
-            &object_api_addr_value,
-        )?;
+        let object_api_addr = parse_socket_addr(OBJECT_ADDR_ENV, &object_api_addr_value)?;
         let rpc_api_addr_value = pick_string(
             &get_var,
             RPC_ADDR_ENV,
             file_config.and_then(|config| config.rpc_api_addr.as_deref()),
             DEFAULT_RPC_API_ADDR,
         );
-        let rpc_api_addr = parse_socket_addr(
-            RPC_ADDR_ENV,
-            &rpc_api_addr_value,
-        )?;
+        let rpc_api_addr = parse_socket_addr(RPC_ADDR_ENV, &rpc_api_addr_value)?;
         let object_request_timeout = Duration::from_secs(pick_u64(
             &get_var,
             OBJECT_REQUEST_TIMEOUT_SECS_ENV,
@@ -310,14 +304,16 @@ fn load_optional_config_file(
 
 fn parse_config_file(path: impl AsRef<Path>) -> So3Result<NodeConfigFile> {
     let path = path.as_ref();
-    let value = std::fs::read_to_string(path)
-        .map_err(|error| So3Error::InvalidRequest(format!("failed to read {}: {error}", path.display())))?;
+    let value = std::fs::read_to_string(path).map_err(|error| {
+        So3Error::InvalidRequest(format!("failed to read {}: {error}", path.display()))
+    })?;
     parse_toml_config(&value)
 }
 
 fn parse_toml_config(value: &str) -> So3Result<NodeConfigFile> {
-    toml::from_str(value)
-        .map_err(|error| So3Error::InvalidRequest(format!("failed to parse so3 TOML config: {error}")))
+    toml::from_str(value).map_err(|error| {
+        So3Error::InvalidRequest(format!("failed to parse so3 TOML config: {error}"))
+    })
 }
 
 #[cfg(test)]
@@ -424,7 +420,11 @@ mod tests {
         })
         .unwrap_err();
 
-        assert!(error.to_string().contains(super::OBJECT_REQUEST_TIMEOUT_SECS_ENV));
+        assert!(
+            error
+                .to_string()
+                .contains(super::OBJECT_REQUEST_TIMEOUT_SECS_ENV)
+        );
     }
 
     #[test]

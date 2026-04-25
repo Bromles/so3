@@ -45,6 +45,9 @@ mod tests {
     #[test]
     fn object_version_rejects_non_positive_numbers() {
         let error = ObjectVersion::try_from(NON_POSITIVE_VERSION).unwrap_err();
-        assert!(matches!(error, So3Error::InvalidVersion(NON_POSITIVE_VERSION)));
+        assert!(matches!(
+            error,
+            So3Error::InvalidVersion(NON_POSITIVE_VERSION)
+        ));
     }
 }
