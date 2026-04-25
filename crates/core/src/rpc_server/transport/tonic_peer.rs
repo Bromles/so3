@@ -1,0 +1,223 @@
+use std::collections::HashMap;
+
+use async_trait::async_trait;
+use tonic::transport::{Channel, Endpoint};
+use tonic::{Request, Response};
+
+use crate::consensus::coordinator::ConsensusPeerTransport;
+use crate::domain::error::{So3Error, So3Result};
+use crate::rpc_server::proto::consensus_transport_client::ConsensusTransportClient;
+use crate::rpc_server::proto::{
+    AcceptRequest, AcceptResponse, CommitRequest, CommitResponse, PreAcceptRequest,
+    PreAcceptResponse,
+};
+
+const HTTP_SCHEME_PREFIX: &str = "http://";
+const HTTPS_SCHEME_PREFIX: &str = "https://";
+
+#[derive(Clone, Debug, Default)]
+pub struct TonicConsensusPeerTransport {
+    channels: HashMap<String, Channel>,
+}
+
+impl TonicConsensusPeerTransport {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error when any configured peer endpoint cannot be parsed.
+    pub fn from_peer_ids(peer_ids: impl IntoIterator<Item = String>) -> So3Result<Self> {
+        let mut transport = Self::new();
+        for peer_id in peer_ids {
+            let endpoint = endpoint_from_peer_id(&peer_id)?;
+            transport.channels.insert(peer_id, endpoint.connect_lazy());
+        }
+
+        Ok(transport)
+    }
+
+    fn client_for(&self, peer_id: &str) -> So3Result<ConsensusTransportClient<Channel>> {
+        let channel = self.channels.get(peer_id).cloned().ok_or_else(|| {
+            So3Error::InvalidRequest(format!("unknown consensus peer endpoint: {peer_id}"))
+        })?;
+
+        Ok(ConsensusTransportClient::new(channel))
+    }
+}
+
+#[async_trait(?Send)]
+impl ConsensusPeerTransport for TonicConsensusPeerTransport {
+    async fn pre_accept_peer(
+        &mut self,
+        peer_id: &str,
+        request: PreAcceptRequest,
+    ) -> So3Result<PreAcceptResponse> {
+        self.client_for(peer_id)?
+            .pre_accept(Request::new(request))
+            .await
+            .map(Response::into_inner)
+            .map_err(|status| map_tonic_status(&status))
+    }
+
+    async fn accept_peer(
+        &mut self,
+        peer_id: &str,
+        request: AcceptRequest,
+    ) -> So3Result<AcceptResponse> {
+        self.client_for(peer_id)?
+            .accept(Request::new(request))
+            .await
+            .map(Response::into_inner)
+            .map_err(|status| map_tonic_status(&status))
+    }
+
+    async fn commit_peer(
+        &mut self,
+        peer_id: &str,
+        request: CommitRequest,
+    ) -> So3Result<CommitResponse> {
+        self.client_for(peer_id)?
+            .commit(Request::new(request))
+            .await
+            .map(Response::into_inner)
+            .map_err(|status| map_tonic_status(&status))
+    }
+}
+
+fn endpoint_from_peer_id(peer_id: &str) -> So3Result<Endpoint> {
+    let uri = if peer_id.starts_with(HTTP_SCHEME_PREFIX) || peer_id.starts_with(HTTPS_SCHEME_PREFIX)
+    {
+        peer_id.to_owned()
+    } else {
+        format!("{HTTP_SCHEME_PREFIX}{peer_id}")
+    };
+
+    Endpoint::from_shared(uri).map_err(|error| {
+        So3Error::InvalidRequest(format!("invalid peer endpoint {peer_id}: {error}"))
+    })
+}
+
+fn map_tonic_status(status: &tonic::Status) -> So3Error {
+    So3Error::InvalidRequest(format!(
+        "consensus peer returned {}: {}",
+        status.code(),
+        status.message()
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::TempDir;
+    use tokio::net::TcpListener;
+    use tokio::spawn;
+    use tokio_util::sync::CancellationToken;
+    use uuid::Uuid;
+
+    use super::TonicConsensusPeerTransport;
+    use crate::consensus::coordinator::ConsensusPeerTransport;
+    use crate::consensus::executor::PersistentReplicatedCommandExecutor;
+    use crate::consensus::journal::SqliteConsensusJournal;
+    use crate::domain::{ObjectCommand, ObjectKey, ObjectResult, WriteCommand};
+    use crate::rpc_server::proto::{CommandId, CommitRequest, EventPayload, PreAcceptRequest};
+    use crate::rpc_server::server::RpcServer;
+    use crate::rpc_server::transport::{ApplyingConsensusTransport, RejectingConsensusTransport};
+    use crate::storage::metadata::sqlite::SqliteObjectMetadataRepository;
+    use crate::storage::registry::SqliteFsPersistentObjectRepository;
+
+    const LOOPBACK_EPHEMERAL_ADDR: &str = "127.0.0.1:0";
+    const COMMAND_ORIGIN_NODE_ID: &str = "node-a";
+    const COMMAND_SEQUENCE_ONE: u64 = 1;
+    const ALPHA_KEY: &str = "alpha";
+    const FIRST_VALUE: &[u8] = b"first";
+
+    #[tokio::test]
+    async fn pre_accept_peer_roundtrips_to_rpc_server() {
+        let listener = TcpListener::bind(LOOPBACK_EPHEMERAL_ADDR).await.unwrap();
+        let peer_id = listener.local_addr().unwrap().to_string();
+        let cancellation_token = CancellationToken::new();
+        let shutdown_token = cancellation_token.clone();
+        let server_task = spawn(async move {
+            RpcServer::new(RejectingConsensusTransport::new(Uuid::nil()))
+                .run(listener, shutdown_token)
+                .await
+        });
+        let mut transport = TonicConsensusPeerTransport::from_peer_ids([peer_id.clone()]).unwrap();
+
+        let response = transport
+            .pre_accept_peer(&peer_id, PreAcceptRequest::default())
+            .await
+            .unwrap();
+
+        assert!(response.nack);
+        cancellation_token.cancel();
+        server_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn commit_peer_executes_serialized_command_on_remote_rpc_server() {
+        let temp_dir = TempDir::new().unwrap();
+        let repository = SqliteFsPersistentObjectRepository::new(
+            temp_dir.path().join("metadata"),
+            temp_dir.path().join("blobs"),
+        )
+        .await
+        .unwrap();
+        let metadata_repository =
+            SqliteObjectMetadataRepository::new(temp_dir.path().join("metadata"))
+                .await
+                .unwrap();
+        let journal = SqliteConsensusJournal::new(temp_dir.path().join("consensus"))
+            .await
+            .unwrap();
+        let listener = TcpListener::bind(LOOPBACK_EPHEMERAL_ADDR).await.unwrap();
+        let peer_id = listener.local_addr().unwrap().to_string();
+        let cancellation_token = CancellationToken::new();
+        let shutdown_token = cancellation_token.clone();
+        let server_task = spawn(async move {
+            RpcServer::new(ApplyingConsensusTransport::new(
+                Uuid::nil().to_string(),
+                PersistentReplicatedCommandExecutor::new(repository, metadata_repository),
+                journal,
+            ))
+            .run(listener, shutdown_token)
+            .await
+        });
+        let command = ObjectCommand::Write(WriteCommand {
+            key: ObjectKey::new(ALPHA_KEY).unwrap(),
+            value: FIRST_VALUE.to_vec(),
+        });
+        let mut transport = TonicConsensusPeerTransport::from_peer_ids([peer_id.clone()]).unwrap();
+
+        let response = transport
+            .commit_peer(
+                &peer_id,
+                CommitRequest {
+                    command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
+                    event: Some(EventPayload {
+                        command: command.to_bytes().unwrap(),
+                    }),
+                    ..CommitRequest::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let result = ObjectResult::from_bytes(&response.result).unwrap();
+        let ObjectResult::Write(write) = result else {
+            panic!("expected write result");
+        };
+        assert_eq!(write.object.value, FIRST_VALUE.to_vec());
+        cancellation_token.cancel();
+        server_task.await.unwrap().unwrap();
+    }
+
+    fn command_id(sequence: u64) -> CommandId {
+        CommandId {
+            origin_node_id: COMMAND_ORIGIN_NODE_ID.to_owned(),
+            sequence,
+        }
+    }
+}
