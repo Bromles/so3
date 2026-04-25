@@ -7,10 +7,15 @@ use uuid::Uuid;
 
 use crate::domain::error::{So3Error, So3Result};
 
+// Default local node endpoints.
 const DEFAULT_OBJECT_API_ADDR: &str = "127.0.0.1:3000";
 const DEFAULT_RPC_API_ADDR: &str = "127.0.0.1:4000";
+
+// Default local persistence/config values.
 const DEFAULT_DATA_DIR: &str = "./var/so3";
 const DEFAULT_OBJECT_REQUEST_TIMEOUT_SECS: u64 = 10;
+
+// Env parsing delimiters.
 const CLUSTER_PEERS_SEPARATOR: char = ',';
 
 #[derive(Clone, Debug)]
@@ -29,10 +34,16 @@ pub struct ClusterConfig {
 }
 
 impl NodeConfig {
+    /// # Errors
+    ///
+    /// Returns an error when any supported environment variable contains an invalid value.
     pub fn from_env() -> So3Result<Self> {
         Self::from_env_with(|name| std::env::var(name).ok())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error when any supplied configuration value cannot be parsed.
     pub fn from_env_with(get_var: impl Fn(&str) -> Option<String>) -> So3Result<Self> {
         let object_api_addr =
             read_socket_addr(&get_var, "SO3_OBJECT_ADDR", DEFAULT_OBJECT_API_ADDR)?;
@@ -42,9 +53,8 @@ impl NodeConfig {
             "SO3_OBJECT_REQUEST_TIMEOUT_SECS",
             DEFAULT_OBJECT_REQUEST_TIMEOUT_SECS,
         )?;
-        let data_dir = get_var("SO3_DATA_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(DEFAULT_DATA_DIR));
+        let data_dir =
+            get_var("SO3_DATA_DIR").map_or_else(|| PathBuf::from(DEFAULT_DATA_DIR), PathBuf::from);
         let node_id = get_var("SO3_NODE_ID")
             .and_then(|value| Uuid::parse_str(&value).ok())
             .unwrap_or_else(Uuid::new_v4);

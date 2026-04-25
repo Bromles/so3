@@ -1,3 +1,6 @@
+#[cfg(test)]
+use std::time::Duration;
+
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
 use tokio_util::sync::CancellationToken;
@@ -10,6 +13,12 @@ use crate::rpc_server::service::ConsensusTransportService;
 
 pub struct RpcServer;
 
+// Test-only client retry tuning.
+#[cfg(test)]
+const CONNECT_RETRY_ATTEMPTS: usize = 20;
+#[cfg(test)]
+const CONNECT_RETRY_DELAY: Duration = Duration::from_millis(25);
+
 impl Default for RpcServer {
     fn default() -> Self {
         Self::new()
@@ -17,10 +26,14 @@ impl Default for RpcServer {
 }
 
 impl RpcServer {
+    #[must_use]
     pub fn new() -> Self {
         Self
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the gRPC server fails while serving requests.
     pub async fn run(
         self,
         listener: TcpListener,
@@ -32,12 +45,9 @@ impl RpcServer {
 
         server
             .add_service(ConsensusTransportServer::new(ConsensusTransportService))
-            .serve_with_incoming_shutdown(
-                TcpListenerStream::new(listener),
-                async move {
-                    cancellation_token.cancelled().await;
-                },
-            )
+            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async move {
+                cancellation_token.cancelled().await;
+            })
             .await
             .map_err(|error| So3Error::Io(error.to_string()))
     }
@@ -45,20 +55,20 @@ impl RpcServer {
 
 #[cfg(test)]
 mod tests {
+    use super::{CONNECT_RETRY_ATTEMPTS, CONNECT_RETRY_DELAY, RpcServer, TcpListener};
     use tokio::spawn;
-    use tokio::time::{Duration, sleep};
+    use tokio::time::sleep;
     use tokio_util::sync::CancellationToken;
-    use tonic::{Code, Request};
     use tonic::transport::Channel;
+    use tonic::{Code, Request};
 
-    use super::{RpcServer, TcpListener};
     use crate::rpc_server::proto::PreAcceptRequest;
     use crate::rpc_server::proto::consensus_transport_client::ConsensusTransportClient;
 
     async fn connect_with_retry(endpoint: String) -> Channel {
         let mut last_error = None;
 
-        for _ in 0..20 {
+        for _ in 0..CONNECT_RETRY_ATTEMPTS {
             match Channel::from_shared(endpoint.clone())
                 .unwrap()
                 .connect()
@@ -67,12 +77,12 @@ mod tests {
                 Ok(channel) => return channel,
                 Err(error) => {
                     last_error = Some(error);
-                    sleep(Duration::from_millis(25)).await;
+                    sleep(CONNECT_RETRY_DELAY).await;
                 }
             }
         }
 
-        panic!("failed to connect to rpc server: {:?}", last_error);
+        panic!("failed to connect to rpc server: {last_error:?}");
     }
 
     #[tokio::test]
@@ -82,7 +92,8 @@ mod tests {
         let cancellation_token = CancellationToken::new();
         let shutdown_token = cancellation_token.clone();
 
-        let server_task = spawn(async move { RpcServer::new().run(listener, shutdown_token).await });
+        let server_task =
+            spawn(async move { RpcServer::new().run(listener, shutdown_token).await });
         let channel = connect_with_retry(format!("http://{local_addr}")).await;
         let mut client = ConsensusTransportClient::new(channel);
 

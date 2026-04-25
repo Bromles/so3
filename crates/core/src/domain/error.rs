@@ -5,7 +5,7 @@ use serde::Serialize;
 use sqlx::Error as SqlxError;
 use thiserror::Error;
 
-use crate::domain::types::{ObjectKey, ObjectVersion};
+use crate::domain::{ObjectKey, ObjectVersion};
 
 pub type So3Result<T> = std::result::Result<T, So3Error>;
 
@@ -37,10 +37,12 @@ pub enum So3Error {
 }
 
 impl So3Error {
+    #[must_use]
     pub fn not_found(key: &ObjectKey) -> Self {
         Self::NotFound(key.as_str().to_owned())
     }
 
+    #[must_use]
     pub fn cas_mismatch(key: &ObjectKey, expected: ObjectVersion, actual: ObjectVersion) -> Self {
         Self::CasMismatch {
             key: key.as_str().to_owned(),

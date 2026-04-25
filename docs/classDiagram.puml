@@ -4,6 +4,7 @@
 top to bottom direction
 skinparam packageStyle rectangle
 skinparam classAttributeIconSize 0
+skinparam linetype ortho
 
 package "crates/so3" {
     class Main <<bin>> {
@@ -70,6 +71,8 @@ package "crates/core::object_server" {
 
     class ApiError
     class "object_controller(...)" as ObjectController <<router fn>>
+    class "handle_get(...)" as HandleGet <<handler fn>>
+    class "handle_put(...)" as HandlePut <<handler fn>>
 }
 
 package "crates/core::rpc_server" {
@@ -89,6 +92,47 @@ package "crates/core::rpc_server" {
     interface ConsensusTransport <<generated proto service>>
     class ConsensusTransportServer <<generated tonic server>>
     class ConsensusTransportClient <<generated tonic client>>
+
+    class CommandId {
+        +origin_node_id: String
+        +sequence: u64
+    }
+
+    class EventPayload {
+        +command: bytes
+    }
+
+    class LogicalTimestamp {
+        +epoch: u64
+        +counter: u64
+        +node_id: String
+    }
+
+    class DependencySet {
+        +commands: repeated CommandId
+    }
+
+    class Ballot {
+        +round: u64
+        +node_id: String
+    }
+
+    class ApplyHashes {
+        +transaction_hash: bytes
+        +execution_hash: bytes
+    }
+
+    class LastApplied {
+        +commands: repeated CommandId
+    }
+
+    enum State {
+        STATE_UNDEFINED
+        STATE_PRE_ACCEPTED
+        STATE_ACCEPTED
+        STATE_COMMITTED
+        STATE_APPLIED
+    }
 }
 
 package "crates/core::consensus" {
@@ -110,11 +154,13 @@ package "crates/core::storage" {
         -pool: SqlitePool
         -blob_dir: PathBuf
         -write_lock: Mutex<()>
-        +open(data_dir): Result<PersistentObjectStore>
+        +new(data_dir): Result<PersistentObjectStore>
         -init_schema(): Result<()>
+        -migrate_to_v1(): Result<()>
         -persist_blob(value): Result<(String, u64, String)>
         -load_blob(blob_id): Result<Vec<u8>>
         -load_record(key): Result<Option<ObjectRecord>>
+        -row_to_record(row): Result<ObjectRecord>
         -write_record(key, version, value): Result<StoredObject>
     }
 
@@ -123,6 +169,10 @@ package "crates/core::storage" {
         NotFound
         Mismatch { current_version }
     }
+
+    class "read_content_length(...)" as ReadContentLength <<internal fn>>
+    class "content_length_to_i64(...)" as ContentLengthToI64 <<internal fn>>
+    class "checksum_hex(...)" as ChecksumHex <<internal fn>>
 }
 
 package "crates/core::domain" {
@@ -146,7 +196,6 @@ package "crates/core::domain" {
         +blob_id: String
         +content_length: u64
         +checksum: String
-        +updated_at_unix_ms: u64
     }
 
     class StoredObject {
@@ -203,6 +252,7 @@ Node *-- NodeConfig
 Node *-- ObjectServer
 Node *-- RpcServer
 Node --> LocalStateMachine
+Node ..> PersistentObjectStore : constructs local backend
 Node ..> FailFastJoin : orchestrates shutdown
 FailFastJoin ..> FlattenJoin
 
@@ -210,19 +260,32 @@ NodeConfig o-- ClusterConfig
 
 ObjectServer --> ObjectController
 ObjectController --> ObjectApiState
+ObjectController ..> HandleGet
+ObjectController ..> HandlePut
 ObjectApiState --> LocalStateMachine
-ObjectController ..> WriteQuery
-ObjectController ..> WriteResponse
-ObjectController ..> ErrorResponse
-ObjectController ..> ApiError
-ObjectController ..> ObjectCommand
-ObjectController ..> ObjectResult
+HandleGet ..> ObjectCommand
+HandleGet ..> ObjectResult
+HandlePut ..> WriteQuery
+HandlePut ..> WriteResponse
+HandlePut ..> ApiError
+HandlePut ..> ObjectCommand
+HandlePut ..> ObjectResult
+ApiError ..> ErrorResponse
+ApiError ..> So3Error
 
 RpcServer --> ConsensusTransportServer
 ConsensusTransportServer ..|> ConsensusTransport
 ConsensusTransportService ..|> ConsensusTransport
 RpcServer --> ConsensusTransportService
 ConsensusTransportClient ..> ConsensusTransport
+ConsensusTransport ..> CommandId
+ConsensusTransport ..> EventPayload
+ConsensusTransport ..> LogicalTimestamp
+ConsensusTransport ..> DependencySet
+ConsensusTransport ..> Ballot
+ConsensusTransport ..> ApplyHashes
+ConsensusTransport ..> LastApplied
+ConsensusTransport ..> State
 
 LocalStateMachine --> ObjectRepository
 LocalStateMachine ..> ObjectCommand
@@ -230,6 +293,9 @@ LocalStateMachine ..> ObjectResult
 LocalStateMachine ..> CasWriteOutcome
 
 ObjectRepository <|.. PersistentObjectStore
+PersistentObjectStore ..> ReadContentLength
+PersistentObjectStore ..> ContentLengthToI64
+PersistentObjectStore ..> ChecksumHex
 PersistentObjectStore ..> So3Error
 So3Result ..> So3Error
 
@@ -254,17 +320,35 @@ ReadResult --> StoredObject
 CasWriteOutcome --> StoredObject
 CasWriteOutcome --> ObjectVersion
 
-note right of RpcServer
-Current state:
-- gRPC transport is real
-- Accord handlers still return UNIMPLEMENTED
+note right of Node
+Current composition:
+- one local persistent backend
+- one public HTTP object API
+- one private gRPC RPC server
+- no separate consensus engine yet
 end note
 
 note right of PersistentObjectStore
-Durability model:
-- SQLite metadata
-- immutable blob files on local FS
-- writes serialized with write_lock
+Current durability model:
+- SQLite stores current object metadata
+- blobs are immutable files on local FS
+- blob is persisted before metadata points to it
+- schema version is explicit via PRAGMA user_version
+- write/cas are serialized with write_lock
+end note
+
+note right of LocalStateMachine
+Current state machine scope:
+- deterministic command dispatch
+- delegates persistence through ObjectRepository
+- not yet backed by replicated Accord log/recovery state
+end note
+
+note right of RpcServer
+Current RPC state:
+- transport and generated protobuf types are wired
+- transport messages use typed ids/timestamps/dependencies
+- Accord handlers still return UNIMPLEMENTED
 end note
 
 note right of FailFastJoin

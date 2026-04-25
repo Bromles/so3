@@ -16,9 +16,20 @@ impl ConsensusTransport for ConsensusTransportService {
         &self,
         request: Request<PreAcceptRequest>,
     ) -> Result<Response<PreAcceptResponse>, Status> {
+        let command_id = request
+            .get_ref()
+            .command_id
+            .as_ref()
+            .map_or("<missing>", |command_id| command_id.origin_node_id.as_str());
+        let event_size = request
+            .get_ref()
+            .event
+            .as_ref()
+            .map_or(0, |event| event.command.len());
+
         debug!(
-            id_len = request.get_ref().id.len(),
-            event_len = request.get_ref().event.len(),
+            %command_id,
+            event_size,
             "received pre_accept request"
         );
         Err(Status::unimplemented(
@@ -30,9 +41,20 @@ impl ConsensusTransport for ConsensusTransportService {
         &self,
         request: Request<CommitRequest>,
     ) -> Result<Response<CommitResponse>, Status> {
+        let command_id = request
+            .get_ref()
+            .command_id
+            .as_ref()
+            .map_or("<missing>", |command_id| command_id.origin_node_id.as_str());
+        let dependency_count = request
+            .get_ref()
+            .dependencies
+            .as_ref()
+            .map_or(0, |dependencies| dependencies.commands.len());
+
         debug!(
-            id_len = request.get_ref().id.len(),
-            event_len = request.get_ref().event.len(),
+            %command_id,
+            dependency_count,
             "received commit request"
         );
         Err(Status::unimplemented(
@@ -44,9 +66,20 @@ impl ConsensusTransport for ConsensusTransportService {
         &self,
         request: Request<AcceptRequest>,
     ) -> Result<Response<AcceptResponse>, Status> {
+        let command_id = request
+            .get_ref()
+            .command_id
+            .as_ref()
+            .map_or("<missing>", |command_id| command_id.origin_node_id.as_str());
+        let dependency_count = request
+            .get_ref()
+            .dependencies
+            .as_ref()
+            .map_or(0, |dependencies| dependencies.commands.len());
+
         debug!(
-            id_len = request.get_ref().id.len(),
-            event_len = request.get_ref().event.len(),
+            %command_id,
+            dependency_count,
             "received accept request"
         );
         Err(Status::unimplemented(
@@ -58,9 +91,20 @@ impl ConsensusTransport for ConsensusTransportService {
         &self,
         request: Request<ApplyRequest>,
     ) -> Result<Response<ApplyResponse>, Status> {
+        let command_id = request
+            .get_ref()
+            .command_id
+            .as_ref()
+            .map_or("<missing>", |command_id| command_id.origin_node_id.as_str());
+        let event_size = request
+            .get_ref()
+            .event
+            .as_ref()
+            .map_or(0, |event| event.command.len());
+
         debug!(
-            id_len = request.get_ref().id.len(),
-            event_len = request.get_ref().event.len(),
+            %command_id,
+            event_size,
             "received apply request"
         );
         Err(Status::unimplemented(
@@ -72,9 +116,20 @@ impl ConsensusTransport for ConsensusTransportService {
         &self,
         request: Request<RecoverRequest>,
     ) -> Result<Response<RecoverResponse>, Status> {
+        let command_id = request
+            .get_ref()
+            .command_id
+            .as_ref()
+            .map_or("<missing>", |command_id| command_id.origin_node_id.as_str());
+        let ballot_round = request
+            .get_ref()
+            .ballot
+            .as_ref()
+            .map_or(0, |ballot| ballot.round);
+
         debug!(
-            id_len = request.get_ref().id.len(),
-            event_len = request.get_ref().event.len(),
+            %command_id,
+            ballot_round,
             "received recover request"
         );
         Err(Status::unimplemented(

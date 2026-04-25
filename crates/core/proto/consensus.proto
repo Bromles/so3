@@ -3,84 +3,115 @@ syntax = "proto3";
 package consensus;
 
 service ConsensusTransport {
-  rpc PreAccept(PreAcceptRequest) returns (PreAcceptResponse) {}
-  rpc Commit(CommitRequest) returns (CommitResponse) {}
   rpc Accept(AcceptRequest) returns (AcceptResponse) {}
   rpc Apply(ApplyRequest) returns (ApplyResponse) {}
+  rpc Commit(CommitRequest) returns (CommitResponse) {}
+  rpc PreAccept(PreAcceptRequest) returns (PreAcceptResponse) {}
   rpc Recover(RecoverRequest) returns (RecoverResponse) {}
 }
 
-message PreAcceptRequest {
-  bytes id = 1;
-  bytes event = 2;
-  bytes timestamp_zero = 3;
-  bytes last_applied = 4;
+message CommandId {
+  string origin_node_id = 1;
+  uint64 sequence = 2;
 }
 
-message PreAcceptResponse {
-  bytes timestamp = 1;
-  bytes dependencies = 2;
-  bool nack = 3;
+message DependencySet {
+  repeated CommandId commands = 1;
 }
 
 message AcceptRequest {
-  bytes id = 1;
-  bytes ballot = 2;
-  bytes event = 3;
-  bytes timestamp_zero = 4;
-  bytes timestamp = 5;
-  bytes dependencies = 6;
-  bytes last_applied = 7;
+  CommandId command_id = 1;
+  Ballot ballot = 2;
+  EventPayload event = 3;
+  LogicalTimestamp timestamp_zero = 4;
+  LogicalTimestamp timestamp = 5;
+  DependencySet dependencies = 6;
+  LastApplied last_applied = 7;
 }
 
 message AcceptResponse {
-  bytes dependencies = 1;
+  DependencySet dependencies = 1;
   bool nack = 2;
 }
 
-message CommitRequest {
-  bytes id = 1;
-  bytes event = 2;
-  bytes timestamp_zero = 3;
-  bytes timestamp = 4;
-  bytes dependencies = 5;
-}
-
-message CommitResponse {
-}
-
 message ApplyRequest {
-  bytes id = 1;
-  bytes event = 2;
-  bytes timestamp_zero = 3;
-  bytes timestamp = 4;
-  bytes dependencies = 5;
-  bytes transaction_hash = 6;
-  bytes execution_hash = 7;
+  CommandId command_id = 1;
+  EventPayload event = 2;
+  LogicalTimestamp timestamp_zero = 3;
+  LogicalTimestamp timestamp = 4;
+  DependencySet dependencies = 5;
+  ApplyHashes hashes = 6;
 }
 
 message ApplyResponse {}
 
+message ApplyHashes {
+  bytes transaction_hash = 1;
+  bytes execution_hash = 2;
+}
+
+message Ballot {
+  uint64 round = 1;
+  string node_id = 2;
+}
+
+message CommitRequest {
+  CommandId command_id = 1;
+  EventPayload event = 2;
+  LogicalTimestamp timestamp_zero = 3;
+  LogicalTimestamp timestamp = 4;
+  DependencySet dependencies = 5;
+}
+
+message CommitResponse {}
+
+message EventPayload {
+  bytes command = 1;
+}
+
+message LastApplied {
+  repeated CommandId commands = 1;
+}
+
+message LogicalTimestamp {
+  uint64 epoch = 1;
+  uint64 counter = 2;
+  string node_id = 3;
+}
+
+message PreAcceptRequest {
+  CommandId command_id = 1;
+  EventPayload event = 2;
+  LogicalTimestamp timestamp_zero = 3;
+  LastApplied last_applied = 4;
+}
+
+message PreAcceptResponse {
+  LogicalTimestamp timestamp = 1;
+  DependencySet dependencies = 2;
+  bool nack = 3;
+}
+
 message RecoverRequest {
-  bytes id = 1;
-  bytes ballot = 2;
-  bytes event = 3;
-  bytes timestamp_zero = 4;
+  CommandId command_id = 1;
+  Ballot ballot = 2;
+  EventPayload event = 3;
+  LogicalTimestamp timestamp_zero = 4;
 }
 
 enum State {
   STATE_UNDEFINED = 0;
   STATE_PRE_ACCEPTED = 1;
   STATE_ACCEPTED = 2;
-  STATE_COMMITED = 3;
+  STATE_COMMITTED = 3;
   STATE_APPLIED = 4;
 }
 
 message RecoverResponse {
   State local_state = 1;
-  bytes wait = 2;
+  repeated CommandId wait_for = 2;
   bool superseding = 3;
-  bytes dependencies = 4;
-  bytes timestamp = 5;
-  bytes nack = 6;
+  DependencySet dependencies = 4;
+  LogicalTimestamp timestamp = 5;
+  Ballot nack = 6;
 }

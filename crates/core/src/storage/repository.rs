@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 use crate::domain::error::So3Result;
-use crate::domain::types::{ObjectKey, ObjectVersion, StoredObject};
+use crate::domain::{ObjectKey, ObjectVersion, StoredObject};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CasWriteOutcome {

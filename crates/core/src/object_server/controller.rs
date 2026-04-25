@@ -13,7 +13,7 @@ use tower_http::trace::TraceLayer;
 
 use crate::consensus::state_machine::LocalStateMachine;
 use crate::domain::error::So3Error;
-use crate::domain::types::{
+use crate::domain::{
     CasCommand, CasResult, ObjectCommand, ObjectKey, ObjectResult, ReadCommand, WriteCommand,
 };
 
@@ -41,6 +41,12 @@ pub struct ErrorResponse {
     pub error: String,
     pub detail: String,
 }
+
+// Test-only HTTP defaults.
+#[cfg(test)]
+const TEST_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(test)]
+const TEST_MAX_RESPONSE_BYTES: usize = usize::MAX;
 
 pub fn object_controller(state: ObjectApiState) -> Router {
     let request_timeout = state.request_timeout;
@@ -147,9 +153,9 @@ impl From<So3Error> for ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, error) = match self.0 {
-            error @ So3Error::InvalidKey
-            | error @ So3Error::InvalidVersion(_)
-            | error @ So3Error::InvalidRequest(_) => (StatusCode::BAD_REQUEST, error),
+            error @ (So3Error::InvalidKey
+            | So3Error::InvalidVersion(_)
+            | So3Error::InvalidRequest(_)) => (StatusCode::BAD_REQUEST, error),
             error @ So3Error::NotFound(_) => (StatusCode::NOT_FOUND, error),
             error @ So3Error::CasMismatch { .. } => (StatusCode::CONFLICT, error),
             error => (StatusCode::INTERNAL_SERVER_ERROR, error),
@@ -166,28 +172,38 @@ impl IntoResponse for ApiError {
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        ObjectApiState, TEST_MAX_RESPONSE_BYTES, TEST_REQUEST_TIMEOUT, WriteResponse,
+        object_controller,
+    };
     use std::sync::Arc;
-    use std::time::Duration;
 
     use axum::body::{Body, to_bytes};
     use axum::http::{Request, StatusCode};
     use tempfile::TempDir;
     use tower::util::ServiceExt;
 
-    use super::{ObjectApiState, WriteResponse, object_controller};
     use crate::consensus::state_machine::LocalStateMachine;
     use crate::storage::sqlite_fs::PersistentObjectStore;
 
-    #[tokio::test]
-    async fn put_then_get_returns_object_and_version_headers() {
+    async fn test_app() -> (axum::Router, TempDir) {
         let temp_dir = TempDir::new().unwrap();
         let state_machine = Arc::new(LocalStateMachine::new(Arc::new(
-            PersistentObjectStore::open(temp_dir.path()).await.unwrap(),
+            PersistentObjectStore::new(temp_dir.path()).await.unwrap(),
         )));
-        let app = object_controller(ObjectApiState {
-            state_machine,
-            request_timeout: Duration::from_secs(10),
-        });
+
+        (
+            object_controller(ObjectApiState {
+                state_machine,
+                request_timeout: TEST_REQUEST_TIMEOUT,
+            }),
+            temp_dir,
+        )
+    }
+
+    #[tokio::test]
+    async fn put_then_get_returns_object_and_version_headers() {
+        let (app, _temp_dir) = test_app().await;
 
         let put_response = app
             .clone()
@@ -200,7 +216,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(put_response.status(), StatusCode::OK);
-        let write_body = to_bytes(put_response.into_body(), usize::MAX)
+        let write_body = to_bytes(put_response.into_body(), TEST_MAX_RESPONSE_BYTES)
             .await
             .unwrap();
         let write: WriteResponse = serde_json::from_slice(&write_body).unwrap();
@@ -222,7 +238,7 @@ mod tests {
                 .unwrap(),
             "1"
         );
-        let get_body = to_bytes(get_response.into_body(), usize::MAX)
+        let get_body = to_bytes(get_response.into_body(), TEST_MAX_RESPONSE_BYTES)
             .await
             .unwrap();
         assert_eq!(&get_body[..], b"hello");
@@ -230,14 +246,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_missing_object_returns_not_found() {
-        let temp_dir = TempDir::new().unwrap();
-        let state_machine = Arc::new(LocalStateMachine::new(Arc::new(
-            PersistentObjectStore::open(temp_dir.path()).await.unwrap(),
-        )));
-        let app = object_controller(ObjectApiState {
-            state_machine,
-            request_timeout: Duration::from_secs(10),
-        });
+        let (app, _temp_dir) = test_app().await;
 
         let response = app
             .oneshot(
@@ -253,14 +262,7 @@ mod tests {
 
     #[tokio::test]
     async fn cas_mismatch_returns_conflict() {
-        let temp_dir = TempDir::new().unwrap();
-        let state_machine = Arc::new(LocalStateMachine::new(Arc::new(
-            PersistentObjectStore::open(temp_dir.path()).await.unwrap(),
-        )));
-        let app = object_controller(ObjectApiState {
-            state_machine,
-            request_timeout: Duration::from_secs(10),
-        });
+        let (app, _temp_dir) = test_app().await;
 
         let _ = app
             .clone()
@@ -282,5 +284,78 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn successful_cas_updates_value_and_increments_version() {
+        let (app, _temp_dir) = test_app().await;
+
+        let initial_response = app
+            .clone()
+            .oneshot(
+                Request::put("/objects/alpha")
+                    .body(Body::from("first"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let initial_body = to_bytes(initial_response.into_body(), TEST_MAX_RESPONSE_BYTES)
+            .await
+            .unwrap();
+        let initial: WriteResponse = serde_json::from_slice(&initial_body).unwrap();
+
+        let cas_response = app
+            .clone()
+            .oneshot(
+                Request::put(format!(
+                    "/objects/alpha?expected_version={}",
+                    initial.version
+                ))
+                .body(Body::from("second"))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cas_response.status(), StatusCode::OK);
+        let cas_body = to_bytes(cas_response.into_body(), TEST_MAX_RESPONSE_BYTES)
+            .await
+            .unwrap();
+        let cas: WriteResponse = serde_json::from_slice(&cas_body).unwrap();
+        assert_eq!(cas.version, initial.version + 1);
+
+        let get_response = app
+            .oneshot(Request::get("/objects/alpha").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(get_response.status(), StatusCode::OK);
+        assert_eq!(
+            get_response
+                .headers()
+                .get("x-so3-version")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "2"
+        );
+        let get_body = to_bytes(get_response.into_body(), TEST_MAX_RESPONSE_BYTES)
+            .await
+            .unwrap();
+        assert_eq!(&get_body[..], b"second");
+    }
+
+    #[tokio::test]
+    async fn invalid_expected_version_returns_bad_request() {
+        let (app, _temp_dir) = test_app().await;
+
+        let response = app
+            .oneshot(
+                Request::put("/objects/alpha?expected_version=0")
+                    .body(Body::from("value"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

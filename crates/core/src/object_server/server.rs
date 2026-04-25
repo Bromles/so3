@@ -18,10 +18,14 @@ impl Default for ObjectServer {
 }
 
 impl ObjectServer {
+    #[must_use]
     pub fn new() -> ObjectServer {
         Self
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP server fails while serving requests.
     pub async fn run(
         self,
         listener: TcpListener,

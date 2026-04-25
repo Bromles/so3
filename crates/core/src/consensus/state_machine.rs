@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::domain::error::So3Result;
-use crate::domain::types::{CasResult, ObjectCommand, ObjectResult, ReadResult, WriteResult};
+use crate::domain::{CasResult, ObjectCommand, ObjectResult, ReadResult, WriteResult};
 use crate::storage::repository::{CasWriteOutcome, ObjectRepository};
 
 #[derive(Clone)]
@@ -14,6 +14,9 @@ impl LocalStateMachine {
         Self { repository }
     }
 
+    /// # Errors
+    ///
+    /// Propagates repository failures while executing the deterministic object command.
     pub async fn execute(&self, command: ObjectCommand) -> So3Result<ObjectResult> {
         match command {
             ObjectCommand::Read(command) => {
@@ -51,7 +54,7 @@ mod tests {
 
     use super::LocalStateMachine;
     use crate::domain::error::So3Result;
-    use crate::domain::types::{
+    use crate::domain::{
         CasCommand, CasResult, ObjectCommand, ObjectKey, ObjectRecord, ObjectResult, ObjectVersion,
         ReadCommand, ReadResult, StoredObject, WriteCommand,
     };
@@ -79,8 +82,9 @@ mod tests {
             let mut objects = self.objects.lock().await;
             let version = objects
                 .get(key.as_str())
-                .map(|object| object.record.version.next())
-                .unwrap_or_else(ObjectVersion::initial);
+                .map_or_else(ObjectVersion::initial, |object| {
+                    object.record.version.next()
+                });
             let object = stored_object(key.clone(), version, value);
             objects.insert(key.as_str().to_owned(), object.clone());
             Ok(object)
@@ -117,7 +121,6 @@ mod tests {
                 blob_id: format!("blob-{}", version.get()),
                 content_length: value.len() as u64,
                 checksum: "checksum".to_owned(),
-                updated_at_unix_ms: 1,
             },
             value,
         }
@@ -183,9 +186,6 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(
-            result,
-            ObjectResult::Read(ReadResult { object: None })
-        );
+        assert_eq!(result, ObjectResult::Read(ReadResult { object: None }));
     }
 }

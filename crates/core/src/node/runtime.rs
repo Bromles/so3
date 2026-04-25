@@ -22,8 +22,11 @@ pub struct Node {
 }
 
 impl Node {
+    /// # Errors
+    ///
+    /// Returns an error if durable local storage cannot be opened.
     pub async fn new(config: NodeConfig) -> So3Result<Self> {
-        let repository = Arc::new(PersistentObjectStore::open(&config.data_dir).await?);
+        let repository = Arc::new(PersistentObjectStore::new(&config.data_dir).await?);
         let state_machine = Arc::new(LocalStateMachine::new(repository));
 
         Ok(Self {
@@ -34,6 +37,9 @@ impl Node {
         })
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if either public or internal server fails to bind or exits with an error.
     pub async fn run(self, cancellation_token: CancellationToken) -> So3Result<()> {
         let object_listener = TcpListener::bind(self.config.object_api_addr).await?;
         let rpc_listener = TcpListener::bind(self.config.rpc_api_addr).await?;

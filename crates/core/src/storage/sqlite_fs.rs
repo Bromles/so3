@@ -1,14 +1,13 @@
 use std::fmt::Write as FmtWrite;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
-use sqlx::query;
 use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow, SqliteSynchronous,
 };
-use sqlx::{Row, SqlitePool};
+use sqlx::{Row, SqlitePool, query, query_scalar};
 use tokio::fs;
 use tokio::fs::File as TokioFile;
 use tokio::io::AsyncWriteExt;
@@ -16,11 +15,47 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::domain::error::{So3Error, So3Result};
-use crate::domain::types::{ObjectKey, ObjectRecord, ObjectVersion, StoredObject};
+use crate::domain::{ObjectKey, ObjectRecord, ObjectVersion, StoredObject};
 use crate::storage::repository::{CasWriteOutcome, ObjectRepository};
 
+// SQLite runtime tuning.
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SQLITE_MAX_CONNECTIONS: u32 = 1;
+
+// Explicit storage schema versioning.
+const CURRENT_SCHEMA_VERSION: i64 = 1;
+
+// On-disk layout.
+const METADATA_DIR_NAME: &str = "metadata";
+const BLOBS_DIR_NAME: &str = "blobs";
+const TEMP_BLOBS_DIR_NAME: &str = "tmp";
+const COMMITTED_BLOBS_DIR_NAME: &str = "committed";
+const DATABASE_FILE_NAME: &str = "objects.sqlite";
+
+// Metadata SQL.
+const OBJECTS_TABLE_SQL: &str = r"
+    CREATE TABLE IF NOT EXISTS objects (
+        key TEXT PRIMARY KEY,
+        version INTEGER NOT NULL,
+        blob_id TEXT NOT NULL,
+        content_length INTEGER NOT NULL,
+        checksum TEXT NOT NULL
+    )
+";
+const LOAD_OBJECT_SQL: &str = r"
+    SELECT key, version, blob_id, content_length, checksum
+    FROM objects
+    WHERE key = ?
+";
+const UPSERT_OBJECT_SQL: &str = r"
+    INSERT INTO objects (key, version, blob_id, content_length, checksum)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET
+        version = excluded.version,
+        blob_id = excluded.blob_id,
+        content_length = excluded.content_length,
+        checksum = excluded.checksum
+";
 
 pub struct PersistentObjectStore {
     pool: SqlitePool,
@@ -29,15 +64,18 @@ pub struct PersistentObjectStore {
 }
 
 impl PersistentObjectStore {
-    pub async fn open(data_dir: impl AsRef<Path>) -> So3Result<Self> {
+    /// # Errors
+    ///
+    /// Returns an error if the local metadata database or blob directories cannot be created or opened.
+    pub async fn new(data_dir: impl AsRef<Path>) -> So3Result<Self> {
         let data_dir = data_dir.as_ref().to_path_buf();
-        let metadata_dir = data_dir.join("metadata");
-        let blob_dir = data_dir.join("blobs");
+        let metadata_dir = data_dir.join(METADATA_DIR_NAME);
+        let blob_dir = data_dir.join(BLOBS_DIR_NAME);
         fs::create_dir_all(&metadata_dir).await?;
-        fs::create_dir_all(blob_dir.join("tmp")).await?;
-        fs::create_dir_all(blob_dir.join("committed")).await?;
+        fs::create_dir_all(blob_dir.join(TEMP_BLOBS_DIR_NAME)).await?;
+        fs::create_dir_all(blob_dir.join(COMMITTED_BLOBS_DIR_NAME)).await?;
 
-        let database_path = metadata_dir.join("objects.sqlite");
+        let database_path = metadata_dir.join(DATABASE_FILE_NAME);
         let options = SqliteConnectOptions::new()
             .filename(database_path)
             .create_if_missing(true)
@@ -61,28 +99,35 @@ impl PersistentObjectStore {
     }
 
     async fn init_schema(&self) -> So3Result<()> {
-        query(
-            r#"
-            CREATE TABLE IF NOT EXISTS objects (
-                key TEXT PRIMARY KEY,
-                version INTEGER NOT NULL,
-                blob_id TEXT NOT NULL,
-                content_length INTEGER NOT NULL,
-                checksum TEXT NOT NULL,
-                updated_at_unix_ms INTEGER NOT NULL
-            )
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
+        let version = query_scalar::<_, i64>("PRAGMA user_version")
+            .fetch_one(&self.pool)
+            .await?;
+
+        match version {
+            0 => self.migrate_to_v1().await,
+            CURRENT_SCHEMA_VERSION => Ok(()),
+            unsupported => Err(So3Error::Storage(format!(
+                "unsupported sqlite schema version: {unsupported}"
+            ))),
+        }
+    }
+
+    async fn migrate_to_v1(&self) -> So3Result<()> {
+        query(OBJECTS_TABLE_SQL).execute(&self.pool).await?;
+        query(&format!("PRAGMA user_version = {CURRENT_SCHEMA_VERSION}"))
+            .execute(&self.pool)
+            .await?;
 
         Ok(())
     }
 
     async fn persist_blob(&self, value: &[u8]) -> So3Result<(String, u64, String)> {
         let blob_id = format!("{}.blob", Uuid::new_v4());
-        let temp_path = self.blob_dir.join("tmp").join(format!("{blob_id}.tmp"));
-        let final_path = self.blob_dir.join("committed").join(&blob_id);
+        let temp_path = self
+            .blob_dir
+            .join(TEMP_BLOBS_DIR_NAME)
+            .join(format!("{blob_id}.tmp"));
+        let final_path = self.blob_dir.join(COMMITTED_BLOBS_DIR_NAME).join(&blob_id);
 
         let mut file = TokioFile::create(&temp_path).await?;
         file.write_all(value).await?;
@@ -96,33 +141,26 @@ impl PersistentObjectStore {
     }
 
     async fn load_blob(&self, blob_id: &str) -> So3Result<Vec<u8>> {
-        let path = self.blob_dir.join("committed").join(blob_id);
+        let path = self.blob_dir.join(COMMITTED_BLOBS_DIR_NAME).join(blob_id);
         fs::read(path).await.map_err(So3Error::from)
     }
 
     async fn load_record(&self, key: &ObjectKey) -> So3Result<Option<ObjectRecord>> {
-        let row = query(
-            r#"
-            SELECT key, version, blob_id, content_length, checksum, updated_at_unix_ms
-            FROM objects
-            WHERE key = ?
-            "#,
-        )
-        .bind(key.as_str())
-        .fetch_optional(&self.pool)
-        .await?;
+        let row = query(LOAD_OBJECT_SQL)
+            .bind(key.as_str())
+            .fetch_optional(&self.pool)
+            .await?;
 
-        row.map(Self::row_to_record).transpose()
+        row.as_ref().map(Self::row_to_record).transpose()
     }
 
-    fn row_to_record(row: SqliteRow) -> So3Result<ObjectRecord> {
+    fn row_to_record(row: &SqliteRow) -> So3Result<ObjectRecord> {
         Ok(ObjectRecord {
             key: ObjectKey::new(row.try_get::<String, _>("key")?)?,
             version: ObjectVersion::try_from(row.try_get::<i64, _>("version")?)?,
             blob_id: row.try_get("blob_id")?,
-            content_length: row.try_get::<i64, _>("content_length")? as u64,
+            content_length: read_content_length(row)?,
             checksum: row.try_get("checksum")?,
-            updated_at_unix_ms: row.try_get::<i64, _>("updated_at_unix_ms")? as u64,
         })
     }
 
@@ -133,28 +171,15 @@ impl PersistentObjectStore {
         value: Vec<u8>,
     ) -> So3Result<StoredObject> {
         let (blob_id, content_length, checksum) = self.persist_blob(&value).await?;
-        let updated_at_unix_ms = unix_time_ms();
 
-        query(
-            r#"
-            INSERT INTO objects (key, version, blob_id, content_length, checksum, updated_at_unix_ms)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(key) DO UPDATE SET
-                version = excluded.version,
-                blob_id = excluded.blob_id,
-                content_length = excluded.content_length,
-                checksum = excluded.checksum,
-                updated_at_unix_ms = excluded.updated_at_unix_ms
-            "#,
-        )
-        .bind(key.as_str())
-        .bind(version.get())
-        .bind(&blob_id)
-        .bind(content_length as i64)
-        .bind(&checksum)
-        .bind(updated_at_unix_ms as i64)
-        .execute(&self.pool)
-        .await?;
+        query(UPSERT_OBJECT_SQL)
+            .bind(key.as_str())
+            .bind(version.get())
+            .bind(&blob_id)
+            .bind(content_length_to_i64(content_length)?)
+            .bind(&checksum)
+            .execute(&self.pool)
+            .await?;
 
         Ok(StoredObject {
             record: ObjectRecord {
@@ -163,7 +188,6 @@ impl PersistentObjectStore {
                 blob_id,
                 content_length,
                 checksum,
-                updated_at_unix_ms,
             },
             value,
         })
@@ -186,8 +210,7 @@ impl ObjectRepository for PersistentObjectStore {
         let next_version = self
             .load_record(key)
             .await?
-            .map(|record| record.version.next())
-            .unwrap_or_else(ObjectVersion::initial);
+            .map_or_else(ObjectVersion::initial, |record| record.version.next());
 
         self.write_record(key, next_version, value).await
     }
@@ -225,32 +248,46 @@ fn checksum_hex(value: &[u8]) -> String {
     checksum
 }
 
-fn unix_time_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or_default()
+fn read_content_length(row: &SqliteRow) -> So3Result<u64> {
+    let content_length = row.try_get::<i64, _>("content_length")?;
+    u64::try_from(content_length).map_err(|_| {
+        So3Error::Storage(format!(
+            "invalid negative content_length in metadata: {content_length}"
+        ))
+    })
+}
+
+fn content_length_to_i64(content_length: u64) -> So3Result<i64> {
+    i64::try_from(content_length).map_err(|_| {
+        So3Error::Storage(format!(
+            "content_length exceeds supported metadata range: {content_length}"
+        ))
+    })
 }
 
 #[cfg(test)]
 mod tests {
+    use sqlx::{query, query_scalar};
     use tempfile::TempDir;
 
     use super::PersistentObjectStore;
-    use crate::domain::types::{ObjectKey, ObjectVersion};
+    use crate::domain::error::So3Error;
+    use crate::domain::{ObjectKey, ObjectVersion};
     use crate::storage::repository::{CasWriteOutcome, ObjectRepository};
+
+    const UNKNOWN_SCHEMA_VERSION: i64 = 99;
 
     #[tokio::test]
     async fn write_survives_reopen() {
         let temp_dir = TempDir::new().unwrap();
         let key = ObjectKey::new("alpha").unwrap();
 
-        let store = PersistentObjectStore::open(temp_dir.path()).await.unwrap();
+        let store = PersistentObjectStore::new(temp_dir.path()).await.unwrap();
         let written = store.write(&key, b"hello".to_vec()).await.unwrap();
         assert_eq!(written.record.version, ObjectVersion::initial());
         drop(store);
 
-        let reopened = PersistentObjectStore::open(temp_dir.path()).await.unwrap();
+        let reopened = PersistentObjectStore::new(temp_dir.path()).await.unwrap();
         let loaded = reopened.read(&key).await.unwrap().unwrap();
 
         assert_eq!(loaded.record.version, ObjectVersion::initial());
@@ -261,7 +298,7 @@ mod tests {
     async fn cas_reports_mismatch_without_overwriting() {
         let temp_dir = TempDir::new().unwrap();
         let key = ObjectKey::new("beta").unwrap();
-        let store = PersistentObjectStore::open(temp_dir.path()).await.unwrap();
+        let store = PersistentObjectStore::new(temp_dir.path()).await.unwrap();
 
         let written = store.write(&key, b"first".to_vec()).await.unwrap();
         let outcome = store
@@ -282,5 +319,61 @@ mod tests {
 
         let loaded = store.read(&key).await.unwrap().unwrap();
         assert_eq!(loaded.value, b"first".to_vec());
+    }
+
+    #[tokio::test]
+    async fn open_sets_expected_schema_version() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = PersistentObjectStore::new(temp_dir.path()).await.unwrap();
+
+        let version = query_scalar::<_, i64>("PRAGMA user_version")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+
+        assert_eq!(version, 1);
+    }
+
+    #[tokio::test]
+    async fn open_rejects_unknown_schema_version() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = PersistentObjectStore::new(temp_dir.path()).await.unwrap();
+        query(&format!("PRAGMA user_version = {UNKNOWN_SCHEMA_VERSION}"))
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        drop(store);
+
+        let error = match PersistentObjectStore::new(temp_dir.path()).await {
+            Ok(_) => panic!("expected unsupported schema version error"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, So3Error::Storage(_)));
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported sqlite schema version")
+        );
+    }
+
+    #[tokio::test]
+    async fn cas_applies_new_value_and_bumps_version() {
+        let temp_dir = TempDir::new().unwrap();
+        let key = ObjectKey::new("gamma").unwrap();
+        let store = PersistentObjectStore::new(temp_dir.path()).await.unwrap();
+
+        let written = store.write(&key, b"first".to_vec()).await.unwrap();
+        let outcome = store
+            .cas(&key, written.record.version, b"second".to_vec())
+            .await
+            .unwrap();
+
+        let CasWriteOutcome::Applied(object) = outcome else {
+            panic!("expected applied cas outcome");
+        };
+
+        assert_eq!(object.record.version, written.record.version.next());
+        assert_eq!(object.value, b"second".to_vec());
     }
 }
