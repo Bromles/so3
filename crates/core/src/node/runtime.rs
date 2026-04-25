@@ -7,6 +7,7 @@ use tracing::info;
 
 use crate::consensus::journal::SqliteConsensusJournal;
 use crate::consensus::state_machine::LocalStateMachine;
+use crate::domain::ObjectCommand;
 use crate::domain::error::{So3Error, So3Result};
 use crate::node::config::NodeConfig;
 use crate::object_server::server::ObjectServer;
@@ -42,6 +43,7 @@ impl Node {
             SqliteFsObjectRepository::new(&config.metadata_dir, &config.blob_dir).await?;
         let journal = SqliteConsensusJournal::new(&config.metadata_dir).await?;
         let state_machine = LocalStateMachine::new(repository);
+        replay_committed_commands(&journal, &state_machine).await?;
         let rpc_state_machine = state_machine.clone();
         let object_service = ObjectService::new(state_machine);
 
@@ -159,6 +161,25 @@ async fn flatten_join<T>(handle: JoinHandle<So3Result<T>>) -> So3Result<T> {
         .map_err(|error| So3Error::Io(format!("task join error: {error}")))?
 }
 
+async fn replay_committed_commands(
+    journal: &SqliteConsensusJournal,
+    state_machine: &LocalStateMachine<SqliteFsObjectRepository>,
+) -> So3Result<()> {
+    for entry in journal
+        .list_by_state(crate::consensus::journal::JournalState::Committed)
+        .await?
+    {
+        let command = ObjectCommand::from_bytes(&entry.command)?;
+        let result = state_machine.execute(command).await?;
+        let result = result.to_bytes()?;
+        let _ = journal
+            .record_applied(&entry.command_id, &entry.command, &result)
+            .await?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -174,8 +195,12 @@ mod tests {
     use uuid::Uuid;
 
     use super::{Node, fail_fast_join};
+    use crate::consensus::journal::{JournalState, SqliteConsensusJournal};
     use crate::domain::error::So3Error;
+    use crate::domain::{ObjectCommand, ObjectKey, WriteCommand};
     use crate::node::config::{ClusterConfig, NodeConfig};
+    use crate::storage::object::persistent::SqliteFsObjectRepository;
+    use crate::storage::object::repository::ObjectRepository;
 
     const NODE_ID_NIL: Uuid = Uuid::nil();
     const METADATA_DIR_NAME: &str = "metadata";
@@ -189,7 +214,10 @@ mod tests {
     const SERVER_START_RETRIES: usize = 40;
     const SERVER_START_RETRY_DELAY_MILLIS: u64 = 25;
     const OBJECT_PATH: &str = "objects/alpha";
+    const ALPHA_KEY: &str = "alpha";
     const FIRST_PAYLOAD: &[u8] = b"first";
+    const COMMAND_ORIGIN_NODE_ID: &str = "node-a";
+    const COMMAND_SEQUENCE_ONE: u64 = 1;
 
     #[tokio::test]
     async fn new_initializes_node_with_persistent_storage() {
@@ -279,6 +307,47 @@ mod tests {
 
         second_token.cancel();
         second_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn new_replays_committed_commands_from_journal() {
+        let temp_dir = TempDir::new().unwrap();
+        let journal = SqliteConsensusJournal::new(temp_dir.path().join(METADATA_DIR_NAME))
+            .await
+            .unwrap();
+        let command = ObjectCommand::Write(WriteCommand {
+            key: ObjectKey::new(ALPHA_KEY).unwrap(),
+            value: FIRST_PAYLOAD.to_vec(),
+        });
+        let command_id = crate::consensus::ConsensusCommandId::new(
+            COMMAND_ORIGIN_NODE_ID.to_owned(),
+            COMMAND_SEQUENCE_ONE,
+        );
+
+        let _ = journal
+            .record_committed(&command_id, &command.to_bytes().unwrap())
+            .await
+            .unwrap();
+
+        let node = Node::new(test_config(temp_dir.path())).await.unwrap();
+        drop(node);
+
+        let replayed = journal.load(&command_id).await.unwrap().unwrap();
+        assert_eq!(replayed.state, JournalState::Applied);
+
+        let repository = SqliteFsObjectRepository::new(
+            temp_dir.path().join(METADATA_DIR_NAME),
+            temp_dir.path().join(BLOB_DIR_NAME),
+        )
+        .await
+        .unwrap();
+        let object = repository
+            .read(&ObjectKey::new(ALPHA_KEY).unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(object.value, FIRST_PAYLOAD.to_vec());
     }
 
     #[tokio::test]

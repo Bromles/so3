@@ -37,6 +37,12 @@ const LOAD_COMMAND_SQL: &str = r"
     FROM command_journal
     WHERE origin_node_id = ? AND sequence = ?
 ";
+const LIST_COMMANDS_BY_STATE_SQL: &str = r"
+    SELECT origin_node_id, sequence, state, command, result
+    FROM command_journal
+    WHERE state = ?
+    ORDER BY origin_node_id, sequence
+";
 const INSERT_APPLIED_COMMAND_SQL: &str = r"
     INSERT INTO command_journal (
         origin_node_id, sequence, state, command, result
@@ -132,6 +138,18 @@ impl SqliteConsensusJournal {
             .await?;
 
         row.as_ref().map(row_to_entry).transpose()
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error when the journal cannot enumerate persisted command state.
+    pub async fn list_by_state(&self, state: JournalState) -> So3Result<Vec<JournalEntry>> {
+        let rows = query(LIST_COMMANDS_BY_STATE_SQL)
+            .bind(state.as_sql())
+            .fetch_all(&self.pool)
+            .await?;
+
+        rows.iter().map(row_to_entry).collect()
     }
 
     /// # Errors
@@ -410,6 +428,34 @@ mod tests {
         assert_eq!(pre_accepted.state, JournalState::PreAccepted);
         assert_eq!(accepted.state, JournalState::Accepted);
         assert_eq!(committed.state, JournalState::Committed);
+    }
+
+    #[tokio::test]
+    async fn list_by_state_returns_only_matching_entries() {
+        let temp_dir = TempDir::new().unwrap();
+        let journal = SqliteConsensusJournal::new(temp_dir.path()).await.unwrap();
+        let accepted_id = ConsensusCommandId::new("node-a".to_owned(), 1);
+        let committed_id = ConsensusCommandId::new("node-b".to_owned(), 2);
+
+        let _ = journal
+            .record_accepted(&accepted_id, COMMAND_BYTES)
+            .await
+            .unwrap();
+        let _ = journal
+            .record_committed(&committed_id, COMMAND_BYTES)
+            .await
+            .unwrap();
+
+        let accepted = journal.list_by_state(JournalState::Accepted).await.unwrap();
+        let committed = journal
+            .list_by_state(JournalState::Committed)
+            .await
+            .unwrap();
+
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(accepted[0].command_id, accepted_id);
+        assert_eq!(committed.len(), 1);
+        assert_eq!(committed[0].command_id, committed_id);
     }
 
     #[tokio::test]
