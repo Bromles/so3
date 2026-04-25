@@ -3,6 +3,7 @@
 
 top to bottom direction
 skinparam packageStyle rectangle
+skinparam classAttributeIconSize 0
 
 package "crates/so3" {
     class Main <<bin>> {
@@ -29,11 +30,15 @@ package "crates/core::node" {
         +data_dir: PathBuf
         +cluster: ClusterConfig
         +from_env(): Result<NodeConfig>
+        +from_env_with(get_var): Result<NodeConfig>
     }
 
     class ClusterConfig {
         +peers: Vec<SocketAddr>
     }
+
+    class "fail_fast_join(...)" as FailFastJoin <<internal fn>>
+    class "flatten_join(...)" as FlattenJoin <<internal fn>>
 }
 
 package "crates/core::object_server" {
@@ -64,6 +69,7 @@ package "crates/core::object_server" {
     }
 
     class ApiError
+    class "object_controller(...)" as ObjectController <<router fn>>
 }
 
 package "crates/core::rpc_server" {
@@ -72,7 +78,17 @@ package "crates/core::rpc_server" {
         +run(listener, cancellation_token): Result<()>
     }
 
-    class ConsensusTransport <<generated proto>>
+    class ConsensusTransportService {
+        +pre_accept(request): Result<Response>
+        +accept(request): Result<Response>
+        +commit(request): Result<Response>
+        +apply(request): Result<Response>
+        +recover(request): Result<Response>
+    }
+
+    interface ConsensusTransport <<generated proto service>>
+    class ConsensusTransportServer <<generated tonic server>>
+    class ConsensusTransportClient <<generated tonic client>>
 }
 
 package "crates/core::consensus" {
@@ -95,12 +111,17 @@ package "crates/core::storage" {
         -blob_dir: PathBuf
         -write_lock: Mutex<()>
         +open(data_dir): Result<PersistentObjectStore>
+        -init_schema(): Result<()>
+        -persist_blob(value): Result<(String, u64, String)>
+        -load_blob(blob_id): Result<Vec<u8>>
+        -load_record(key): Result<Option<ObjectRecord>>
+        -write_record(key, version, value): Result<StoredObject>
     }
 
     enum CasWriteOutcome {
-        Applied
+        Applied(StoredObject)
         NotFound
-        Mismatch
+        Mismatch { current_version }
     }
 }
 
@@ -134,9 +155,9 @@ package "crates/core::domain" {
     }
 
     enum ObjectCommand {
-        Read
-        Write
-        Cas
+        Read(ReadCommand)
+        Write(WriteCommand)
+        Cas(CasCommand)
     }
 
     class ReadCommand {
@@ -155,9 +176,9 @@ package "crates/core::domain" {
     }
 
     enum ObjectResult {
-        Read
-        Write
-        Cas
+        Read(ReadResult)
+        Write(WriteResult)
+        Cas(CasResult)
     }
 
     class ReadResult {
@@ -169,9 +190,9 @@ package "crates/core::domain" {
     }
 
     enum CasResult {
-        Applied
+        Applied(StoredObject)
         NotFound
-        Mismatch
+        Mismatch { current_version }
     }
 }
 
@@ -182,20 +203,26 @@ Node *-- NodeConfig
 Node *-- ObjectServer
 Node *-- RpcServer
 Node --> LocalStateMachine
+Node ..> FailFastJoin : orchestrates shutdown
+FailFastJoin ..> FlattenJoin
 
 NodeConfig o-- ClusterConfig
 
-ObjectServer --> ObjectApiState
-ObjectServer --> NodeConfig
+ObjectServer --> ObjectController
+ObjectController --> ObjectApiState
 ObjectApiState --> LocalStateMachine
-ObjectServer ..> WriteQuery
-ObjectServer ..> WriteResponse
-ObjectServer ..> ErrorResponse
-ObjectServer ..> ApiError
-ObjectServer ..> ObjectCommand
-ObjectServer ..> ObjectResult
+ObjectController ..> WriteQuery
+ObjectController ..> WriteResponse
+ObjectController ..> ErrorResponse
+ObjectController ..> ApiError
+ObjectController ..> ObjectCommand
+ObjectController ..> ObjectResult
 
-RpcServer ..> ConsensusTransport : placeholder for future service impl
+RpcServer --> ConsensusTransportServer
+ConsensusTransportServer ..|> ConsensusTransport
+ConsensusTransportService ..|> ConsensusTransport
+RpcServer --> ConsensusTransportService
+ConsensusTransportClient ..> ConsensusTransport
 
 LocalStateMachine --> ObjectRepository
 LocalStateMachine ..> ObjectCommand
@@ -220,10 +247,30 @@ ReadCommand --> ObjectKey
 WriteCommand --> ObjectKey
 CasCommand --> ObjectKey
 CasCommand --> ObjectVersion
+CasResult --> StoredObject
 CasResult --> ObjectVersion
 WriteResult --> StoredObject
 ReadResult --> StoredObject
 CasWriteOutcome --> StoredObject
 CasWriteOutcome --> ObjectVersion
+
+note right of RpcServer
+Current state:
+- gRPC transport is real
+- Accord handlers still return UNIMPLEMENTED
+end note
+
+note right of PersistentObjectStore
+Durability model:
+- SQLite metadata
+- immutable blob files on local FS
+- writes serialized with write_lock
+end note
+
+note right of FailFastJoin
+If either server task finishes first,
+the root CancellationToken is cancelled
+and the peer task is awaited.
+end note
 
 @enduml
