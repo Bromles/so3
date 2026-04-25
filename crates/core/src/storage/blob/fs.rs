@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use tokio::fs;
-use tokio::fs::ReadDir;
 use tokio::fs::File as TokioFile;
+use tokio::fs::ReadDir;
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
@@ -107,8 +107,8 @@ async fn next_dir_entry(entries: &mut ReadDir) -> So3Result<Option<fs::DirEntry>
 
 #[cfg(test)]
 mod tests {
-    use tokio::fs;
     use tempfile::TempDir;
+    use tokio::fs;
 
     use super::{FileSystemBlobRepository, TEMP_BLOBS_DIR_NAME};
     use crate::storage::blob::repository::BlobRepository;

@@ -191,7 +191,7 @@ mod tests {
 
         let server_task = spawn(async move {
             RpcServer::new(ApplyingConsensusTransport::new(
-                Uuid::nil(),
+                Uuid::nil().to_string(),
                 PersistentReplicatedCommandExecutor::new(repository, metadata_repository),
                 journal,
             ))

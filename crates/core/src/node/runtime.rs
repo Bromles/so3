@@ -67,7 +67,7 @@ impl Node {
             config,
             object_server: ObjectServer::new(),
             rpc_server: RpcServer::new(ApplyingConsensusTransport::new(
-                node_id,
+                node_id.to_string(),
                 executor,
                 storage.consensus_journal,
             )),

@@ -10,12 +10,12 @@ use tokio::io::{
     AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter, Lines, Stdin, Stdout, stdin, stdout,
 };
 
+use so3_core::consensus::ConsensusCommandId;
 use so3_core::consensus::coordinator::{
     AccordCoordinator, AccordCoordinatorConfig, ConsensusPeerTransport,
 };
 use so3_core::consensus::executor::PersistentReplicatedCommandExecutor;
 use so3_core::consensus::state_machine::LocalStateMachine;
-use so3_core::consensus::ConsensusCommandId;
 use so3_core::domain::error::{So3Error, So3Result};
 use so3_core::object_server::service::ObjectService;
 use so3_core::rpc_server::proto::{
@@ -25,7 +25,6 @@ use so3_core::rpc_server::proto::{
 use so3_core::rpc_server::transport::{ApplyingConsensusTransport, ConsensusTransportHandler};
 use so3_core::storage::metadata::sqlite::SqliteObjectMetadataRepository;
 use so3_core::storage::registry::{PersistentStorage, SqliteFsPersistentObjectRepository};
-use uuid::Uuid;
 
 use crate::config::StorageRoots;
 use crate::protocol::{
@@ -123,8 +122,7 @@ impl Runtime {
             let src = message.src;
             match message.body {
                 RequestBody::Init { msg_id, .. } => {
-                    let response =
-                        error_response(msg_id, CRASH_CODE, "duplicate init request");
+                    let response = error_response(msg_id, CRASH_CODE, "duplicate init request");
                     self.write_message(&Message {
                         src: self.node_id.clone(),
                         dest: src,
@@ -137,12 +135,8 @@ impl Runtime {
                         .await
                 }
                 RequestBody::Write { msg_id, key, value } => {
-                    self.handle_client_message(
-                        &src,
-                        msg_id,
-                        ClientRequest::Write { key, value },
-                    )
-                    .await
+                    self.handle_client_message(&src, msg_id, ClientRequest::Write { key, value })
+                        .await
                 }
                 RequestBody::Cas {
                     msg_id,
@@ -167,7 +161,10 @@ impl Runtime {
                     msg_id,
                     client_msg_id,
                     request,
-                } => self.handle_forward(&src, msg_id, client_msg_id, request).await,
+                } => {
+                    self.handle_forward(&src, msg_id, client_msg_id, request)
+                        .await
+                }
                 RequestBody::Replicate { msg_id, request } => {
                     self.handle_replicate(&src, msg_id, request).await
                 }
@@ -426,9 +423,11 @@ impl Runtime {
         let mut coordinator = AccordCoordinator::new(config, &local_transport, self);
 
         match coordinator.execute(&command_id, command).await {
-            Ok(result) => MaelstromService::<SqliteFsPersistentObjectRepository>::response_from_result(
-                msg_id, result,
-            ),
+            Ok(result) => {
+                MaelstromService::<SqliteFsPersistentObjectRepository>::response_from_result(
+                    msg_id, result,
+                )
+            }
             Err(error) => map_internal_error(msg_id, &error),
         }
     }
@@ -542,22 +541,27 @@ impl ConsensusPeerTransport for Runtime {
         &mut self,
         peer_id: &str,
         request: PreAcceptRequest,
-    ) -> So3Result<()> {
+    ) -> So3Result<PreAcceptResponse> {
         let payload = send_consensus_rpc(self, peer_id, ConsensusRpc::PreAccept, request).await?;
-        let _response = decode_proto::<PreAcceptResponse>(&payload)?;
-        Ok(())
+        decode_proto::<PreAcceptResponse>(&payload)
     }
 
-    async fn accept_peer(&mut self, peer_id: &str, request: AcceptRequest) -> So3Result<()> {
+    async fn accept_peer(
+        &mut self,
+        peer_id: &str,
+        request: AcceptRequest,
+    ) -> So3Result<AcceptResponse> {
         let payload = send_consensus_rpc(self, peer_id, ConsensusRpc::Accept, request).await?;
-        let _response = decode_proto::<AcceptResponse>(&payload)?;
-        Ok(())
+        decode_proto::<AcceptResponse>(&payload)
     }
 
-    async fn commit_peer(&mut self, peer_id: &str, request: CommitRequest) -> So3Result<()> {
+    async fn commit_peer(
+        &mut self,
+        peer_id: &str,
+        request: CommitRequest,
+    ) -> So3Result<CommitResponse> {
         let payload = send_consensus_rpc(self, peer_id, ConsensusRpc::Commit, request).await?;
-        let _response = decode_proto::<CommitResponse>(&payload)?;
-        Ok(())
+        decode_proto::<CommitResponse>(&payload)
     }
 }
 
@@ -599,7 +603,7 @@ async fn build_components(
         storage.object_repository,
     )));
     let local_transport =
-        ApplyingConsensusTransport::new(Uuid::nil(), executor, storage.consensus_journal);
+        ApplyingConsensusTransport::new(node_id.to_owned(), executor, storage.consensus_journal);
 
     Ok(RuntimeComponents {
         service,
@@ -612,9 +616,9 @@ fn node_storage_dir(root: &Path, node_id: &str) -> PathBuf {
 }
 
 async fn next_request(lines: &mut Lines<BufReader<Stdin>>) -> So3Result<Message<RequestBody>> {
-    next_request_if_available(lines).await?.ok_or_else(|| {
-        So3Error::InvalidRequest("maelstrom stdin closed before init".to_owned())
-    })
+    next_request_if_available(lines)
+        .await?
+        .ok_or_else(|| So3Error::InvalidRequest("maelstrom stdin closed before init".to_owned()))
 }
 
 async fn next_request_if_available(
@@ -633,8 +637,8 @@ async fn write_message(
     output: &mut BufWriter<Stdout>,
     message: &Message<impl Serialize>,
 ) -> So3Result<()> {
-    let encoded = serde_json::to_vec(message)
-        .map_err(|error| So3Error::Serialization(error.to_string()))?;
+    let encoded =
+        serde_json::to_vec(message).map_err(|error| So3Error::Serialization(error.to_string()))?;
     output.write_all(&encoded).await?;
     output.write_u8(b'\n').await?;
     output.flush().await?;

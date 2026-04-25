@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use tonic::Status;
 use tracing::{debug, info};
-use uuid::Uuid;
 
 use crate::consensus::ConsensusCommandId;
 use crate::consensus::executor::ReplicatedCommandExecutor;
@@ -26,9 +25,9 @@ pub struct ApplyingConsensusTransport<E: ReplicatedCommandExecutor> {
 
 impl<E: ReplicatedCommandExecutor> ApplyingConsensusTransport<E> {
     #[must_use]
-    pub fn new(node_id: Uuid, executor: E, journal: SqliteConsensusJournal) -> Self {
+    pub fn new(node_id: String, executor: E, journal: SqliteConsensusJournal) -> Self {
         Self {
-            node_id: node_id.to_string(),
+            node_id,
             executor,
             journal,
         }
@@ -297,7 +296,7 @@ mod tests {
 
         (
             ApplyingConsensusTransport::new(
-                Uuid::nil(),
+                Uuid::nil().to_string(),
                 PersistentReplicatedCommandExecutor::new(repository, metadata_repository),
                 journal,
             ),

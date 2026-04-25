@@ -271,9 +271,7 @@ mod tests {
         assert_eq!(applied_count, 1);
         assert_eq!(mismatch_count, 1);
         assert_eq!(loaded.record.version, written.record.version.next());
-        assert!(
-            loaded.value == SECOND_PAYLOAD.to_vec() || loaded.value == HELLO_PAYLOAD.to_vec()
-        );
+        assert!(loaded.value == SECOND_PAYLOAD.to_vec() || loaded.value == HELLO_PAYLOAD.to_vec());
     }
 
     fn spawn_cas(
@@ -285,11 +283,6 @@ mod tests {
         expected_version: ObjectVersion,
         value: Vec<u8>,
     ) -> JoinHandle<CasWriteOutcome> {
-        tokio::spawn(async move {
-            repository
-                .cas(&key, expected_version, value)
-                .await
-                .unwrap()
-        })
+        tokio::spawn(async move { repository.cas(&key, expected_version, value).await.unwrap() })
     }
 }

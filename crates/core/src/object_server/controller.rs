@@ -12,8 +12,8 @@ use tower_http::trace::TraceLayer;
 use crate::domain::error::So3Error;
 use crate::domain::{CasResult, ObjectKey, StoredObject};
 use crate::object_server::api::{
-    DEFAULT_ERROR_LABEL, ETAG_HEADER, ErrorResponse, OBJECT_METADATA_ROUTE_PATH,
-    OBJECT_ROUTE_PATH, ObjectMetadataResponse, VERSION_HEADER, WriteQuery,
+    DEFAULT_ERROR_LABEL, ETAG_HEADER, ErrorResponse, OBJECT_METADATA_ROUTE_PATH, OBJECT_ROUTE_PATH,
+    ObjectMetadataResponse, VERSION_HEADER, WriteQuery,
 };
 use crate::object_server::service::ObjectService;
 use crate::storage::object::repository::ObjectRepository;
@@ -31,7 +31,10 @@ where
     let request_timeout = state.request_timeout;
 
     Router::new()
-        .route(OBJECT_ROUTE_PATH, get(handle_get).head(handle_head).put(handle_put))
+        .route(
+            OBJECT_ROUTE_PATH,
+            get(handle_get).head(handle_head).put(handle_put),
+        )
         .route(OBJECT_METADATA_ROUTE_PATH, get(handle_get_metadata))
         .with_state(state)
         .layer((

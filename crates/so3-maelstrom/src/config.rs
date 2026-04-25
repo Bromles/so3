@@ -18,16 +18,18 @@ pub fn load_storage_roots() -> StorageRoots {
 }
 
 fn load_storage_roots_with(get_var: impl Fn(&str) -> Option<String>) -> StorageRoots {
-    let data_dir = get_var(DATA_DIR_ENV)
-        .map_or_else(|| PathBuf::from(DEFAULT_DATA_DIR), PathBuf::from);
+    let data_dir =
+        get_var(DATA_DIR_ENV).map_or_else(|| PathBuf::from(DEFAULT_DATA_DIR), PathBuf::from);
 
     StorageRoots {
         metadata_dir: get_var(METADATA_DIR_ENV).map_or_else(
             || data_dir.join(Path::new(DEFAULT_METADATA_DIR_NAME)),
             PathBuf::from,
         ),
-        blob_dir: get_var(BLOB_DIR_ENV)
-            .map_or_else(|| data_dir.join(Path::new(DEFAULT_BLOB_DIR_NAME)), PathBuf::from),
+        blob_dir: get_var(BLOB_DIR_ENV).map_or_else(
+            || data_dir.join(Path::new(DEFAULT_BLOB_DIR_NAME)),
+            PathBuf::from,
+        ),
     }
 }
 

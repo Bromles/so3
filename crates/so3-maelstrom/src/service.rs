@@ -117,10 +117,11 @@ where
             } => {
                 let key = object_key_from_json(&key).map_err(|error| map_error(msg_id, &error))?;
                 let value = value_to_bytes(&to).map_err(|error| map_error(msg_id, &error))?;
-                let current =
-                    self.object_service.read(key.clone()).await.map_err(|error| {
-                        map_error(msg_id, &error)
-                    })?;
+                let current = self
+                    .object_service
+                    .read(key.clone())
+                    .await
+                    .map_err(|error| map_error(msg_id, &error))?;
 
                 let Some(current) = current else {
                     if create_if_not_exists {
@@ -177,7 +178,10 @@ where
             ObjectResult::Cas(CasResult::Mismatch { current_version }) => error_response(
                 msg_id,
                 PRECONDITION_FAILED_CODE,
-                format!("version mismatch: current version is {}", current_version.get()),
+                format!(
+                    "version mismatch: current version is {}",
+                    current_version.get()
+                ),
             ),
         }
     }
@@ -248,7 +252,11 @@ where
 
             let Some(current) = current else {
                 if create_if_not_exists {
-                    return match self.object_service.write(key.clone(), target_bytes.clone()).await {
+                    return match self
+                        .object_service
+                        .write(key.clone(), target_bytes.clone())
+                        .await
+                    {
                         Ok(_) => ResponseBody::CasOk {
                             in_reply_to: msg_id,
                         },
@@ -343,7 +351,10 @@ mod tests {
 
     const TEST_MESSAGE_ID: u64 = 1;
 
-    async fn test_service() -> (MaelstromService<SqliteFsPersistentObjectRepository>, TempDir) {
+    async fn test_service() -> (
+        MaelstromService<SqliteFsPersistentObjectRepository>,
+        TempDir,
+    ) {
         let temp_dir = TempDir::new().unwrap();
         let repository = SqliteFsPersistentObjectRepository::new(
             temp_dir.path().join("metadata"),
