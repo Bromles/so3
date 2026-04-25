@@ -5,22 +5,30 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-use crate::consensus::journal::SqliteConsensusJournal;
+use crate::consensus::executor::PersistentReplicatedCommandExecutor;
+use crate::consensus::recovery::replay_committed_commands;
 use crate::consensus::state_machine::LocalStateMachine;
-use crate::domain::ObjectCommand;
 use crate::domain::error::{So3Error, So3Result};
 use crate::node::config::NodeConfig;
 use crate::object_server::server::ObjectServer;
 use crate::object_server::service::ObjectService;
 use crate::rpc_server::server::RpcServer;
 use crate::rpc_server::transport::ApplyingConsensusTransport;
-use crate::storage::object::persistent::SqliteFsObjectRepository;
+use crate::storage::metadata::sqlite::SqliteObjectMetadataRepository;
+use crate::storage::registry::{PersistentStorage, SqliteFsPersistentObjectRepository};
 
 pub struct Node {
     config: NodeConfig,
     object_server: ObjectServer,
-    rpc_server: RpcServer<ApplyingConsensusTransport<SqliteFsObjectRepository>>,
-    object_service: ObjectService<SqliteFsObjectRepository>,
+    rpc_server: RpcServer<
+        ApplyingConsensusTransport<
+            PersistentReplicatedCommandExecutor<
+                SqliteFsPersistentObjectRepository,
+                SqliteObjectMetadataRepository,
+            >,
+        >,
+    >,
+    object_service: ObjectService<SqliteFsPersistentObjectRepository>,
 }
 
 pub struct BoundNode {
@@ -28,8 +36,15 @@ pub struct BoundNode {
     object_listener: TcpListener,
     rpc_listener: TcpListener,
     object_server: ObjectServer,
-    rpc_server: RpcServer<ApplyingConsensusTransport<SqliteFsObjectRepository>>,
-    object_service: ObjectService<SqliteFsObjectRepository>,
+    rpc_server: RpcServer<
+        ApplyingConsensusTransport<
+            PersistentReplicatedCommandExecutor<
+                SqliteFsPersistentObjectRepository,
+                SqliteObjectMetadataRepository,
+            >,
+        >,
+    >,
+    object_service: ObjectService<SqliteFsPersistentObjectRepository>,
 }
 
 impl Node {
@@ -39,12 +54,13 @@ impl Node {
     pub async fn new(config: NodeConfig) -> So3Result<Self> {
         config.validate()?;
         let node_id = config.node_id;
-        let repository =
-            SqliteFsObjectRepository::new(&config.metadata_dir, &config.blob_dir).await?;
-        let journal = SqliteConsensusJournal::new(&config.metadata_dir).await?;
-        let state_machine = LocalStateMachine::new(repository);
-        replay_committed_commands(&journal, &state_machine).await?;
-        let rpc_state_machine = state_machine.clone();
+        let storage = PersistentStorage::open(&config.metadata_dir, &config.blob_dir).await?;
+        let executor = PersistentReplicatedCommandExecutor::new(
+            storage.object_repository.clone(),
+            storage.metadata_repository.clone(),
+        );
+        replay_committed_commands(&storage.consensus_journal, &executor).await?;
+        let state_machine = LocalStateMachine::new(storage.object_repository.clone());
         let object_service = ObjectService::new(state_machine);
 
         Ok(Self {
@@ -52,8 +68,8 @@ impl Node {
             object_server: ObjectServer::new(),
             rpc_server: RpcServer::new(ApplyingConsensusTransport::new(
                 node_id,
-                rpc_state_machine,
-                journal,
+                executor,
+                storage.consensus_journal,
             )),
             object_service,
         })
@@ -161,25 +177,6 @@ async fn flatten_join<T>(handle: JoinHandle<So3Result<T>>) -> So3Result<T> {
         .map_err(|error| So3Error::Io(format!("task join error: {error}")))?
 }
 
-async fn replay_committed_commands(
-    journal: &SqliteConsensusJournal,
-    state_machine: &LocalStateMachine<SqliteFsObjectRepository>,
-) -> So3Result<()> {
-    for entry in journal
-        .list_by_state(crate::consensus::journal::JournalState::Committed)
-        .await?
-    {
-        let command = ObjectCommand::from_bytes(&entry.command)?;
-        let result = state_machine.execute(command).await?;
-        let result = result.to_bytes()?;
-        let _ = journal
-            .record_applied(&entry.command_id, &entry.command, &result)
-            .await?;
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -199,8 +196,8 @@ mod tests {
     use crate::domain::error::So3Error;
     use crate::domain::{ObjectCommand, ObjectKey, WriteCommand};
     use crate::node::config::{ClusterConfig, NodeConfig};
-    use crate::storage::object::persistent::SqliteFsObjectRepository;
     use crate::storage::object::repository::ObjectRepository;
+    use crate::storage::registry::SqliteFsPersistentObjectRepository;
 
     const NODE_ID_NIL: Uuid = Uuid::nil();
     const METADATA_DIR_NAME: &str = "metadata";
@@ -335,7 +332,7 @@ mod tests {
         let replayed = journal.load(&command_id).await.unwrap().unwrap();
         assert_eq!(replayed.state, JournalState::Applied);
 
-        let repository = SqliteFsObjectRepository::new(
+        let repository = SqliteFsPersistentObjectRepository::new(
             temp_dir.path().join(METADATA_DIR_NAME),
             temp_dir.path().join(BLOB_DIR_NAME),
         )

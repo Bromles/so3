@@ -19,9 +19,6 @@ pub struct PersistentObjectRepository<M: ObjectMetadataRepository, B: BlobReposi
     write_lock: Arc<Mutex<()>>,
 }
 
-pub type SqliteFsObjectRepository =
-    PersistentObjectRepository<SqliteObjectMetadataRepository, FileSystemBlobRepository>;
-
 impl<M: ObjectMetadataRepository, B: BlobRepository> PersistentObjectRepository<M, B> {
     #[must_use]
     pub fn from_parts(metadata_repository: M, blob_repository: B) -> Self {

@@ -69,14 +69,14 @@ mod tests {
     use uuid::Uuid;
 
     use super::RpcServer;
+    use crate::consensus::executor::PersistentReplicatedCommandExecutor;
     use crate::consensus::journal::SqliteConsensusJournal;
-    use crate::consensus::state_machine::LocalStateMachine;
     use crate::domain::{ObjectCommand, ObjectKey, ObjectResult, ReadCommand, WriteCommand};
     use crate::rpc_server::proto::consensus_transport_client::ConsensusTransportClient;
     use crate::rpc_server::proto::{ApplyRequest, CommitRequest, EventPayload};
     use crate::rpc_server::proto::{CommandId, PreAcceptRequest};
     use crate::rpc_server::transport::{ApplyingConsensusTransport, RejectingConsensusTransport};
-    use crate::storage::object::persistent::SqliteFsObjectRepository;
+    use crate::storage::registry::SqliteFsPersistentObjectRepository;
 
     const CONNECT_RETRY_ATTEMPTS: usize = 20;
     const CONNECT_RETRY_DELAY: Duration = Duration::from_millis(25);
@@ -169,12 +169,18 @@ mod tests {
     #[tokio::test]
     async fn rpc_server_apply_executes_serialized_object_command() {
         let temp_dir = TempDir::new().unwrap();
-        let repository = SqliteFsObjectRepository::new(
+        let repository = SqliteFsPersistentObjectRepository::new(
             temp_dir.path().join("metadata"),
             temp_dir.path().join("blobs"),
         )
         .await
         .unwrap();
+        let metadata_repository =
+            crate::storage::metadata::sqlite::SqliteObjectMetadataRepository::new(
+                temp_dir.path().join("metadata"),
+            )
+            .await
+            .unwrap();
         let journal = SqliteConsensusJournal::new(temp_dir.path().join("consensus"))
             .await
             .unwrap();
@@ -182,12 +188,11 @@ mod tests {
         let local_addr = listener.local_addr().unwrap();
         let cancellation_token = CancellationToken::new();
         let shutdown_token = cancellation_token.clone();
-        let state_machine = LocalStateMachine::new(repository);
 
         let server_task = spawn(async move {
             RpcServer::new(ApplyingConsensusTransport::new(
                 Uuid::nil(),
-                state_machine,
+                PersistentReplicatedCommandExecutor::new(repository, metadata_repository),
                 journal,
             ))
             .run(listener, shutdown_token)

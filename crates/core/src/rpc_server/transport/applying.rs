@@ -1,11 +1,11 @@
 use async_trait::async_trait;
 use tonic::Status;
-use tracing::{debug, warn};
+use tracing::{debug, info};
 use uuid::Uuid;
 
 use crate::consensus::ConsensusCommandId;
+use crate::consensus::executor::ReplicatedCommandExecutor;
 use crate::consensus::journal::{JournalState, SqliteConsensusJournal};
-use crate::consensus::state_machine::LocalStateMachine;
 use crate::domain::ObjectCommand;
 use crate::domain::error::So3Error;
 use crate::rpc_server::proto::{
@@ -13,37 +13,32 @@ use crate::rpc_server::proto::{
     DependencySet, PreAcceptRequest, PreAcceptResponse, RecoverRequest, RecoverResponse, State,
 };
 use crate::rpc_server::transport::ConsensusTransportHandler;
-use crate::storage::object::repository::ObjectRepository;
 
 const MISSING_EVENT_PAYLOAD_ERROR: &str = "missing apply event payload";
 const MISSING_COMMAND_ID_ERROR: &str = "missing consensus command_id";
 
 #[derive(Clone)]
-pub struct ApplyingConsensusTransport<R: ObjectRepository> {
+pub struct ApplyingConsensusTransport<E: ReplicatedCommandExecutor> {
     node_id: String,
-    state_machine: LocalStateMachine<R>,
+    executor: E,
     journal: SqliteConsensusJournal,
 }
 
-impl<R: ObjectRepository> ApplyingConsensusTransport<R> {
+impl<E: ReplicatedCommandExecutor> ApplyingConsensusTransport<E> {
     #[must_use]
-    pub fn new(
-        node_id: Uuid,
-        state_machine: LocalStateMachine<R>,
-        journal: SqliteConsensusJournal,
-    ) -> Self {
+    pub fn new(node_id: Uuid, executor: E, journal: SqliteConsensusJournal) -> Self {
         Self {
             node_id: node_id.to_string(),
-            state_machine,
+            executor,
             journal,
         }
     }
 }
 
 #[async_trait]
-impl<R> ConsensusTransportHandler for ApplyingConsensusTransport<R>
+impl<E> ConsensusTransportHandler for ApplyingConsensusTransport<E>
 where
-    R: ObjectRepository + Clone + Send + Sync + 'static,
+    E: ReplicatedCommandExecutor + Clone + Send + Sync + 'static,
 {
     async fn pre_accept(&self, request: PreAcceptRequest) -> Result<PreAcceptResponse, Status> {
         let command_id = extract_command_id(request.command_id.as_ref())?;
@@ -100,14 +95,33 @@ where
             .record_committed(&command_id, command_bytes)
             .await
             .map_err(|error| map_error(&error))?;
-        warn!(
+        if entry.state == JournalState::Applied {
+            return Ok(CommitResponse {
+                result: entry.result,
+            });
+        }
+
+        let command =
+            ObjectCommand::from_bytes(command_bytes).map_err(|error| map_error(&error))?;
+        let result = self
+            .executor
+            .execute_replicated(&command_id, command)
+            .await
+            .map_err(|error| map_error(&error))?;
+        let result = result.to_bytes().map_err(|error| map_error(&error))?;
+        let entry = self
+            .journal
+            .record_applied(&command_id, command_bytes, &result)
+            .await
+            .map_err(|error| map_error(&error))?;
+
+        info!(
             node_id = %self.node_id,
             command_origin = command_id.origin_node_id(),
             local_state = journal_state_to_proto(entry.state).as_str_name(),
-            "recorded local commit state in consensus journal"
+            "executed committed command and recorded applied state in consensus journal"
         );
 
-        let _ = ObjectCommand::from_bytes(command_bytes).map_err(|error| map_error(&error))?;
         Ok(CommitResponse {
             result: entry.result,
         })
@@ -130,8 +144,8 @@ where
         let command =
             ObjectCommand::from_bytes(command_bytes).map_err(|error| map_error(&error))?;
         let result = self
-            .state_machine
-            .execute(command)
+            .executor
+            .execute_replicated(&command_id, command)
             .await
             .map_err(|error| map_error(&error))?;
         let result = result.to_bytes().map_err(|error| map_error(&error))?;
@@ -237,8 +251,8 @@ mod tests {
     use uuid::Uuid;
 
     use super::ApplyingConsensusTransport;
+    use crate::consensus::executor::PersistentReplicatedCommandExecutor;
     use crate::consensus::journal::SqliteConsensusJournal;
-    use crate::consensus::state_machine::LocalStateMachine;
     use crate::domain::{
         ObjectCommand, ObjectKey, ObjectResult, ObjectVersion, ReadCommand, WriteCommand,
     };
@@ -247,7 +261,7 @@ mod tests {
         RecoverRequest, State,
     };
     use crate::rpc_server::transport::ConsensusTransportHandler;
-    use crate::storage::object::persistent::SqliteFsObjectRepository;
+    use crate::storage::registry::SqliteFsPersistentObjectRepository;
 
     const ALPHA_KEY: &str = "alpha";
     const FIRST_VALUE: &[u8] = b"first";
@@ -256,23 +270,37 @@ mod tests {
     const COMMAND_SEQUENCE_TWO: u64 = 2;
 
     async fn test_transport() -> (
-        ApplyingConsensusTransport<SqliteFsObjectRepository>,
+        ApplyingConsensusTransport<
+            PersistentReplicatedCommandExecutor<
+                SqliteFsPersistentObjectRepository,
+                crate::storage::metadata::sqlite::SqliteObjectMetadataRepository,
+            >,
+        >,
         TempDir,
     ) {
         let temp_dir = TempDir::new().unwrap();
-        let repository = SqliteFsObjectRepository::new(
+        let repository = SqliteFsPersistentObjectRepository::new(
             temp_dir.path().join("metadata"),
             temp_dir.path().join("blobs"),
         )
         .await
         .unwrap();
+        let metadata_repository =
+            crate::storage::metadata::sqlite::SqliteObjectMetadataRepository::new(
+                temp_dir.path().join("metadata"),
+            )
+            .await
+            .unwrap();
         let journal = SqliteConsensusJournal::new(temp_dir.path().join("consensus"))
             .await
             .unwrap();
-        let state_machine = LocalStateMachine::new(repository);
 
         (
-            ApplyingConsensusTransport::new(Uuid::nil(), state_machine, journal),
+            ApplyingConsensusTransport::new(
+                Uuid::nil(),
+                PersistentReplicatedCommandExecutor::new(repository, metadata_repository),
+                journal,
+            ),
             temp_dir,
         )
     }
@@ -360,7 +388,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn commit_is_reflected_in_recover_state_before_apply() {
+    async fn commit_executes_command_and_reports_applied_state() {
         let (transport, _temp_dir) = test_transport().await;
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
@@ -384,9 +412,22 @@ mod tests {
             })
             .await
             .unwrap();
+        let applied = transport
+            .apply(ApplyRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
+                event: Some(EventPayload {
+                    command: command.to_bytes().unwrap(),
+                }),
+                ..ApplyRequest::default()
+            })
+            .await
+            .unwrap();
 
-        assert!(response.result.is_empty());
-        assert_eq!(recovered.local_state, State::Committed as i32);
+        let committed_result = ObjectResult::from_bytes(&response.result).unwrap();
+        let applied_result = ObjectResult::from_bytes(&applied.result).unwrap();
+
+        assert_eq!(recovered.local_state, State::Applied as i32);
+        assert_eq!(committed_result, applied_result);
     }
 
     #[tokio::test]

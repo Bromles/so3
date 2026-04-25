@@ -172,7 +172,7 @@ mod tests {
     use super::{ObjectApiState, VERSION_HEADER, WriteResponse, object_controller};
     use crate::consensus::state_machine::LocalStateMachine;
     use crate::object_server::service::ObjectService;
-    use crate::storage::object::persistent::SqliteFsObjectRepository;
+    use crate::storage::registry::SqliteFsPersistentObjectRepository;
 
     const TEST_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
     const TEST_MAX_RESPONSE_BYTES: usize = usize::MAX;
@@ -194,7 +194,7 @@ mod tests {
     async fn test_app() -> (axum::Router, TempDir) {
         let temp_dir = TempDir::new().unwrap();
         let state_machine = LocalStateMachine::new(
-            SqliteFsObjectRepository::new(
+            SqliteFsPersistentObjectRepository::new(
                 temp_dir.path().join("metadata"),
                 temp_dir.path().join("blobs"),
             )

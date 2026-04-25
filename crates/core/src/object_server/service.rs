@@ -82,7 +82,7 @@ mod tests {
     use super::ObjectService;
     use crate::consensus::state_machine::LocalStateMachine;
     use crate::domain::{CasResult, ObjectKey, ObjectVersion};
-    use crate::storage::object::persistent::SqliteFsObjectRepository;
+    use crate::storage::registry::SqliteFsPersistentObjectRepository;
 
     const MISSING_KEY: &str = "missing";
     const ALPHA_KEY: &str = "alpha";
@@ -92,9 +92,9 @@ mod tests {
     const NEXT_VERSION: i64 = 2;
     const VERSION_INCREMENT: i64 = 1;
 
-    async fn test_service() -> (ObjectService<SqliteFsObjectRepository>, TempDir) {
+    async fn test_service() -> (ObjectService<SqliteFsPersistentObjectRepository>, TempDir) {
         let temp_dir = TempDir::new().unwrap();
-        let repository = SqliteFsObjectRepository::new(
+        let repository = SqliteFsPersistentObjectRepository::new(
             temp_dir.path().join("metadata"),
             temp_dir.path().join("blobs"),
         )

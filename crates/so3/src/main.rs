@@ -7,8 +7,9 @@ use tracing::error;
 use tracing_subscriber::fmt as tracing_fmt;
 
 use so3_core::domain::error::So3Result;
-use so3_core::node::config::NodeConfig;
 use so3_core::node::runtime::Node;
+
+mod config;
 
 const PROCESS_EXIT_FAILURE: i32 = 1;
 
@@ -23,7 +24,7 @@ async fn main() {
 }
 
 async fn run() -> So3Result<()> {
-    let config = NodeConfig::load()?;
+    let config = config::load_node_config()?;
     let node = Node::new(config).await?;
     let cancellation_token = CancellationToken::new();
     let signal_token = cancellation_token.clone();

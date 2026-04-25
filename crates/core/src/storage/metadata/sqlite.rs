@@ -8,8 +8,10 @@ use sqlx::sqlite::{
 use sqlx::{Row, SqlitePool, query, query_scalar};
 use tokio::fs;
 
+use crate::consensus::ConsensusCommandId;
 use crate::domain::error::{So3Error, So3Result};
-use crate::domain::{ObjectKey, ObjectRecord, ObjectVersion};
+use crate::domain::{ObjectKey, ObjectRecord, ObjectResult, ObjectVersion};
+use crate::storage::applied_command::repository::AppliedCommandStore;
 use crate::storage::metadata::repository::ObjectMetadataRepository;
 
 // SQLite runtime tuning.
@@ -17,7 +19,7 @@ const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SQLITE_MAX_CONNECTIONS: u32 = 1;
 
 // Metadata schema versioning.
-const CURRENT_SCHEMA_VERSION: i64 = 1;
+const CURRENT_SCHEMA_VERSION: i64 = 2;
 
 // On-disk metadata layout.
 const DATABASE_FILE_NAME: &str = "objects.sqlite";
@@ -32,10 +34,23 @@ const OBJECTS_TABLE_SQL: &str = r"
         checksum TEXT NOT NULL
     )
 ";
+const APPLIED_COMMANDS_TABLE_SQL: &str = r"
+    CREATE TABLE IF NOT EXISTS applied_commands (
+        origin_node_id TEXT NOT NULL,
+        sequence INTEGER NOT NULL,
+        result BLOB NOT NULL,
+        PRIMARY KEY (origin_node_id, sequence)
+    )
+";
 const LOAD_OBJECT_SQL: &str = r"
     SELECT key, version, blob_id, content_length, checksum
     FROM objects
     WHERE key = ?
+";
+const LOAD_APPLIED_RESULT_SQL: &str = r"
+    SELECT result
+    FROM applied_commands
+    WHERE origin_node_id = ? AND sequence = ?
 ";
 const UPSERT_OBJECT_SQL: &str = r"
     INSERT INTO objects (key, version, blob_id, content_length, checksum)
@@ -45,6 +60,10 @@ const UPSERT_OBJECT_SQL: &str = r"
         blob_id = excluded.blob_id,
         content_length = excluded.content_length,
         checksum = excluded.checksum
+";
+const INSERT_APPLIED_RESULT_SQL: &str = r"
+    INSERT OR IGNORE INTO applied_commands (origin_node_id, sequence, result)
+    VALUES (?, ?, ?)
 ";
 
 #[derive(Clone)]
@@ -83,7 +102,11 @@ impl SqliteObjectMetadataRepository {
             .await?;
 
         match version {
-            0 => self.migrate_to_v1().await,
+            0 => {
+                self.migrate_to_v1().await?;
+                self.migrate_to_v2().await
+            }
+            1 => self.migrate_to_v2().await,
             CURRENT_SCHEMA_VERSION => Ok(()),
             unsupported => Err(So3Error::Storage(format!(
                 "unsupported sqlite schema version: {unsupported}"
@@ -93,6 +116,14 @@ impl SqliteObjectMetadataRepository {
 
     async fn migrate_to_v1(&self) -> So3Result<()> {
         query(OBJECTS_TABLE_SQL).execute(&self.pool).await?;
+        query("PRAGMA user_version = 1").execute(&self.pool).await?;
+        Ok(())
+    }
+
+    async fn migrate_to_v2(&self) -> So3Result<()> {
+        query(APPLIED_COMMANDS_TABLE_SQL)
+            .execute(&self.pool)
+            .await?;
         query(&format!("PRAGMA user_version = {CURRENT_SCHEMA_VERSION}"))
             .execute(&self.pool)
             .await?;
@@ -151,6 +182,49 @@ impl ObjectMetadataRepository for SqliteObjectMetadataRepository {
     }
 }
 
+#[async_trait]
+impl AppliedCommandStore for SqliteObjectMetadataRepository {
+    async fn load_result(
+        &self,
+        command_id: &ConsensusCommandId,
+    ) -> So3Result<Option<ObjectResult>> {
+        let row = query(LOAD_APPLIED_RESULT_SQL)
+            .bind(command_id.origin_node_id())
+            .bind(sequence_to_i64(command_id.sequence())?)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        row.map(|row| {
+            let bytes = row.try_get::<Vec<u8>, _>("result")?;
+            ObjectResult::from_bytes(&bytes)
+        })
+        .transpose()
+    }
+
+    async fn save_result(
+        &self,
+        command_id: &ConsensusCommandId,
+        result: &ObjectResult,
+    ) -> So3Result<()> {
+        query(INSERT_APPLIED_RESULT_SQL)
+            .bind(command_id.origin_node_id())
+            .bind(sequence_to_i64(command_id.sequence())?)
+            .bind(result.to_bytes()?)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+}
+
+fn sequence_to_i64(sequence: u64) -> So3Result<i64> {
+    i64::try_from(sequence).map_err(|_| {
+        So3Error::Storage(format!(
+            "command sequence exceeds supported metadata range: {sequence}"
+        ))
+    })
+}
+
 fn read_content_length(row: &SqliteRow) -> So3Result<u64> {
     let content_length = row.try_get::<i64, _>("content_length")?;
     u64::try_from(content_length).map_err(|_| {
@@ -173,8 +247,10 @@ mod tests {
     use tempfile::TempDir;
 
     use super::SqliteObjectMetadataRepository;
+    use crate::consensus::ConsensusCommandId;
     use crate::domain::error::So3Error;
-    use crate::domain::{ObjectKey, ObjectRecord, ObjectVersion};
+    use crate::domain::{ObjectKey, ObjectRecord, ObjectResult, ObjectVersion, ReadResult};
+    use crate::storage::applied_command::repository::AppliedCommandStore;
     use crate::storage::metadata::repository::ObjectMetadataRepository;
 
     const UNKNOWN_SCHEMA_VERSION: i64 = 99;
@@ -182,6 +258,8 @@ mod tests {
     const BLOB_ID: &str = "blob-1.blob";
     const CHECKSUM: &str = "checksum";
     const CONTENT_LENGTH: u64 = 5;
+    const COMMAND_ORIGIN_NODE_ID: &str = "node-a";
+    const COMMAND_SEQUENCE_ONE: u64 = 1;
 
     fn test_record() -> ObjectRecord {
         ObjectRecord {
@@ -214,7 +292,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(repository.schema_version().await.unwrap(), 1);
+        assert_eq!(repository.schema_version().await.unwrap(), 2);
     }
 
     #[tokio::test]
@@ -239,5 +317,44 @@ mod tests {
                 .to_string()
                 .contains("unsupported sqlite schema version")
         );
+    }
+
+    #[tokio::test]
+    async fn save_then_load_roundtrips_applied_command_result() {
+        let temp_dir = TempDir::new().unwrap();
+        let repository = SqliteObjectMetadataRepository::new(temp_dir.path())
+            .await
+            .unwrap();
+        let command_id =
+            ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
+        let result = ObjectResult::Read(ReadResult { object: None });
+
+        repository.save_result(&command_id, &result).await.unwrap();
+        let loaded = repository.load_result(&command_id).await.unwrap().unwrap();
+
+        assert_eq!(loaded, result);
+    }
+
+    #[tokio::test]
+    async fn save_result_keeps_first_applied_value_for_duplicate_command_id() {
+        let temp_dir = TempDir::new().unwrap();
+        let repository = SqliteObjectMetadataRepository::new(temp_dir.path())
+            .await
+            .unwrap();
+        let command_id =
+            ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
+        let first = ObjectResult::Read(ReadResult { object: None });
+        let second = ObjectResult::Read(ReadResult {
+            object: Some(crate::domain::StoredObject {
+                record: test_record(),
+                value: b"second".to_vec(),
+            }),
+        });
+
+        repository.save_result(&command_id, &first).await.unwrap();
+        repository.save_result(&command_id, &second).await.unwrap();
+        let loaded = repository.load_result(&command_id).await.unwrap().unwrap();
+
+        assert_eq!(loaded, first);
     }
 }
