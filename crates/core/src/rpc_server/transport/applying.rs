@@ -3,6 +3,8 @@ use tonic::Status;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
+use crate::consensus::ConsensusCommandId;
+use crate::consensus::journal::{JournalState, SqliteConsensusJournal};
 use crate::consensus::state_machine::LocalStateMachine;
 use crate::domain::ObjectCommand;
 use crate::domain::error::So3Error;
@@ -14,19 +16,26 @@ use crate::rpc_server::transport::ConsensusTransportHandler;
 use crate::storage::object::repository::ObjectRepository;
 
 const MISSING_EVENT_PAYLOAD_ERROR: &str = "missing apply event payload";
+const MISSING_COMMAND_ID_ERROR: &str = "missing consensus command_id";
 
 #[derive(Clone)]
 pub struct ApplyingConsensusTransport<R: ObjectRepository> {
     node_id: String,
     state_machine: LocalStateMachine<R>,
+    journal: SqliteConsensusJournal,
 }
 
 impl<R: ObjectRepository> ApplyingConsensusTransport<R> {
     #[must_use]
-    pub fn new(node_id: Uuid, state_machine: LocalStateMachine<R>) -> Self {
+    pub fn new(
+        node_id: Uuid,
+        state_machine: LocalStateMachine<R>,
+        journal: SqliteConsensusJournal,
+    ) -> Self {
         Self {
             node_id: node_id.to_string(),
             state_machine,
+            journal,
         }
     }
 }
@@ -37,14 +46,20 @@ where
     R: ObjectRepository + Clone + Send + Sync + 'static,
 {
     async fn pre_accept(&self, request: PreAcceptRequest) -> Result<PreAcceptResponse, Status> {
+        let command_id = extract_command_id(request.command_id.as_ref())?;
+        let command_bytes = extract_command_bytes(request.event.as_ref())?;
+        let entry = self
+            .journal
+            .record_pre_accepted(&command_id, command_bytes)
+            .await
+            .map_err(|error| map_error(&error))?;
+
         debug!(
             node_id = %self.node_id,
-            command_origin = request
-                .command_id
-                .as_ref()
-                .map_or("<missing>", |command_id| command_id.origin_node_id.as_str()),
-            event_size = request.event.as_ref().map_or(0, |event| event.command.len()),
-            "accepting placeholder pre_accept while accord ordering is not wired"
+            command_origin = command_id.origin_node_id(),
+            local_state = journal_state_to_proto(entry.state).as_str_name(),
+            event_size = command_bytes.len(),
+            "recorded local pre_accept state in consensus journal"
         );
 
         Ok(PreAcceptResponse {
@@ -55,17 +70,20 @@ where
     }
 
     async fn accept(&self, request: AcceptRequest) -> Result<AcceptResponse, Status> {
+        let command_id = extract_command_id(request.command_id.as_ref())?;
+        let command_bytes = extract_command_bytes(request.event.as_ref())?;
+        let entry = self
+            .journal
+            .record_accepted(&command_id, command_bytes)
+            .await
+            .map_err(|error| map_error(&error))?;
+
         debug!(
             node_id = %self.node_id,
-            command_origin = request
-                .command_id
-                .as_ref()
-                .map_or("<missing>", |command_id| command_id.origin_node_id.as_str()),
-            dependency_count = request
-                .dependencies
-                .as_ref()
-                .map_or(0, |dependencies| dependencies.commands.len()),
-            "accepting placeholder accept while accord ordering is not wired"
+            command_origin = command_id.origin_node_id(),
+            local_state = journal_state_to_proto(entry.state).as_str_name(),
+            dependency_count = request.dependencies.as_ref().map_or(0, |dependencies| dependencies.commands.len()),
+            "recorded local accept state in consensus journal"
         );
 
         Ok(AcceptResponse {
@@ -75,48 +93,87 @@ where
     }
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitResponse, Status> {
+        let command_id = extract_command_id(request.command_id.as_ref())?;
+        let command_bytes = extract_command_bytes(request.event.as_ref())?;
+        let entry = self
+            .journal
+            .record_committed(&command_id, command_bytes)
+            .await
+            .map_err(|error| map_error(&error))?;
         warn!(
             node_id = %self.node_id,
-            command_origin = request
-                .command_id
-                .as_ref()
-                .map_or("<missing>", |command_id| command_id.origin_node_id.as_str()),
-            "commit reached transport before durable accord coordination was implemented"
+            command_origin = command_id.origin_node_id(),
+            local_state = journal_state_to_proto(entry.state).as_str_name(),
+            "recorded local commit state in consensus journal"
         );
 
-        let command = extract_command_bytes(request.event.as_ref())?;
-        let _ = ObjectCommand::from_bytes(command).map_err(|error| map_error(&error))?;
-
-        Err(Status::failed_precondition(
-            "accord commit persistence is not configured",
-        ))
+        let _ = ObjectCommand::from_bytes(command_bytes).map_err(|error| map_error(&error))?;
+        Ok(CommitResponse {
+            result: entry.result,
+        })
     }
 
     async fn apply(&self, request: ApplyRequest) -> Result<ApplyResponse, Status> {
-        let command = ObjectCommand::from_bytes(extract_command_bytes(request.event.as_ref())?)
-            .map_err(|error| map_error(&error))?;
+        let command_id = extract_command_id(request.command_id.as_ref())?;
+        if let Some(entry) = self
+            .journal
+            .load(&command_id)
+            .await
+            .map_err(|error| map_error(&error))?
+        {
+            return Ok(ApplyResponse {
+                result: entry.result,
+            });
+        }
+
+        let command_bytes = extract_command_bytes(request.event.as_ref())?;
+        let command =
+            ObjectCommand::from_bytes(command_bytes).map_err(|error| map_error(&error))?;
         let result = self
             .state_machine
             .execute(command)
             .await
             .map_err(|error| map_error(&error))?;
         let result = result.to_bytes().map_err(|error| map_error(&error))?;
+        self.journal
+            .record_applied(&command_id, command_bytes, &result)
+            .await
+            .map_err(|error| map_error(&error))?;
 
         Ok(ApplyResponse { result })
     }
 
     async fn recover(&self, request: RecoverRequest) -> Result<RecoverResponse, Status> {
+        let Some(command_id) = request.command_id.as_ref() else {
+            return Ok(RecoverResponse {
+                local_state: State::Undefined.into(),
+                wait_for: Vec::new(),
+                superseding: false,
+                dependencies: Some(empty_dependencies()),
+                timestamp: request.timestamp_zero,
+                nack: None,
+            });
+        };
+        let command_id =
+            ConsensusCommandId::try_from(command_id).map_err(|error| map_error(&error))?;
+        let entry = self
+            .journal
+            .load(&command_id)
+            .await
+            .map_err(|error| map_error(&error))?;
+        let local_state = entry.map_or(State::Undefined, |entry| {
+            journal_state_to_proto(entry.state)
+        });
+
         debug!(
             node_id = %self.node_id,
-            command_origin = request
-                .command_id
-                .as_ref()
-                .map_or("<missing>", |command_id| command_id.origin_node_id.as_str()),
-            "returning placeholder recover response while accord recovery is not wired"
+            command_origin = command_id.origin_node_id(),
+            local_state = local_state.as_str_name(),
+            "returning recover response from durable local command journal"
         );
 
         Ok(RecoverResponse {
-            local_state: State::Undefined.into(),
+            local_state: local_state.into(),
             wait_for: Vec::new(),
             superseding: false,
             dependencies: Some(empty_dependencies()),
@@ -135,9 +192,26 @@ fn extract_command_bytes(
         .ok_or_else(|| Status::invalid_argument(MISSING_EVENT_PAYLOAD_ERROR))
 }
 
+fn extract_command_id(
+    command_id: Option<&crate::rpc_server::proto::CommandId>,
+) -> Result<ConsensusCommandId, Status> {
+    let command_id =
+        command_id.ok_or_else(|| Status::invalid_argument(MISSING_COMMAND_ID_ERROR))?;
+    ConsensusCommandId::try_from(command_id).map_err(|error| map_error(&error))
+}
+
 fn empty_dependencies() -> DependencySet {
     DependencySet {
         commands: Vec::new(),
+    }
+}
+
+fn journal_state_to_proto(state: JournalState) -> State {
+    match state {
+        JournalState::PreAccepted => State::PreAccepted,
+        JournalState::Accepted => State::Accepted,
+        JournalState::Committed => State::Committed,
+        JournalState::Applied => State::Applied,
     }
 }
 
@@ -163,16 +237,23 @@ mod tests {
     use uuid::Uuid;
 
     use super::ApplyingConsensusTransport;
+    use crate::consensus::journal::SqliteConsensusJournal;
     use crate::consensus::state_machine::LocalStateMachine;
     use crate::domain::{
         ObjectCommand, ObjectKey, ObjectResult, ObjectVersion, ReadCommand, WriteCommand,
     };
-    use crate::rpc_server::proto::{ApplyRequest, EventPayload};
+    use crate::rpc_server::proto::{
+        AcceptRequest, ApplyRequest, CommandId, CommitRequest, EventPayload, PreAcceptRequest,
+        RecoverRequest, State,
+    };
     use crate::rpc_server::transport::ConsensusTransportHandler;
     use crate::storage::object::persistent::SqliteFsObjectRepository;
 
     const ALPHA_KEY: &str = "alpha";
     const FIRST_VALUE: &[u8] = b"first";
+    const COMMAND_ORIGIN_NODE_ID: &str = "node-a";
+    const COMMAND_SEQUENCE_ONE: u64 = 1;
+    const COMMAND_SEQUENCE_TWO: u64 = 2;
 
     async fn test_transport() -> (
         ApplyingConsensusTransport<SqliteFsObjectRepository>,
@@ -185,12 +266,22 @@ mod tests {
         )
         .await
         .unwrap();
+        let journal = SqliteConsensusJournal::new(temp_dir.path().join("consensus"))
+            .await
+            .unwrap();
         let state_machine = LocalStateMachine::new(repository);
 
         (
-            ApplyingConsensusTransport::new(Uuid::nil(), state_machine),
+            ApplyingConsensusTransport::new(Uuid::nil(), state_machine, journal),
             temp_dir,
         )
+    }
+
+    fn command_id(sequence: u64) -> CommandId {
+        CommandId {
+            origin_node_id: COMMAND_ORIGIN_NODE_ID.to_owned(),
+            sequence,
+        }
     }
 
     #[tokio::test]
@@ -203,6 +294,7 @@ mod tests {
 
         let response = transport
             .apply(ApplyRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
                 event: Some(EventPayload {
                     command: command.to_bytes().unwrap(),
                 }),
@@ -221,10 +313,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pre_accept_and_accept_are_reflected_in_recover_state() {
+        let (transport, _temp_dir) = test_transport().await;
+        let command = ObjectCommand::Write(WriteCommand {
+            key: ObjectKey::new(ALPHA_KEY).unwrap(),
+            value: FIRST_VALUE.to_vec(),
+        });
+
+        let _ = transport
+            .pre_accept(PreAcceptRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
+                event: Some(EventPayload {
+                    command: command.to_bytes().unwrap(),
+                }),
+                ..PreAcceptRequest::default()
+            })
+            .await
+            .unwrap();
+        let pre_accepted = transport
+            .recover(RecoverRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
+                ..RecoverRequest::default()
+            })
+            .await
+            .unwrap();
+        let _ = transport
+            .accept(AcceptRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
+                event: Some(EventPayload {
+                    command: command.to_bytes().unwrap(),
+                }),
+                ..AcceptRequest::default()
+            })
+            .await
+            .unwrap();
+        let accepted = transport
+            .recover(RecoverRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
+                ..RecoverRequest::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(pre_accepted.local_state, State::PreAccepted as i32);
+        assert_eq!(accepted.local_state, State::Accepted as i32);
+    }
+
+    #[tokio::test]
+    async fn commit_is_reflected_in_recover_state_before_apply() {
+        let (transport, _temp_dir) = test_transport().await;
+        let command = ObjectCommand::Write(WriteCommand {
+            key: ObjectKey::new(ALPHA_KEY).unwrap(),
+            value: FIRST_VALUE.to_vec(),
+        });
+
+        let response = transport
+            .commit(CommitRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
+                event: Some(EventPayload {
+                    command: command.to_bytes().unwrap(),
+                }),
+                ..CommitRequest::default()
+            })
+            .await
+            .unwrap();
+        let recovered = transport
+            .recover(RecoverRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
+                ..RecoverRequest::default()
+            })
+            .await
+            .unwrap();
+
+        assert!(response.result.is_empty());
+        assert_eq!(recovered.local_state, State::Committed as i32);
+    }
+
+    #[tokio::test]
     async fn apply_rejects_missing_event_payload() {
         let (transport, _temp_dir) = test_transport().await;
 
-        let error = transport.apply(ApplyRequest::default()).await.unwrap_err();
+        let error = transport
+            .apply(ApplyRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
+                ..ApplyRequest::default()
+            })
+            .await
+            .unwrap_err();
 
         assert_eq!(error.code(), Code::InvalidArgument);
     }
@@ -242,6 +417,7 @@ mod tests {
 
         transport
             .apply(ApplyRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
                 event: Some(EventPayload {
                     command: write.to_bytes().unwrap(),
                 }),
@@ -251,6 +427,7 @@ mod tests {
             .unwrap();
         let response = transport
             .apply(ApplyRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_TWO)),
                 event: Some(EventPayload {
                     command: read.to_bytes().unwrap(),
                 }),
@@ -266,5 +443,69 @@ mod tests {
 
         let object = read.object.expect("expected stored object");
         assert_eq!(object.value, FIRST_VALUE.to_vec());
+    }
+
+    #[tokio::test]
+    async fn apply_is_idempotent_for_duplicate_command_id() {
+        let (transport, _temp_dir) = test_transport().await;
+        let command = ObjectCommand::Write(WriteCommand {
+            key: ObjectKey::new(ALPHA_KEY).unwrap(),
+            value: FIRST_VALUE.to_vec(),
+        });
+
+        let first = transport
+            .apply(ApplyRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
+                event: Some(EventPayload {
+                    command: command.to_bytes().unwrap(),
+                }),
+                ..ApplyRequest::default()
+            })
+            .await
+            .unwrap();
+        let second = transport
+            .apply(ApplyRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
+                event: Some(EventPayload {
+                    command: command.to_bytes().unwrap(),
+                }),
+                ..ApplyRequest::default()
+            })
+            .await
+            .unwrap();
+
+        let first_result = ObjectResult::from_bytes(&first.result).unwrap();
+        let second_result = ObjectResult::from_bytes(&second.result).unwrap();
+
+        assert_eq!(first_result, second_result);
+    }
+
+    #[tokio::test]
+    async fn recover_reports_applied_state_for_journaled_command() {
+        let (transport, _temp_dir) = test_transport().await;
+        let command = ObjectCommand::Write(WriteCommand {
+            key: ObjectKey::new(ALPHA_KEY).unwrap(),
+            value: FIRST_VALUE.to_vec(),
+        });
+
+        let _ = transport
+            .apply(ApplyRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
+                event: Some(EventPayload {
+                    command: command.to_bytes().unwrap(),
+                }),
+                ..ApplyRequest::default()
+            })
+            .await
+            .unwrap();
+        let response = transport
+            .recover(RecoverRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
+                ..RecoverRequest::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(response.local_state, State::Applied as i32);
     }
 }

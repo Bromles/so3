@@ -5,6 +5,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
+use crate::consensus::journal::SqliteConsensusJournal;
 use crate::consensus::state_machine::LocalStateMachine;
 use crate::domain::error::{So3Error, So3Result};
 use crate::node::config::NodeConfig;
@@ -39,6 +40,7 @@ impl Node {
         let node_id = config.node_id;
         let repository =
             SqliteFsObjectRepository::new(&config.metadata_dir, &config.blob_dir).await?;
+        let journal = SqliteConsensusJournal::new(&config.metadata_dir).await?;
         let state_machine = LocalStateMachine::new(repository);
         let rpc_state_machine = state_machine.clone();
         let object_service = ObjectService::new(state_machine);
@@ -46,7 +48,11 @@ impl Node {
         Ok(Self {
             config,
             object_server: ObjectServer::new(),
-            rpc_server: RpcServer::new(ApplyingConsensusTransport::new(node_id, rpc_state_machine)),
+            rpc_server: RpcServer::new(ApplyingConsensusTransport::new(
+                node_id,
+                rpc_state_machine,
+                journal,
+            )),
             object_service,
         })
     }

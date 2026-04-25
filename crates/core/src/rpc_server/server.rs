@@ -69,11 +69,12 @@ mod tests {
     use uuid::Uuid;
 
     use super::RpcServer;
+    use crate::consensus::journal::SqliteConsensusJournal;
     use crate::consensus::state_machine::LocalStateMachine;
     use crate::domain::{ObjectCommand, ObjectKey, ObjectResult, ReadCommand, WriteCommand};
-    use crate::rpc_server::proto::PreAcceptRequest;
     use crate::rpc_server::proto::consensus_transport_client::ConsensusTransportClient;
     use crate::rpc_server::proto::{ApplyRequest, CommitRequest, EventPayload};
+    use crate::rpc_server::proto::{CommandId, PreAcceptRequest};
     use crate::rpc_server::transport::{ApplyingConsensusTransport, RejectingConsensusTransport};
     use crate::storage::object::persistent::SqliteFsObjectRepository;
 
@@ -82,6 +83,9 @@ mod tests {
     const LOOPBACK_EPHEMERAL_ADDR: &str = "127.0.0.1:0";
     const ALPHA_KEY: &str = "alpha";
     const FIRST_VALUE: &[u8] = b"first";
+    const COMMAND_ORIGIN_NODE_ID: &str = "node-a";
+    const COMMAND_SEQUENCE_ONE: u64 = 1;
+    const COMMAND_SEQUENCE_TWO: u64 = 2;
 
     async fn connect_with_retry(endpoint: String) -> Channel {
         let mut last_error = None;
@@ -101,6 +105,13 @@ mod tests {
         }
 
         panic!("failed to connect to rpc server: {last_error:?}");
+    }
+
+    fn command_id(sequence: u64) -> CommandId {
+        CommandId {
+            origin_node_id: COMMAND_ORIGIN_NODE_ID.to_owned(),
+            sequence,
+        }
     }
 
     #[tokio::test]
@@ -164,6 +175,9 @@ mod tests {
         )
         .await
         .unwrap();
+        let journal = SqliteConsensusJournal::new(temp_dir.path().join("consensus"))
+            .await
+            .unwrap();
         let listener = TcpListener::bind(LOOPBACK_EPHEMERAL_ADDR).await.unwrap();
         let local_addr = listener.local_addr().unwrap();
         let cancellation_token = CancellationToken::new();
@@ -171,9 +185,13 @@ mod tests {
         let state_machine = LocalStateMachine::new(repository);
 
         let server_task = spawn(async move {
-            RpcServer::new(ApplyingConsensusTransport::new(Uuid::nil(), state_machine))
-                .run(listener, shutdown_token)
-                .await
+            RpcServer::new(ApplyingConsensusTransport::new(
+                Uuid::nil(),
+                state_machine,
+                journal,
+            ))
+            .run(listener, shutdown_token)
+            .await
         });
         let channel = connect_with_retry(format!("http://{local_addr}")).await;
         let mut client = ConsensusTransportClient::new(channel);
@@ -187,6 +205,7 @@ mod tests {
 
         let _ = client
             .apply(Request::new(ApplyRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
                 event: Some(EventPayload {
                     command: write.to_bytes().unwrap(),
                 }),
@@ -196,6 +215,7 @@ mod tests {
             .unwrap();
         let response = client
             .apply(Request::new(ApplyRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_TWO)),
                 event: Some(EventPayload {
                     command: read.to_bytes().unwrap(),
                 }),
