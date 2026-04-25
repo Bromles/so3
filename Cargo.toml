@@ -6,7 +6,10 @@ members = [
     "crates/so3"
 ]
 
-default-members = ["crates/so3"]
+default-members = [
+    "crates/core",
+    "crates/so3"
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -41,6 +44,8 @@ tokio = { version = "1.49", default-features = false }
 tokio-util = { version = "0.7", default-features = false }
 tokio-stream = { version = "0.1", default-features = false }
 async-channel = { version = "2.5", default-features = false }
+tower-http = { version = "0.6", default-features = false }
+tower = { version = "0.5", default-features = false }
 
 # serialization/deserialization
 serde = { version = "1.0", default-features = false }

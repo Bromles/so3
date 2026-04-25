@@ -2,264 +2,228 @@
 !pragma layout smetana
 
 top to bottom direction
+skinparam packageStyle rectangle
 
-package bins {
-    class NodeMain <<bin>> {
+package "crates/so3" {
+    class Main <<bin>> {
         +main()
+        +run()
     }
 }
 
-package "crates/node" {
+package "crates/core::node" {
     class Node {
-        -state: Arc<AppState>
-        -s3: Arc<S3Server>
-        -rpc: Arc<RPCServer>
-        +run(): Result
-    }
-
-    class NodeBuilder {
-        +from_config(cfg: NodeConfig): NodeBuilder
-        +build(): Result<Node>
+        -config: NodeConfig
+        -object_server: ObjectServer
+        -rpc_server: RpcServer
+        -state_machine: Arc<LocalStateMachine>
+        +new(config: NodeConfig): Result<Node>
+        +run(cancellation_token): Result<()>
     }
 
     class NodeConfig {
-        +node_id: NodeId
-        +s3_bind: SocketAddr
-        +rpc_bind: SocketAddr
-        +meta_storage: MetaStorageConfig
-        +blob_storage: BlobStorageConfig
+        +node_id: Uuid
+        +object_api_addr: SocketAddr
+        +rpc_api_addr: SocketAddr
+        +object_request_timeout: Duration
+        +data_dir: PathBuf
         +cluster: ClusterConfig
-    }
-
-    class MetaStorageConfig {
-        +kind: String
-        +path: String
-    }
-
-    class BlobStorageConfig {
-        +kind: String
-        +root_dir: String
+        +from_env(): Result<NodeConfig>
     }
 
     class ClusterConfig {
-        +peers: List<PeerAddr>
-        +replication_factor: int
+        +peers: Vec<SocketAddr>
     }
 }
 
-package "crates/core" {
-    class AppState {
-        +core: Arc<Services>
-        +node_id: NodeId
-        +cluster: ClusterConfig
+package "crates/core::object_server" {
+    class ObjectServer {
+        +new(): ObjectServer
+        +run(listener, config, state_machine, cancellation_token): Result<()>
     }
 
-    class Services {
-        +auth: Arc<AuthService>
-        +objects: Arc<ObjectService>
-        +buckets: Arc<BucketService>
-        +cluster: Arc<ClusterService>
+    class ObjectApiState {
+        +state_machine: Arc<LocalStateMachine>
+        +request_timeout: Duration
     }
 
-    interface AuthService {
-
+    class WriteQuery {
+        +expected_version: Option<i64>
     }
 
-    interface ObjectService {
-
+    class WriteResponse {
+        +key: String
+        +version: i64
+        +checksum: String
+        +content_length: u64
     }
 
-    interface BucketService {
-
+    class ErrorResponse {
+        +error: String
+        +detail: String
     }
 
-    interface ClusterService {
-
-    }
-
-    class AuthServiceImpl {
-
-    }
-
-    class ObjectServiceImpl {
-
-    }
-
-    class BucketServiceImpl {
-
-    }
-
-    class ClusterServiceImpl {
-
-    }
-
-    AuthService <|.. AuthServiceImpl
-    ObjectService <|.. ObjectServiceImpl
-    BucketService <|.. BucketServiceImpl
-    ClusterService <|.. ClusterServiceImpl
+    class ApiError
 }
 
-package "crates/domain" {
-    class NodeId
-    class ObjectMeta {
-        +etag: String
-        +size_bytes: long
-        +content_type: String
-        +last_modified: Timestamp
+package "crates/core::rpc_server" {
+    class RpcServer {
+        +new(): RpcServer
+        +run(listener, cancellation_token): Result<()>
+    }
+
+    class ConsensusTransport <<generated proto>>
+}
+
+package "crates/core::consensus" {
+    class LocalStateMachine {
+        -repository: Arc<ObjectRepository>
+        +new(repository): LocalStateMachine
+        +execute(command: ObjectCommand): Result<ObjectResult>
+    }
+}
+
+package "crates/core::storage" {
+    interface ObjectRepository {
+        +read(key): Result<Option<StoredObject>>
+        +write(key, value): Result<StoredObject>
+        +cas(key, expected_version, value): Result<CasWriteOutcome>
+    }
+
+    class PersistentObjectStore {
+        -pool: SqlitePool
+        -blob_dir: PathBuf
+        -write_lock: Mutex<()>
+        +open(data_dir): Result<PersistentObjectStore>
+    }
+
+    enum CasWriteOutcome {
+        Applied
+        NotFound
+        Mismatch
+    }
+}
+
+package "crates/core::domain" {
+    class So3Error
+    class So3Result~T~
+
+    class ObjectKey {
+        +new(value): Result<ObjectKey>
+        +as_str(): &str
+    }
+
+    class ObjectVersion {
+        +initial(): ObjectVersion
+        +next(): ObjectVersion
+        +get(): i64
+    }
+
+    class ObjectRecord {
+        +key: ObjectKey
+        +version: ObjectVersion
         +blob_id: String
+        +content_length: u64
+        +checksum: String
+        +updated_at_unix_ms: u64
     }
 
-    class BucketName
-    class ObjectKey
-    class BlobId
-}
-
-package "crates/storage-meta" {
-    interface MetaStorage {
-        +put_object_meta(bucket: BucketName, key: ObjectKey, meta: ObjectMeta): Result
-        +get_object_meta(bucket: BucketName, key: ObjectKey): Result<ObjectMeta?>
+    class StoredObject {
+        +record: ObjectRecord
+        +value: Vec<u8>
     }
 
-    class SQLiteMetaStorage {
-        -path: String
+    enum ObjectCommand {
+        Read
+        Write
+        Cas
     }
 
-    class InMemMetaStorage {
-        -map: HashMap
+    class ReadCommand {
+        +key: ObjectKey
     }
 
-    MetaStorage <|.. SQLiteMetaStorage
-    MetaStorage <|.. InMemMetaStorage
-}
-
-package "crates/storage-blob" {
-    interface BlobStorage {
-        +put_blob(blob_id: BlobId, data: Bytes): Result
-        +get_blob(blob_id: BlobId): Result<Bytes?>
+    class WriteCommand {
+        +key: ObjectKey
+        +value: Vec<u8>
     }
 
-    class FsBlobStorage {
-        -root_dir: String
+    class CasCommand {
+        +key: ObjectKey
+        +expected_version: ObjectVersion
+        +value: Vec<u8>
     }
 
-    class InMemBlobStorage {
-        -map: HashMap
+    enum ObjectResult {
+        Read
+        Write
+        Cas
     }
 
-    BlobStorage <|.. FsBlobStorage
-    BlobStorage <|.. InMemBlobStorage
-}
-
-package "crates/consensus" {
-    interface Consensus {
-        +submit(cmd: Command): Result<TxnId>
-        +read(txn_id: TxnId): Result<TxnState>
+    class ReadResult {
+        +object: Option<StoredObject>
     }
 
-    class Command {
-        +kind: CommandKind
-        +key: CommandKey
-        +payload: Bytes
+    class WriteResult {
+        +object: StoredObject
     }
 
-    class SingleNodeConsensus
-    class AccordConsensus
-
-    Consensus <|.. SingleNodeConsensus
-    Consensus <|.. AccordConsensus
-}
-
-package "crates/api-s3" {
-    class S3API {
-        -s3: S3Controller
-        +build_router(state: Arc<AppState>): Router
-    }
-
-    class S3Controller {
-        +put_object(state: Arc<AppState>): Response
-        +get_object(state: Arc<AppState>): Response
+    enum CasResult {
+        Applied
+        NotFound
+        Mismatch
     }
 }
 
-package "crates/transport-http" {
-    interface S3Server {
-        +run(state: Arc<AppState>, shutdown: Shutdown): Result
-    }
+Main --> NodeConfig : loads
+Main --> Node : creates/runs
 
-    class AxumS3Server {
-        -bind: SocketAddr
-    }
-
-    S3Server <|..AxumS3Server
-}
-
-package "crates/api-rpc" {
-    interface NodeRPC {
-        +ping(): String
-        +replicate(): Result
-    }
-
-    class NodeRPCImpl {
-        -core: Arc<Services>
-    }
-
-    NodeRPC <|.. NodeRPCImpl
-}
-
-package "crates/transport-rpc" {
-    interface RPCServer {
-        +run(state: Arc<AppState>, shutdown: Shutdown): Result
-    }
-
-    class TonicRPCServer {
-        -bind: SocketAddr
-    }
-
-    RPCServer <|.. TonicRPCServer
-}
-
-NodeMain --> NodeConfig: loads
-NodeMain --> NodeBuilder: builds
-NodeBuilder --> Node: creates
+Node *-- NodeConfig
+Node *-- ObjectServer
+Node *-- RpcServer
+Node --> LocalStateMachine
 
 NodeConfig o-- ClusterConfig
-NodeConfig o-- MetaStorageConfig
-NodeConfig o-- BlobStorageConfig
-NodeConfig --> NodeId
 
-Node --> AppState
-Node --> S3Server
-Node --> RPCServer
+ObjectServer --> ObjectApiState
+ObjectServer --> NodeConfig
+ObjectApiState --> LocalStateMachine
+ObjectServer ..> WriteQuery
+ObjectServer ..> WriteResponse
+ObjectServer ..> ErrorResponse
+ObjectServer ..> ApiError
+ObjectServer ..> ObjectCommand
+ObjectServer ..> ObjectResult
 
-AppState --> NodeId
-AppState o-- ClusterConfig
+RpcServer ..> ConsensusTransport : placeholder for future service impl
 
-AppState --> Services
-Services --> MetaStorage
-Services --> BlobStorage
-Services --> Consensus
-Services ..> BucketName
-Services ..> ObjectKey
+LocalStateMachine --> ObjectRepository
+LocalStateMachine ..> ObjectCommand
+LocalStateMachine ..> ObjectResult
+LocalStateMachine ..> CasWriteOutcome
 
-ObjectMeta --> BucketName
-ObjectMeta --> ObjectKey
-ObjectMeta --> BlobId
+ObjectRepository <|.. PersistentObjectStore
+PersistentObjectStore ..> So3Error
+So3Result ..> So3Error
 
-MetaStorage ..> BucketName
-MetaStorage ..> ObjectKey
-MetaStorage ..> ObjectMeta
+ObjectCommand --> ReadCommand
+ObjectCommand --> WriteCommand
+ObjectCommand --> CasCommand
+ObjectResult --> ReadResult
+ObjectResult --> WriteResult
+ObjectResult --> CasResult
 
-BlobStorage ..> BlobId
-
-S3API --> S3Controller
-S3Controller ..> BucketName
-S3Controller ..> ObjectKey
-
-AxumS3Server ..> S3API: serves
-
-TonicRPCServer ..> NodeRPC: serves
-NodeRPCImpl --> Services
-NodeRPCImpl --> NodeId
-NodeRPC ..> BlobId
+ObjectRecord --> ObjectKey
+ObjectRecord --> ObjectVersion
+StoredObject *-- ObjectRecord
+ReadCommand --> ObjectKey
+WriteCommand --> ObjectKey
+CasCommand --> ObjectKey
+CasCommand --> ObjectVersion
+CasResult --> ObjectVersion
+WriteResult --> StoredObject
+ReadResult --> StoredObject
+CasWriteOutcome --> StoredObject
+CasWriteOutcome --> ObjectVersion
 
 @enduml
