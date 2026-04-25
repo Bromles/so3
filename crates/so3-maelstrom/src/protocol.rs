@@ -5,7 +5,6 @@ pub const KEY_DOES_NOT_EXIST_CODE: i64 = 20;
 pub const PRECONDITION_FAILED_CODE: i64 = 22;
 pub const MALFORMED_REQUEST_CODE: i64 = 12;
 pub const CRASH_CODE: i64 = 13;
-pub const NOT_SUPPORTED_CODE: i64 = 10;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Message<T> {
@@ -39,9 +38,49 @@ pub enum RequestBody {
         #[serde(default)]
         create_if_not_exists: bool,
     },
+    Forward {
+        msg_id: u64,
+        client_msg_id: u64,
+        request: ClientRequest,
+    },
+    Replicate {
+        msg_id: u64,
+        request: ClientRequest,
+    },
+    ForwardOk {
+        in_reply_to: u64,
+        response: ResponseBody,
+    },
+    ReplicateOk {
+        in_reply_to: u64,
+    },
+    Error {
+        in_reply_to: u64,
+        code: i64,
+        text: String,
+    },
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ClientRequest {
+    Read {
+        key: Value,
+    },
+    Write {
+        key: Value,
+        value: Value,
+    },
+    Cas {
+        key: Value,
+        from: Value,
+        to: Value,
+        #[serde(default)]
+        create_if_not_exists: bool,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseBody {
     InitOk {

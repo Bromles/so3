@@ -6,8 +6,8 @@ use so3_core::object_server::service::ObjectService;
 use so3_core::storage::object::repository::ObjectRepository;
 
 use crate::protocol::{
-    CRASH_CODE, KEY_DOES_NOT_EXIST_CODE, MALFORMED_REQUEST_CODE, NOT_SUPPORTED_CODE,
-    PRECONDITION_FAILED_CODE, RequestBody, ResponseBody, error_response,
+    CRASH_CODE, ClientRequest, KEY_DOES_NOT_EXIST_CODE, MALFORMED_REQUEST_CODE,
+    PRECONDITION_FAILED_CODE, ResponseBody, error_response,
 };
 
 #[derive(Clone)]
@@ -26,11 +26,14 @@ impl<R> MaelstromService<R>
 where
     R: ObjectRepository + Clone + Send + Sync + 'static,
 {
-    pub async fn handle(&self, request: RequestBody) -> ResponseBody {
+    #[cfg(test)]
+    pub async fn handle(&self, request: crate::protocol::RequestBody) -> ResponseBody {
+        use crate::protocol::RequestBody;
+
         match request {
             RequestBody::Init { msg_id, .. } => error_response(
                 msg_id,
-                NOT_SUPPORTED_CODE,
+                MALFORMED_REQUEST_CODE,
                 "init is handled by the maelstrom runtime bootstrap",
             ),
             RequestBody::Read { msg_id, key } => self.handle_read(msg_id, key).await,
@@ -39,6 +42,39 @@ where
             }
             RequestBody::Cas {
                 msg_id,
+                key,
+                from,
+                to,
+                create_if_not_exists,
+            } => {
+                self.handle_cas(msg_id, key, from, to, create_if_not_exists)
+                    .await
+            }
+            RequestBody::Forward { msg_id, .. }
+            | RequestBody::Replicate { msg_id, .. }
+            | RequestBody::ForwardOk {
+                in_reply_to: msg_id,
+                ..
+            }
+            | RequestBody::ReplicateOk {
+                in_reply_to: msg_id,
+            }
+            | RequestBody::Error {
+                in_reply_to: msg_id,
+                ..
+            } => error_response(
+                msg_id,
+                MALFORMED_REQUEST_CODE,
+                "internal maelstrom messages are handled by the runtime",
+            ),
+        }
+    }
+
+    pub async fn handle_client(&self, msg_id: u64, request: ClientRequest) -> ResponseBody {
+        match request {
+            ClientRequest::Read { key } => self.handle_read(msg_id, key).await,
+            ClientRequest::Write { key, value } => self.handle_write(msg_id, key, value).await,
+            ClientRequest::Cas {
                 key,
                 from,
                 to,
