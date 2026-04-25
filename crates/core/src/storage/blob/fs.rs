@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use tokio::fs;
+use tokio::fs::ReadDir;
 use tokio::fs::File as TokioFile;
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
@@ -28,20 +29,38 @@ impl FileSystemBlobRepository {
     /// Returns an error if the local blob directories cannot be created.
     pub async fn new(blob_dir: impl AsRef<Path>) -> So3Result<Self> {
         let blob_dir = blob_dir.as_ref().to_path_buf();
-        fs::create_dir_all(blob_dir.join(TEMP_BLOBS_DIR_NAME)).await?;
-        fs::create_dir_all(blob_dir.join(COMMITTED_BLOBS_DIR_NAME)).await?;
+        let repository = Self { blob_dir };
+        fs::create_dir_all(repository.temp_dir()).await?;
+        fs::create_dir_all(repository.committed_dir()).await?;
+        repository.remove_stale_temp_blobs().await?;
 
-        Ok(Self { blob_dir })
+        Ok(repository)
+    }
+
+    fn temp_dir(&self) -> PathBuf {
+        self.blob_dir.join(TEMP_BLOBS_DIR_NAME)
+    }
+
+    fn committed_dir(&self) -> PathBuf {
+        self.blob_dir.join(COMMITTED_BLOBS_DIR_NAME)
     }
 
     fn temp_path(&self, blob_id: &str) -> PathBuf {
-        self.blob_dir
-            .join(TEMP_BLOBS_DIR_NAME)
+        self.temp_dir()
             .join(format!("{blob_id}.{TEMP_FILE_EXTENSION}"))
     }
 
     fn committed_path(&self, blob_id: &str) -> PathBuf {
-        self.blob_dir.join(COMMITTED_BLOBS_DIR_NAME).join(blob_id)
+        self.committed_dir().join(blob_id)
+    }
+
+    async fn remove_stale_temp_blobs(&self) -> So3Result<()> {
+        let mut entries = fs::read_dir(self.temp_dir()).await?;
+        while let Some(entry) = next_dir_entry(&mut entries).await? {
+            fs::remove_file(entry.path()).await?;
+        }
+
+        Ok(())
     }
 }
 
@@ -82,14 +101,20 @@ fn checksum_hex(value: &[u8]) -> String {
     checksum
 }
 
+async fn next_dir_entry(entries: &mut ReadDir) -> So3Result<Option<fs::DirEntry>> {
+    entries.next_entry().await.map_err(So3Error::from)
+}
+
 #[cfg(test)]
 mod tests {
+    use tokio::fs;
     use tempfile::TempDir;
 
-    use super::FileSystemBlobRepository;
+    use super::{FileSystemBlobRepository, TEMP_BLOBS_DIR_NAME};
     use crate::storage::blob::repository::BlobRepository;
 
     const TEST_PAYLOAD: &[u8] = b"blob-data";
+    const STALE_TEMP_BLOB_NAME: &str = "stale.blob.tmp";
 
     #[tokio::test]
     async fn store_then_load_roundtrips_blob() {
@@ -103,5 +128,22 @@ mod tests {
 
         assert_eq!(metadata.content_length, TEST_PAYLOAD.len() as u64);
         assert_eq!(loaded, TEST_PAYLOAD.to_vec());
+    }
+
+    #[tokio::test]
+    async fn new_removes_stale_temp_blobs_left_from_interrupted_writes() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_blob_dir = temp_dir.path().join(TEMP_BLOBS_DIR_NAME);
+        fs::create_dir_all(&temp_blob_dir).await.unwrap();
+        fs::write(temp_blob_dir.join(STALE_TEMP_BLOB_NAME), TEST_PAYLOAD)
+            .await
+            .unwrap();
+
+        let _repository = FileSystemBlobRepository::new(temp_dir.path())
+            .await
+            .unwrap();
+
+        let mut entries = fs::read_dir(temp_blob_dir).await.unwrap();
+        assert!(entries.next_entry().await.unwrap().is_none());
     }
 }

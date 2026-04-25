@@ -117,9 +117,12 @@ where
 #[cfg(test)]
 mod tests {
     use tempfile::TempDir;
+    use tokio::task::JoinHandle;
 
     use super::PersistentObjectRepository;
     use crate::domain::{ObjectKey, ObjectVersion};
+    use crate::storage::blob::fs::FileSystemBlobRepository;
+    use crate::storage::metadata::sqlite::SqliteObjectMetadataRepository;
     use crate::storage::object::repository::{CasWriteOutcome, ObjectRepository};
 
     const FIRST_PAYLOAD: &[u8] = b"first";
@@ -129,6 +132,7 @@ mod tests {
     const KEY_ALPHA: &str = "alpha";
     const KEY_BETA: &str = "beta";
     const KEY_GAMMA: &str = "gamma";
+    const KEY_DELTA: &str = "delta";
 
     #[tokio::test]
     async fn write_survives_reopen() {
@@ -221,5 +225,71 @@ mod tests {
 
         assert_eq!(object.record.version, written.record.version.next());
         assert_eq!(object.value, SECOND_PAYLOAD.to_vec());
+    }
+
+    #[tokio::test]
+    async fn concurrent_cas_allows_exactly_one_winner_for_a_version() {
+        let temp_dir = TempDir::new().unwrap();
+        let key = ObjectKey::new(KEY_DELTA).unwrap();
+        let repository = PersistentObjectRepository::new(
+            temp_dir.path().join("metadata"),
+            temp_dir.path().join("blobs"),
+        )
+        .await
+        .unwrap();
+        let written = repository
+            .write(&key, FIRST_PAYLOAD.to_vec())
+            .await
+            .unwrap();
+
+        let left_task = spawn_cas(
+            repository.clone(),
+            key.clone(),
+            written.record.version,
+            SECOND_PAYLOAD.to_vec(),
+        );
+        let right_task = spawn_cas(
+            repository.clone(),
+            key.clone(),
+            written.record.version,
+            HELLO_PAYLOAD.to_vec(),
+        );
+
+        let left = left_task.await.unwrap();
+        let right = right_task.await.unwrap();
+        let outcomes = [left, right];
+        let applied_count = outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, CasWriteOutcome::Applied(_)))
+            .count();
+        let mismatch_count = outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, CasWriteOutcome::Mismatch { .. }))
+            .count();
+        let loaded = repository.read(&key).await.unwrap().unwrap();
+
+        assert_eq!(applied_count, 1);
+        assert_eq!(mismatch_count, 1);
+        assert_eq!(loaded.record.version, written.record.version.next());
+        assert!(
+            loaded.value == SECOND_PAYLOAD.to_vec() || loaded.value == HELLO_PAYLOAD.to_vec()
+        );
+    }
+
+    fn spawn_cas(
+        repository: PersistentObjectRepository<
+            SqliteObjectMetadataRepository,
+            FileSystemBlobRepository,
+        >,
+        key: ObjectKey,
+        expected_version: ObjectVersion,
+        value: Vec<u8>,
+    ) -> JoinHandle<CasWriteOutcome> {
+        tokio::spawn(async move {
+            repository
+                .cas(&key, expected_version, value)
+                .await
+                .unwrap()
+        })
     }
 }
