@@ -23,7 +23,7 @@ async fn main() {
 }
 
 async fn run() -> So3Result<()> {
-    let config = NodeConfig::from_env()?;
+    let config = NodeConfig::load()?;
     let node = Node::new(config).await?;
     let cancellation_token = CancellationToken::new();
     let signal_token = cancellation_token.clone();

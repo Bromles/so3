@@ -16,6 +16,7 @@ tower = { workspace = true, features = ["util"] }
 bytes = { workspace = true }
 serde = { workspace = true, features = ["derive", "std"] }
 serde_json = { workspace = true, features = ["std"] }
+toml = { workspace = true, features = ["parse", "serde"] }
 tonic = { workspace = true, features = ["codegen", "router", "transport"] }
 tonic-prost = { workspace = true }
 prost = { workspace = true, features = ["derive", "std"] }
@@ -30,3 +31,6 @@ tempfile = { workspace = true }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }
+
+[dev-dependencies]
+reqwest = { workspace = true, features = ["json"] }
