@@ -11,6 +11,7 @@ NO_BUILD="${NO_BUILD:-0}"
 MAELSTROM_BIN="${MAELSTROM_BIN:-}"
 MAELSTROM_JAR="${MAELSTROM_JAR:-}"
 BINARY_PATH="${BINARY_PATH:-}"
+SO3_MAELSTROM_DATA_DIR="${SO3_MAELSTROM_DATA_DIR:-}"
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 default_jar_path="$repo_root/.tools/maelstrom/maelstrom/lib/maelstrom.jar"
@@ -70,7 +71,15 @@ if [[ ! -x "$adapter_binary" ]]; then
   exit 1
 fi
 
-mapfile -d '' maelstrom_command < <(resolve_maelstrom_command)
+if [[ -z "$SO3_MAELSTROM_DATA_DIR" ]]; then
+  SO3_MAELSTROM_DATA_DIR="$(mktemp -d "${TMPDIR:-/tmp}/so3-maelstrom.XXXXXX")"
+fi
+export SO3_MAELSTROM_DATA_DIR
+
+maelstrom_command=()
+while IFS= read -r -d '' part; do
+  maelstrom_command+=("$part")
+done < <(resolve_maelstrom_command)
 command=(
   "${maelstrom_command[@]}"
   --workload "$WORKLOAD"
@@ -91,5 +100,6 @@ for part in "${command[@]}"; do
   printf ' %q' "$part"
 done
 printf '\n'
+printf 'SO3_MAELSTROM_DATA_DIR=%q\n' "$SO3_MAELSTROM_DATA_DIR"
 
 "${command[@]}"

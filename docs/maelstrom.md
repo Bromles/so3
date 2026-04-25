@@ -74,6 +74,8 @@ Default settings:
 ## Notes
 
 - The adapter stores state under `SO3_MAELSTROM_DATA_DIR` or `./var/so3-maelstrom` by default.
+- The helper scripts create a fresh temporary `SO3_MAELSTROM_DATA_DIR` for each run unless you
+  provide one explicitly.
 - Each Maelstrom node gets its own subdirectory keyed by `node_id`.
 - The current adapter is single-process local storage per node. It is useful for early protocol and
   semantics validation before real replication is wired into the Maelstrom path.

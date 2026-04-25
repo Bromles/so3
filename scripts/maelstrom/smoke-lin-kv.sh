@@ -7,6 +7,6 @@ WORKLOAD="lin-kv" \
 NODE_COUNT="1" \
 TIME_LIMIT="10" \
 RATE="20" \
-CONCURRENCY="1n" \
+CONCURRENCY="2n" \
 LOG_STDERR="1" \
-"$script_dir/run-lin-kv.sh"
+bash "$script_dir/run-lin-kv.sh"

@@ -8,6 +8,7 @@ param(
     [string]$MaelstromJar = "",
     [string]$BinaryPath = "",
     [string]$OutputDir = "var/maelstrom",
+    [string]$DataDir = "",
     [switch]$LogStderr,
     [switch]$NoBuild
 )
@@ -96,6 +97,12 @@ try {
         throw "Maelstrom adapter binary not found at $adapterBinary"
     }
 
+    if (-not $DataDir) {
+        $DataDir = Join-Path ([System.IO.Path]::GetTempPath()) ("so3-maelstrom-" + [guid]::NewGuid())
+    }
+    New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
+    $env:SO3_MAELSTROM_DATA_DIR = $DataDir
+
     $maelstromCommand = Resolve-MaelstromCommand -ExplicitBin $MaelstromBin -ExplicitJar $MaelstromJar
     $resultsDirectory = Join-Path (Get-Location) $OutputDir
     New-Item -ItemType Directory -Force -Path $resultsDirectory | Out-Null
@@ -118,6 +125,7 @@ try {
     }
 
     Write-Host "Running:" ($command -join " ")
+    Write-Host "SO3_MAELSTROM_DATA_DIR=$DataDir"
     & $command[0] $command[1..($command.Length - 1)]
     if ($LASTEXITCODE -ne 0) {
         throw "Maelstrom exited with code $LASTEXITCODE"
