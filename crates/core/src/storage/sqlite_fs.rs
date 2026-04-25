@@ -22,7 +22,7 @@ use crate::storage::repository::{CasWriteOutcome, ObjectRepository};
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SQLITE_MAX_CONNECTIONS: u32 = 1;
 
-// Explicit storage schema versioning.
+// Metadata schema versioning.
 const CURRENT_SCHEMA_VERSION: i64 = 1;
 
 // On-disk layout.
@@ -276,14 +276,22 @@ mod tests {
     use crate::storage::repository::{CasWriteOutcome, ObjectRepository};
 
     const UNKNOWN_SCHEMA_VERSION: i64 = 99;
+    const FIRST_PAYLOAD: &[u8] = b"first";
+    const SECOND_PAYLOAD: &[u8] = b"second";
+    const HELLO_PAYLOAD: &[u8] = b"hello";
+    const INITIAL_VERSION_NUMBER: i64 = 1;
+    const STALE_VERSION_NUMBER: i64 = 99;
+    const KEY_ALPHA: &str = "alpha";
+    const KEY_BETA: &str = "beta";
+    const KEY_GAMMA: &str = "gamma";
 
     #[tokio::test]
     async fn write_survives_reopen() {
         let temp_dir = TempDir::new().unwrap();
-        let key = ObjectKey::new("alpha").unwrap();
+        let key = ObjectKey::new(KEY_ALPHA).unwrap();
 
         let store = PersistentObjectStore::new(temp_dir.path()).await.unwrap();
-        let written = store.write(&key, b"hello".to_vec()).await.unwrap();
+        let written = store.write(&key, HELLO_PAYLOAD.to_vec()).await.unwrap();
         assert_eq!(written.record.version, ObjectVersion::initial());
         drop(store);
 
@@ -291,21 +299,21 @@ mod tests {
         let loaded = reopened.read(&key).await.unwrap().unwrap();
 
         assert_eq!(loaded.record.version, ObjectVersion::initial());
-        assert_eq!(loaded.value, b"hello".to_vec());
+        assert_eq!(loaded.value, HELLO_PAYLOAD.to_vec());
     }
 
     #[tokio::test]
     async fn cas_reports_mismatch_without_overwriting() {
         let temp_dir = TempDir::new().unwrap();
-        let key = ObjectKey::new("beta").unwrap();
+        let key = ObjectKey::new(KEY_BETA).unwrap();
         let store = PersistentObjectStore::new(temp_dir.path()).await.unwrap();
 
-        let written = store.write(&key, b"first".to_vec()).await.unwrap();
+        let written = store.write(&key, FIRST_PAYLOAD.to_vec()).await.unwrap();
         let outcome = store
             .cas(
                 &key,
-                ObjectVersion::try_from(99).unwrap(),
-                b"second".to_vec(),
+                ObjectVersion::try_from(STALE_VERSION_NUMBER).unwrap(),
+                SECOND_PAYLOAD.to_vec(),
             )
             .await
             .unwrap();
@@ -318,7 +326,7 @@ mod tests {
         );
 
         let loaded = store.read(&key).await.unwrap().unwrap();
-        assert_eq!(loaded.value, b"first".to_vec());
+        assert_eq!(loaded.value, FIRST_PAYLOAD.to_vec());
     }
 
     #[tokio::test]
@@ -331,7 +339,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(version, 1);
+        assert_eq!(version, INITIAL_VERSION_NUMBER);
     }
 
     #[tokio::test]
@@ -359,12 +367,12 @@ mod tests {
     #[tokio::test]
     async fn cas_applies_new_value_and_bumps_version() {
         let temp_dir = TempDir::new().unwrap();
-        let key = ObjectKey::new("gamma").unwrap();
+        let key = ObjectKey::new(KEY_GAMMA).unwrap();
         let store = PersistentObjectStore::new(temp_dir.path()).await.unwrap();
 
-        let written = store.write(&key, b"first".to_vec()).await.unwrap();
+        let written = store.write(&key, FIRST_PAYLOAD.to_vec()).await.unwrap();
         let outcome = store
-            .cas(&key, written.record.version, b"second".to_vec())
+            .cas(&key, written.record.version, SECOND_PAYLOAD.to_vec())
             .await
             .unwrap();
 
@@ -373,6 +381,6 @@ mod tests {
         };
 
         assert_eq!(object.record.version, written.record.version.next());
-        assert_eq!(object.value, b"second".to_vec());
+        assert_eq!(object.value, SECOND_PAYLOAD.to_vec());
     }
 }

@@ -10,13 +10,15 @@ use so3_core::domain::error::So3Result;
 use so3_core::node::config::NodeConfig;
 use so3_core::node::runtime::Node;
 
+const PROCESS_EXIT_FAILURE: i32 = 1;
+
 #[tokio::main]
 async fn main() {
     tracing_fmt().with_target(false).compact().init();
 
     if let Err(error) = run().await {
         error!(%error, "node exited with error");
-        exit(1);
+        exit(PROCESS_EXIT_FAILURE);
     }
 }
 

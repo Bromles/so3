@@ -60,6 +60,14 @@ mod tests {
     };
     use crate::storage::repository::{CasWriteOutcome, ObjectRepository};
 
+    const KEY_ALPHA: &str = "alpha";
+    const MISSING_KEY: &str = "missing";
+    const FIRST_VALUE: &[u8] = b"first";
+    const SECOND_VALUE: &[u8] = b"second";
+    const WRITE_VALUE: &[u8] = b"value";
+    const CHECKSUM: &str = "checksum";
+    const STALE_VERSION: i64 = 99;
+
     struct InMemoryRepository {
         objects: Mutex<HashMap<String, StoredObject>>,
     }
@@ -120,7 +128,7 @@ mod tests {
                 version,
                 blob_id: format!("blob-{}", version.get()),
                 content_length: value.len() as u64,
-                checksum: "checksum".to_owned(),
+                checksum: CHECKSUM.to_owned(),
             },
             value,
         }
@@ -132,8 +140,8 @@ mod tests {
 
         let result = state_machine
             .execute(ObjectCommand::Write(WriteCommand {
-                key: ObjectKey::new("alpha").unwrap(),
-                value: b"value".to_vec(),
+                key: ObjectKey::new(KEY_ALPHA).unwrap(),
+                value: WRITE_VALUE.to_vec(),
             }))
             .await
             .unwrap();
@@ -141,7 +149,7 @@ mod tests {
         match result {
             ObjectResult::Write(write) => {
                 assert_eq!(write.object.record.version, ObjectVersion::initial());
-                assert_eq!(write.object.value, b"value".to_vec());
+                assert_eq!(write.object.value, WRITE_VALUE.to_vec());
             }
             other => panic!("unexpected result: {other:?}"),
         }
@@ -152,17 +160,17 @@ mod tests {
         let state_machine = LocalStateMachine::new(Arc::new(InMemoryRepository::new()));
         state_machine
             .execute(ObjectCommand::Write(WriteCommand {
-                key: ObjectKey::new("alpha").unwrap(),
-                value: b"first".to_vec(),
+                key: ObjectKey::new(KEY_ALPHA).unwrap(),
+                value: FIRST_VALUE.to_vec(),
             }))
             .await
             .unwrap();
 
         let result = state_machine
             .execute(ObjectCommand::Cas(CasCommand {
-                key: ObjectKey::new("alpha").unwrap(),
-                expected_version: ObjectVersion::try_from(99).unwrap(),
-                value: b"second".to_vec(),
+                key: ObjectKey::new(KEY_ALPHA).unwrap(),
+                expected_version: ObjectVersion::try_from(STALE_VERSION).unwrap(),
+                value: SECOND_VALUE.to_vec(),
             }))
             .await
             .unwrap();
@@ -181,7 +189,7 @@ mod tests {
 
         let result = state_machine
             .execute(ObjectCommand::Read(ReadCommand {
-                key: ObjectKey::new("missing").unwrap(),
+                key: ObjectKey::new(MISSING_KEY).unwrap(),
             }))
             .await
             .unwrap();

@@ -13,6 +13,7 @@ use crate::node::config::NodeConfig;
 use crate::object_server::server::ObjectServer;
 use crate::object_server::service::ObjectService;
 use crate::rpc_server::server::RpcServer;
+use crate::rpc_server::transport::RejectingConsensusTransport;
 use crate::storage::sqlite_fs::PersistentObjectStore;
 
 pub struct Node {
@@ -28,6 +29,7 @@ impl Node {
     /// Returns an error if durable local storage cannot be opened.
     pub async fn new(config: NodeConfig) -> So3Result<Self> {
         config.validate()?;
+        let node_id = config.node_id;
         let repository = Arc::new(PersistentObjectStore::new(&config.data_dir).await?);
         let state_machine = Arc::new(LocalStateMachine::new(repository));
         let object_service = Arc::new(ObjectService::new(state_machine));
@@ -35,7 +37,7 @@ impl Node {
         Ok(Self {
             config,
             object_server: ObjectServer::new(),
-            rpc_server: RpcServer::new(),
+            rpc_server: RpcServer::new(Arc::new(RejectingConsensusTransport::new(node_id))),
             object_service,
         })
     }
@@ -123,14 +125,19 @@ mod tests {
     use crate::domain::error::So3Error;
     use crate::node::config::{ClusterConfig, NodeConfig};
 
+    const OBJECT_API_ADDR: &str = "127.0.0.1:3000";
+    const RPC_API_ADDR: &str = "127.0.0.1:4000";
+    const REQUEST_TIMEOUT_SECS: u64 = 10;
+    const PEER_SHUTDOWN_TIMEOUT_SECS: u64 = 1;
+
     #[tokio::test]
     async fn new_initializes_node_with_persistent_storage() {
         let temp_dir = TempDir::new().unwrap();
         let config = NodeConfig {
             node_id: Uuid::nil(),
-            object_api_addr: "127.0.0.1:3000".parse().unwrap(),
-            rpc_api_addr: "127.0.0.1:4000".parse().unwrap(),
-            object_request_timeout: Duration::from_secs(10),
+            object_api_addr: OBJECT_API_ADDR.parse().unwrap(),
+            rpc_api_addr: RPC_API_ADDR.parse().unwrap(),
+            object_request_timeout: Duration::from_secs(REQUEST_TIMEOUT_SECS),
             data_dir: temp_dir.path().to_path_buf(),
             cluster: ClusterConfig::default(),
         };
@@ -158,7 +165,10 @@ mod tests {
 
         assert!(matches!(result, Err(So3Error::RpcNotImplemented)));
         assert!(cancellation_token.is_cancelled());
-        timeout(Duration::from_secs(1), peer_stopped_waiter.notified())
+        timeout(
+            Duration::from_secs(PEER_SHUTDOWN_TIMEOUT_SECS),
+            peer_stopped_waiter.notified(),
+        )
             .await
             .unwrap();
     }

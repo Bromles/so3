@@ -51,12 +51,6 @@ pub struct ErrorResponse {
     pub detail: String,
 }
 
-// Test-only HTTP defaults.
-#[cfg(test)]
-const TEST_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-#[cfg(test)]
-const TEST_MAX_RESPONSE_BYTES: usize = usize::MAX;
-
 pub fn object_controller(state: ObjectApiState) -> Router {
     let request_timeout = state.request_timeout;
 
@@ -151,20 +145,30 @@ impl IntoResponse for ApiError {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ObjectApiState, TEST_MAX_RESPONSE_BYTES, TEST_REQUEST_TIMEOUT, WriteResponse,
-        object_controller,
-    };
     use std::sync::Arc;
+    use std::time::Duration;
 
     use axum::body::{Body, to_bytes};
     use axum::http::{Request, StatusCode};
     use tempfile::TempDir;
     use tower::util::ServiceExt;
 
+    use super::{ObjectApiState, WriteResponse, object_controller};
     use crate::consensus::state_machine::LocalStateMachine;
     use crate::object_server::service::ObjectService;
     use crate::storage::sqlite_fs::PersistentObjectStore;
+
+    const TEST_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+    const TEST_MAX_RESPONSE_BYTES: usize = usize::MAX;
+    const OBJECT_PATH: &str = "/objects/alpha";
+    const MISSING_OBJECT_PATH: &str = "/objects/missing";
+    const CAS_MISMATCH_PATH: &str = "/objects/alpha?expected_version=9";
+    const INVALID_VERSION_PATH: &str = "/objects/alpha?expected_version=0";
+    const FIRST_VALUE: &str = "first";
+    const SECOND_VALUE: &str = "second";
+    const HELLO_VALUE: &str = "hello";
+    const FIRST_VERSION: i64 = 1;
+    const SECOND_VERSION: i64 = 2;
 
     async fn test_app() -> (axum::Router, TempDir) {
         let temp_dir = TempDir::new().unwrap();
@@ -189,8 +193,8 @@ mod tests {
         let put_response = app
             .clone()
             .oneshot(
-                Request::put("/objects/alpha")
-                    .body(Body::from("hello"))
+                Request::put(OBJECT_PATH)
+                    .body(Body::from(HELLO_VALUE))
                     .unwrap(),
             )
             .await
@@ -202,10 +206,10 @@ mod tests {
             .unwrap();
         let write: WriteResponse = serde_json::from_slice(&write_body).unwrap();
         assert_eq!(write.key, "alpha");
-        assert_eq!(write.version, 1);
+        assert_eq!(write.version, FIRST_VERSION);
 
         let get_response = app
-            .oneshot(Request::get("/objects/alpha").body(Body::empty()).unwrap())
+            .oneshot(Request::get(OBJECT_PATH).body(Body::empty()).unwrap())
             .await
             .unwrap();
 
@@ -222,7 +226,7 @@ mod tests {
         let get_body = to_bytes(get_response.into_body(), TEST_MAX_RESPONSE_BYTES)
             .await
             .unwrap();
-        assert_eq!(&get_body[..], b"hello");
+        assert_eq!(&get_body[..], HELLO_VALUE.as_bytes());
     }
 
     #[tokio::test]
@@ -231,7 +235,7 @@ mod tests {
 
         let response = app
             .oneshot(
-                Request::get("/objects/missing")
+                Request::get(MISSING_OBJECT_PATH)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -248,8 +252,8 @@ mod tests {
         let _ = app
             .clone()
             .oneshot(
-                Request::put("/objects/alpha")
-                    .body(Body::from("first"))
+                Request::put(OBJECT_PATH)
+                    .body(Body::from(FIRST_VALUE))
                     .unwrap(),
             )
             .await
@@ -257,8 +261,8 @@ mod tests {
 
         let response = app
             .oneshot(
-                Request::put("/objects/alpha?expected_version=9")
-                    .body(Body::from("second"))
+                Request::put(CAS_MISMATCH_PATH)
+                    .body(Body::from(SECOND_VALUE))
                     .unwrap(),
             )
             .await
@@ -274,8 +278,8 @@ mod tests {
         let initial_response = app
             .clone()
             .oneshot(
-                Request::put("/objects/alpha")
-                    .body(Body::from("first"))
+                Request::put(OBJECT_PATH)
+                    .body(Body::from(FIRST_VALUE))
                     .unwrap(),
             )
             .await
@@ -288,11 +292,8 @@ mod tests {
         let cas_response = app
             .clone()
             .oneshot(
-                Request::put(format!(
-                    "/objects/alpha?expected_version={}",
-                    initial.version
-                ))
-                .body(Body::from("second"))
+                Request::put(format!("/objects/alpha?expected_version={}", initial.version))
+                .body(Body::from(SECOND_VALUE))
                 .unwrap(),
             )
             .await
@@ -305,7 +306,7 @@ mod tests {
         assert_eq!(cas.version, initial.version + 1);
 
         let get_response = app
-            .oneshot(Request::get("/objects/alpha").body(Body::empty()).unwrap())
+            .oneshot(Request::get(OBJECT_PATH).body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(get_response.status(), StatusCode::OK);
@@ -321,7 +322,8 @@ mod tests {
         let get_body = to_bytes(get_response.into_body(), TEST_MAX_RESPONSE_BYTES)
             .await
             .unwrap();
-        assert_eq!(&get_body[..], b"second");
+        assert_eq!(&get_body[..], SECOND_VALUE.as_bytes());
+        assert_eq!(cas.version, SECOND_VERSION);
     }
 
     #[tokio::test]
@@ -330,7 +332,7 @@ mod tests {
 
         let response = app
             .oneshot(
-                Request::put("/objects/alpha?expected_version=0")
+                Request::put(INVALID_VERSION_PATH)
                     .body(Body::from("value"))
                     .unwrap(),
             )

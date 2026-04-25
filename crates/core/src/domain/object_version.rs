@@ -40,9 +40,11 @@ mod tests {
     use crate::domain::ObjectVersion;
     use crate::domain::error::So3Error;
 
+    const NON_POSITIVE_VERSION: i64 = 0;
+
     #[test]
     fn object_version_rejects_non_positive_numbers() {
-        let error = ObjectVersion::try_from(0).unwrap_err();
-        assert!(matches!(error, So3Error::InvalidVersion(0)));
+        let error = ObjectVersion::try_from(NON_POSITIVE_VERSION).unwrap_err();
+        assert!(matches!(error, So3Error::InvalidVersion(NON_POSITIVE_VERSION)));
     }
 }

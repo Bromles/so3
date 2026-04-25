@@ -46,9 +46,11 @@ mod tests {
     use crate::domain::ObjectKey;
     use crate::domain::error::So3Error;
 
+    const BLANK_KEY: &str = "   ";
+
     #[test]
     fn object_key_rejects_blank_values() {
-        let error = ObjectKey::new("   ").unwrap_err();
+        let error = ObjectKey::new(BLANK_KEY).unwrap_err();
         assert!(matches!(error, So3Error::InvalidKey));
     }
 }

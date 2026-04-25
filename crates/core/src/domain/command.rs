@@ -75,12 +75,19 @@ mod tests {
         CasCommand, ObjectCommand, ObjectKey, ObjectVersion, ReadCommand, WriteCommand,
     };
 
+    const KEY_ALPHA: &str = "alpha";
+    const READ_KEY: &str = "r";
+    const WRITE_KEY: &str = "w";
+    const PAYLOAD: &[u8] = b"payload";
+    const WRITE_VALUE: &[u8] = b"v";
+    const EXPECTED_VERSION: i64 = 7;
+
     #[test]
     fn object_command_roundtrip_is_stable() {
         let command = ObjectCommand::Cas(CasCommand {
-            key: ObjectKey::new("alpha").unwrap(),
-            expected_version: ObjectVersion::try_from(7).unwrap(),
-            value: b"payload".to_vec(),
+            key: ObjectKey::new(KEY_ALPHA).unwrap(),
+            expected_version: ObjectVersion::try_from(EXPECTED_VERSION).unwrap(),
+            value: PAYLOAD.to_vec(),
         });
 
         let encoded = command.to_bytes().unwrap();
@@ -92,11 +99,11 @@ mod tests {
     #[test]
     fn read_and_write_commands_construct_cleanly() {
         let read = ObjectCommand::Read(ReadCommand {
-            key: ObjectKey::new("r").unwrap(),
+            key: ObjectKey::new(READ_KEY).unwrap(),
         });
         let write = ObjectCommand::Write(WriteCommand {
-            key: ObjectKey::new("w").unwrap(),
-            value: b"v".to_vec(),
+            key: ObjectKey::new(WRITE_KEY).unwrap(),
+            value: WRITE_VALUE.to_vec(),
         });
 
         assert!(matches!(read, ObjectCommand::Read(_)));

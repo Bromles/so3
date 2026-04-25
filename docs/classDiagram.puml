@@ -18,7 +18,7 @@ package "crates/core::node" {
         -config: NodeConfig
         -object_server: ObjectServer
         -rpc_server: RpcServer
-        -state_machine: Arc<LocalStateMachine>
+        -object_service: Arc<ObjectService>
         +new(config: NodeConfig): Result<Node>
         +run(cancellation_token): Result<()>
     }
@@ -45,11 +45,19 @@ package "crates/core::node" {
 package "crates/core::object_server" {
     class ObjectServer {
         +new(): ObjectServer
-        +run(listener, config, state_machine, cancellation_token): Result<()>
+        +run(listener, config, service, cancellation_token): Result<()>
+    }
+
+    class ObjectService {
+        -state_machine: Arc<LocalStateMachine>
+        +new(state_machine): ObjectService
+        +read(key): Result<Option<StoredObject>>
+        +write(key, value): Result<StoredObject>
+        +cas(key, expected_version, value): Result<CasResult>
     }
 
     class ObjectApiState {
-        +state_machine: Arc<LocalStateMachine>
+        +service: Arc<ObjectService>
         +request_timeout: Duration
     }
 
@@ -77,16 +85,32 @@ package "crates/core::object_server" {
 
 package "crates/core::rpc_server" {
     class RpcServer {
-        +new(): RpcServer
+        -handler: Arc<ConsensusTransportHandler>
+        +new(handler): RpcServer
         +run(listener, cancellation_token): Result<()>
     }
 
     class ConsensusTransportService {
+        -handler: Arc<ConsensusTransportHandler>
+        +new(handler): ConsensusTransportService
         +pre_accept(request): Result<Response>
         +accept(request): Result<Response>
         +commit(request): Result<Response>
         +apply(request): Result<Response>
         +recover(request): Result<Response>
+    }
+
+    interface ConsensusTransportHandler {
+        +pre_accept(request): Result<PreAcceptResponse>
+        +accept(request): Result<AcceptResponse>
+        +commit(request): Result<CommitResponse>
+        +apply(request): Result<ApplyResponse>
+        +recover(request): Result<RecoverResponse>
+    }
+
+    class RejectingConsensusTransport {
+        -node_id: Arc<str>
+        +new(node_id): RejectingConsensusTransport
     }
 
     interface ConsensusTransport <<generated proto service>>
@@ -251,25 +275,27 @@ Main --> Node : creates/runs
 Node *-- NodeConfig
 Node *-- ObjectServer
 Node *-- RpcServer
-Node --> LocalStateMachine
+Node --> ObjectService
 Node ..> PersistentObjectStore : constructs local backend
+Node ..> RejectingConsensusTransport : constructs current rpc handler
 Node ..> FailFastJoin : orchestrates shutdown
 FailFastJoin ..> FlattenJoin
 
 NodeConfig o-- ClusterConfig
 
 ObjectServer --> ObjectController
+ObjectServer --> ObjectService
+ObjectService --> LocalStateMachine
 ObjectController --> ObjectApiState
 ObjectController ..> HandleGet
 ObjectController ..> HandlePut
-ObjectApiState --> LocalStateMachine
-HandleGet ..> ObjectCommand
-HandleGet ..> ObjectResult
+ObjectApiState --> ObjectService
 HandlePut ..> WriteQuery
 HandlePut ..> WriteResponse
 HandlePut ..> ApiError
-HandlePut ..> ObjectCommand
-HandlePut ..> ObjectResult
+ObjectService ..> ObjectCommand
+ObjectService ..> ObjectResult
+ObjectService ..> CasResult
 ApiError ..> ErrorResponse
 ApiError ..> So3Error
 
@@ -277,6 +303,9 @@ RpcServer --> ConsensusTransportServer
 ConsensusTransportServer ..|> ConsensusTransport
 ConsensusTransportService ..|> ConsensusTransport
 RpcServer --> ConsensusTransportService
+RpcServer --> ConsensusTransportHandler
+ConsensusTransportService --> ConsensusTransportHandler
+ConsensusTransportHandler <|.. RejectingConsensusTransport
 ConsensusTransportClient ..> ConsensusTransport
 ConsensusTransport ..> CommandId
 ConsensusTransport ..> EventPayload
@@ -325,6 +354,8 @@ Current composition:
 - one local persistent backend
 - one public HTTP object API
 - one private gRPC RPC server
+- object API goes through ObjectService
+- rpc API goes through ConsensusTransportHandler
 - no separate consensus engine yet
 end note
 
@@ -346,9 +377,11 @@ end note
 
 note right of RpcServer
 Current RPC state:
-- transport and generated protobuf types are wired
-- transport messages use typed ids/timestamps/dependencies
-- Accord handlers still return UNIMPLEMENTED
+- tonic transport is wired
+- handlers delegate into ConsensusTransportHandler
+- default node wiring uses RejectingConsensusTransport
+- pre_accept/accept/recover nack conservatively
+- commit/apply return FAILED_PRECONDITION
 end note
 
 note right of FailFastJoin
