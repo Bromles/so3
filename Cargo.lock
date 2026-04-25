@@ -1332,6 +1332,8 @@ dependencies = [
 name = "so3-maelstrom"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "prost",
  "serde",
  "serde_json",
  "so3-core",
@@ -1339,6 +1341,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

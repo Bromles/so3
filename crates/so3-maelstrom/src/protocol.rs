@@ -47,6 +47,11 @@ pub enum RequestBody {
         msg_id: u64,
         request: ClientRequest,
     },
+    Consensus {
+        msg_id: u64,
+        rpc: ConsensusRpc,
+        payload: Vec<u8>,
+    },
     ForwardOk {
         in_reply_to: u64,
         response: ResponseBody,
@@ -54,11 +59,23 @@ pub enum RequestBody {
     ReplicateOk {
         in_reply_to: u64,
     },
+    ConsensusOk {
+        in_reply_to: u64,
+        payload: Vec<u8>,
+    },
     Error {
         in_reply_to: u64,
         code: i64,
         text: String,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsensusRpc {
+    PreAccept,
+    Accept,
+    Commit,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

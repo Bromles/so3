@@ -1,7 +1,10 @@
 use serde_json::Value;
 
 use so3_core::domain::error::So3Error;
-use so3_core::domain::{CasResult, ObjectKey, StoredObject};
+use so3_core::domain::{
+    CasCommand, CasResult, ObjectCommand, ObjectKey, ObjectResult, ReadCommand, StoredObject,
+    WriteCommand,
+};
 use so3_core::object_server::service::ObjectService;
 use so3_core::storage::object::repository::ObjectRepository;
 
@@ -52,12 +55,17 @@ where
             }
             RequestBody::Forward { msg_id, .. }
             | RequestBody::Replicate { msg_id, .. }
+            | RequestBody::Consensus { msg_id, .. }
             | RequestBody::ForwardOk {
                 in_reply_to: msg_id,
                 ..
             }
             | RequestBody::ReplicateOk {
                 in_reply_to: msg_id,
+            }
+            | RequestBody::ConsensusOk {
+                in_reply_to: msg_id,
+                ..
             }
             | RequestBody::Error {
                 in_reply_to: msg_id,
@@ -83,6 +91,94 @@ where
                 self.handle_cas(msg_id, key, from, to, create_if_not_exists)
                     .await
             }
+        }
+    }
+
+    pub async fn prepare_command(
+        &self,
+        msg_id: u64,
+        request: ClientRequest,
+    ) -> Result<ObjectCommand, ResponseBody> {
+        match request {
+            ClientRequest::Read { key } => {
+                let key = object_key_from_json(&key).map_err(|error| map_error(msg_id, &error))?;
+                Ok(ObjectCommand::Read(ReadCommand { key }))
+            }
+            ClientRequest::Write { key, value } => {
+                let key = object_key_from_json(&key).map_err(|error| map_error(msg_id, &error))?;
+                let value = value_to_bytes(&value).map_err(|error| map_error(msg_id, &error))?;
+                Ok(ObjectCommand::Write(WriteCommand { key, value }))
+            }
+            ClientRequest::Cas {
+                key,
+                from,
+                to,
+                create_if_not_exists,
+            } => {
+                let key = object_key_from_json(&key).map_err(|error| map_error(msg_id, &error))?;
+                let value = value_to_bytes(&to).map_err(|error| map_error(msg_id, &error))?;
+                let current =
+                    self.object_service.read(key.clone()).await.map_err(|error| {
+                        map_error(msg_id, &error)
+                    })?;
+
+                let Some(current) = current else {
+                    if create_if_not_exists {
+                        return Ok(ObjectCommand::Write(WriteCommand { key, value }));
+                    }
+
+                    return Err(error_response(
+                        msg_id,
+                        KEY_DOES_NOT_EXIST_CODE,
+                        format!("key does not exist: {}", key.as_str()),
+                    ));
+                };
+
+                let current_value =
+                    value_from_object(&current).map_err(|error| map_error(msg_id, &error))?;
+                if current_value != from {
+                    return Err(error_response(
+                        msg_id,
+                        PRECONDITION_FAILED_CODE,
+                        format!("expected {from} but had {current_value}"),
+                    ));
+                }
+
+                Ok(ObjectCommand::Cas(CasCommand {
+                    key,
+                    expected_version: current.record.version,
+                    value,
+                }))
+            }
+        }
+    }
+
+    pub fn response_from_result(msg_id: u64, result: ObjectResult) -> ResponseBody {
+        match result {
+            ObjectResult::Read(read) => match read.object {
+                Some(object) => match value_from_object(&object) {
+                    Ok(value) => ResponseBody::ReadOk {
+                        in_reply_to: msg_id,
+                        value,
+                    },
+                    Err(error) => map_error(msg_id, &error),
+                },
+                None => error_response(msg_id, KEY_DOES_NOT_EXIST_CODE, "key does not exist"),
+            },
+            ObjectResult::Write(_) => ResponseBody::WriteOk {
+                in_reply_to: msg_id,
+            },
+            ObjectResult::Cas(CasResult::Applied(_)) => ResponseBody::CasOk {
+                in_reply_to: msg_id,
+            },
+            ObjectResult::Cas(CasResult::NotFound) => {
+                error_response(msg_id, KEY_DOES_NOT_EXIST_CODE, "key does not exist")
+            }
+            ObjectResult::Cas(CasResult::Mismatch { current_version }) => error_response(
+                msg_id,
+                PRECONDITION_FAILED_CODE,
+                format!("version mismatch: current version is {}", current_version.get()),
+            ),
         }
     }
 

@@ -1,4 +1,5 @@
 mod command_id;
+pub mod coordinator;
 pub mod executor;
 pub mod journal;
 pub mod recovery;
