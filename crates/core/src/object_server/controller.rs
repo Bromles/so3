@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Bytes;
@@ -14,10 +13,11 @@ use tower_http::trace::TraceLayer;
 use crate::domain::error::So3Error;
 use crate::domain::{CasResult, ObjectKey, StoredObject};
 use crate::object_server::service::ObjectService;
+use crate::storage::object::repository::ObjectRepository;
 
 #[derive(Clone)]
-pub struct ObjectApiState {
-    pub service: Arc<ObjectService>,
+pub struct ObjectApiState<R: ObjectRepository> {
+    pub service: ObjectService<R>,
     pub request_timeout: Duration,
 }
 
@@ -51,7 +51,10 @@ pub struct ErrorResponse {
     pub detail: String,
 }
 
-pub fn object_controller(state: ObjectApiState) -> Router {
+pub fn object_controller<R>(state: ObjectApiState<R>) -> Router
+where
+    R: ObjectRepository + Clone + Send + Sync + 'static,
+{
     let request_timeout = state.request_timeout;
 
     Router::new()
@@ -63,10 +66,13 @@ pub fn object_controller(state: ObjectApiState) -> Router {
         ))
 }
 
-async fn handle_get(
-    State(state): State<ObjectApiState>,
+async fn handle_get<R>(
+    State(state): State<ObjectApiState<R>>,
     Path(key): Path<String>,
-) -> Result<Response, ApiError> {
+) -> Result<Response, ApiError>
+where
+    R: ObjectRepository + Clone + Send + Sync + 'static,
+{
     let key = ObjectKey::new(key)?;
     let Some(object) = state.service.read(key.clone()).await? else {
         return Err(ApiError::from(So3Error::not_found(&key)));
@@ -87,12 +93,15 @@ async fn handle_get(
     Ok(response)
 }
 
-async fn handle_put(
-    State(state): State<ObjectApiState>,
+async fn handle_put<R>(
+    State(state): State<ObjectApiState<R>>,
     Path(key): Path<String>,
     Query(query): Query<WriteQuery>,
     body: Bytes,
-) -> Result<Json<WriteResponse>, ApiError> {
+) -> Result<Json<WriteResponse>, ApiError>
+where
+    R: ObjectRepository + Clone + Send + Sync + 'static,
+{
     let key = ObjectKey::new(key)?;
     match query.expected_version {
         None => {
@@ -145,7 +154,6 @@ impl IntoResponse for ApiError {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use std::time::Duration;
 
     use axum::body::{Body, to_bytes};
@@ -156,7 +164,7 @@ mod tests {
     use super::{ObjectApiState, WriteResponse, object_controller};
     use crate::consensus::state_machine::LocalStateMachine;
     use crate::object_server::service::ObjectService;
-    use crate::storage::persistent_object_repository::PersistentObjectRepository;
+    use crate::storage::object::persistent::SqliteFsObjectRepository;
 
     const TEST_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
     const TEST_MAX_RESPONSE_BYTES: usize = usize::MAX;
@@ -172,15 +180,15 @@ mod tests {
 
     async fn test_app() -> (axum::Router, TempDir) {
         let temp_dir = TempDir::new().unwrap();
-        let state_machine = Arc::new(LocalStateMachine::new(Arc::new(
-            PersistentObjectRepository::new(
+        let state_machine = LocalStateMachine::new(
+            SqliteFsObjectRepository::new(
                 temp_dir.path().join("metadata"),
                 temp_dir.path().join("blobs"),
             )
             .await
             .unwrap(),
-        )));
-        let service = Arc::new(ObjectService::new(state_machine));
+        );
+        let service = ObjectService::new(state_machine);
 
         (
             object_controller(ObjectApiState {

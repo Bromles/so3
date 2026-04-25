@@ -1,22 +1,21 @@
-use std::sync::Arc;
-
 use crate::domain::error::So3Result;
 use crate::domain::{CasResult, ObjectCommand, ObjectResult, ReadResult, WriteResult};
-use crate::storage::repository::{CasWriteOutcome, ObjectRepository};
+use crate::storage::object::repository::{CasWriteOutcome, ObjectRepository};
 
 #[derive(Clone)]
-pub struct LocalStateMachine {
-    repository: Arc<dyn ObjectRepository>,
+pub struct LocalStateMachine<R: ObjectRepository> {
+    repository: R,
 }
 
-impl LocalStateMachine {
-    pub fn new(repository: Arc<dyn ObjectRepository>) -> Self {
+impl<R: ObjectRepository> LocalStateMachine<R> {
+    #[must_use]
+    pub fn new(repository: R) -> Self {
         Self { repository }
     }
 
     /// # Errors
     ///
-    /// Propagates repository failures while executing the deterministic object command.
+    /// Returns any storage error raised while executing the deterministic object command.
     pub async fn execute(&self, command: ObjectCommand) -> So3Result<ObjectResult> {
         match command {
             ObjectCommand::Read(command) => {
@@ -47,7 +46,6 @@ impl LocalStateMachine {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::sync::Arc;
 
     use async_trait::async_trait;
     use tokio::sync::Mutex;
@@ -58,7 +56,7 @@ mod tests {
         CasCommand, CasResult, ObjectCommand, ObjectKey, ObjectRecord, ObjectResult, ObjectVersion,
         ReadCommand, ReadResult, StoredObject, WriteCommand,
     };
-    use crate::storage::repository::{CasWriteOutcome, ObjectRepository};
+    use crate::storage::object::repository::{CasWriteOutcome, ObjectRepository};
 
     const KEY_ALPHA: &str = "alpha";
     const MISSING_KEY: &str = "missing";
@@ -136,7 +134,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_returns_written_object() {
-        let state_machine = LocalStateMachine::new(Arc::new(InMemoryRepository::new()));
+        let state_machine = LocalStateMachine::new(InMemoryRepository::new());
 
         let result = state_machine
             .execute(ObjectCommand::Write(WriteCommand {
@@ -157,7 +155,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_reports_cas_mismatch() {
-        let state_machine = LocalStateMachine::new(Arc::new(InMemoryRepository::new()));
+        let state_machine = LocalStateMachine::new(InMemoryRepository::new());
         state_machine
             .execute(ObjectCommand::Write(WriteCommand {
                 key: ObjectKey::new(KEY_ALPHA).unwrap(),
@@ -185,7 +183,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_read_returns_none_for_missing_key() {
-        let state_machine = LocalStateMachine::new(Arc::new(InMemoryRepository::new()));
+        let state_machine = LocalStateMachine::new(InMemoryRepository::new());
 
         let result = state_machine
             .execute(ObjectCommand::Read(ReadCommand {

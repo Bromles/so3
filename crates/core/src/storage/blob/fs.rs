@@ -9,7 +9,7 @@ use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
 use crate::domain::error::{So3Error, So3Result};
-use crate::storage::blob_repository::{BlobMetadata, BlobRepository};
+use crate::storage::blob::repository::{BlobMetadata, BlobRepository};
 
 // On-disk blob layout.
 const TEMP_BLOBS_DIR_NAME: &str = "tmp";
@@ -17,6 +17,7 @@ const COMMITTED_BLOBS_DIR_NAME: &str = "committed";
 const BLOB_FILE_EXTENSION: &str = "blob";
 const TEMP_FILE_EXTENSION: &str = "tmp";
 
+#[derive(Clone)]
 pub struct FileSystemBlobRepository {
     blob_dir: PathBuf,
 }
@@ -86,7 +87,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::FileSystemBlobRepository;
-    use crate::storage::blob_repository::BlobRepository;
+    use crate::storage::blob::repository::BlobRepository;
 
     const TEST_PAYLOAD: &[u8] = b"blob-data";
 

@@ -14,14 +14,14 @@ pub enum ObjectCommand {
 impl ObjectCommand {
     /// # Errors
     ///
-    /// Returns [`So3Error::Serialization`] when the command cannot be serialized.
+    /// Returns [`So3Error::Serialization`] when postcard cannot encode the command.
     pub fn to_bytes(&self) -> So3Result<Vec<u8>> {
         postcard_to_allocvec(self).map_err(So3Error::from)
     }
 
     /// # Errors
     ///
-    /// Returns [`So3Error::Serialization`] when the command payload is invalid.
+    /// Returns [`So3Error::Serialization`] when postcard cannot decode the command payload.
     pub fn from_bytes(bytes: &[u8]) -> So3Result<Self> {
         postcard_from_bytes(bytes).map_err(So3Error::from)
     }

@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use tokio::net::TcpListener;
 use tokio::pin;
 use tokio::spawn;
@@ -14,13 +12,13 @@ use crate::object_server::server::ObjectServer;
 use crate::object_server::service::ObjectService;
 use crate::rpc_server::server::RpcServer;
 use crate::rpc_server::transport::RejectingConsensusTransport;
-use crate::storage::persistent_object_repository::PersistentObjectRepository;
+use crate::storage::object::persistent::SqliteFsObjectRepository;
 
 pub struct Node {
     config: NodeConfig,
     object_server: ObjectServer,
-    rpc_server: RpcServer,
-    object_service: Arc<ObjectService>,
+    rpc_server: RpcServer<RejectingConsensusTransport>,
+    object_service: ObjectService<SqliteFsObjectRepository>,
 }
 
 impl Node {
@@ -30,16 +28,15 @@ impl Node {
     pub async fn new(config: NodeConfig) -> So3Result<Self> {
         config.validate()?;
         let node_id = config.node_id;
-        let repository = Arc::new(
-            PersistentObjectRepository::new(&config.metadata_dir, &config.blob_dir).await?,
-        );
-        let state_machine = Arc::new(LocalStateMachine::new(repository));
-        let object_service = Arc::new(ObjectService::new(state_machine));
+        let repository =
+            SqliteFsObjectRepository::new(&config.metadata_dir, &config.blob_dir).await?;
+        let state_machine = LocalStateMachine::new(repository);
+        let object_service = ObjectService::new(state_machine);
 
         Ok(Self {
             config,
             object_server: ObjectServer::new(),
-            rpc_server: RpcServer::new(Arc::new(RejectingConsensusTransport::new(node_id))),
+            rpc_server: RpcServer::new(RejectingConsensusTransport::new(node_id)),
             object_service,
         })
     }

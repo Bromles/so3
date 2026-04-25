@@ -6,31 +6,30 @@ use tokio::sync::Mutex;
 
 use crate::domain::error::So3Result;
 use crate::domain::{ObjectKey, ObjectRecord, ObjectVersion, StoredObject};
-use crate::storage::blob_repository::BlobRepository;
-use crate::storage::fs_blob_repository::FileSystemBlobRepository;
-use crate::storage::metadata_repository::ObjectMetadataRepository;
-use crate::storage::repository::{CasWriteOutcome, ObjectRepository};
-use crate::storage::sqlite_metadata_repository::SqliteObjectMetadataRepository;
+use crate::storage::blob::fs::FileSystemBlobRepository;
+use crate::storage::blob::repository::BlobRepository;
+use crate::storage::metadata::repository::ObjectMetadataRepository;
+use crate::storage::metadata::sqlite::SqliteObjectMetadataRepository;
+use crate::storage::object::repository::{CasWriteOutcome, ObjectRepository};
 
-pub struct PersistentObjectRepository {
-    metadata_repository: Arc<dyn ObjectMetadataRepository>,
-    blob_repository: Arc<dyn BlobRepository>,
-    write_lock: Mutex<()>,
+#[derive(Clone)]
+pub struct PersistentObjectRepository<M: ObjectMetadataRepository, B: BlobRepository> {
+    metadata_repository: M,
+    blob_repository: B,
+    write_lock: Arc<Mutex<()>>,
 }
 
-impl PersistentObjectRepository {
-    /// # Errors
-    ///
-    /// Returns an error if the local metadata or blob repositories cannot be created.
-    pub async fn new(metadata_dir: impl AsRef<Path>, blob_dir: impl AsRef<Path>) -> So3Result<Self> {
-        let metadata_repository = Arc::new(SqliteObjectMetadataRepository::new(metadata_dir).await?);
-        let blob_repository = Arc::new(FileSystemBlobRepository::new(blob_dir).await?);
+pub type SqliteFsObjectRepository =
+    PersistentObjectRepository<SqliteObjectMetadataRepository, FileSystemBlobRepository>;
 
-        Ok(Self {
+impl<M: ObjectMetadataRepository, B: BlobRepository> PersistentObjectRepository<M, B> {
+    #[must_use]
+    pub fn from_parts(metadata_repository: M, blob_repository: B) -> Self {
+        Self {
             metadata_repository,
             blob_repository,
-            write_lock: Mutex::new(()),
-        })
+            write_lock: Arc::new(Mutex::new(())),
+        }
     }
 
     async fn write_next_version(
@@ -53,8 +52,24 @@ impl PersistentObjectRepository {
     }
 }
 
+impl PersistentObjectRepository<SqliteObjectMetadataRepository, FileSystemBlobRepository> {
+    /// # Errors
+    ///
+    /// Returns an error if the local metadata or blob repositories cannot be created.
+    pub async fn new(metadata_dir: impl AsRef<Path>, blob_dir: impl AsRef<Path>) -> So3Result<Self> {
+        let metadata_repository = SqliteObjectMetadataRepository::new(metadata_dir).await?;
+        let blob_repository = FileSystemBlobRepository::new(blob_dir).await?;
+
+        Ok(Self::from_parts(metadata_repository, blob_repository))
+    }
+}
+
 #[async_trait]
-impl ObjectRepository for PersistentObjectRepository {
+impl<M, B> ObjectRepository for PersistentObjectRepository<M, B>
+where
+    M: ObjectMetadataRepository,
+    B: BlobRepository,
+{
     async fn read(&self, key: &ObjectKey) -> So3Result<Option<StoredObject>> {
         let Some(record) = self.metadata_repository.read(key).await? else {
             return Ok(None);
@@ -105,7 +120,7 @@ mod tests {
 
     use super::PersistentObjectRepository;
     use crate::domain::{ObjectKey, ObjectVersion};
-    use crate::storage::repository::{CasWriteOutcome, ObjectRepository};
+    use crate::storage::object::repository::{CasWriteOutcome, ObjectRepository};
 
     const FIRST_PAYLOAD: &[u8] = b"first";
     const SECOND_PAYLOAD: &[u8] = b"second";
@@ -134,8 +149,8 @@ mod tests {
             temp_dir.path().join("metadata"),
             temp_dir.path().join("blobs"),
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
         let loaded = reopened.read(&key).await.unwrap().unwrap();
 
         assert_eq!(loaded.record.version, ObjectVersion::initial());

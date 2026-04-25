@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use tonic::{Request, Response, Status, async_trait};
 
 use crate::rpc_server::proto::consensus_transport_server::ConsensusTransport;
@@ -9,19 +7,22 @@ use crate::rpc_server::proto::{
 };
 use crate::rpc_server::transport::ConsensusTransportHandler;
 
-pub struct ConsensusTransportService {
-    handler: Arc<dyn ConsensusTransportHandler>,
+pub struct ConsensusTransportService<H: ConsensusTransportHandler> {
+    handler: H,
 }
 
-impl ConsensusTransportService {
+impl<H: ConsensusTransportHandler> ConsensusTransportService<H> {
     #[must_use]
-    pub fn new(handler: Arc<dyn ConsensusTransportHandler>) -> Self {
+    pub fn new(handler: H) -> Self {
         Self { handler }
     }
 }
 
 #[async_trait]
-impl ConsensusTransport for ConsensusTransportService {
+impl<H> ConsensusTransport for ConsensusTransportService<H>
+where
+    H: ConsensusTransportHandler + 'static,
+{
     async fn pre_accept(
         &self,
         request: Request<PreAcceptRequest>,

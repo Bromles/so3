@@ -1,26 +1,25 @@
-use std::sync::Arc;
-
 use crate::consensus::state_machine::LocalStateMachine;
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::{
     CasCommand, CasResult, ObjectCommand, ObjectKey, ObjectResult, ObjectVersion, ReadCommand,
     StoredObject, WriteCommand,
 };
+use crate::storage::object::repository::ObjectRepository;
 
 #[derive(Clone)]
-pub struct ObjectService {
-    state_machine: Arc<LocalStateMachine>,
+pub struct ObjectService<R: ObjectRepository> {
+    state_machine: LocalStateMachine<R>,
 }
 
-impl ObjectService {
+impl<R: ObjectRepository> ObjectService<R> {
     #[must_use]
-    pub fn new(state_machine: Arc<LocalStateMachine>) -> Self {
+    pub fn new(state_machine: LocalStateMachine<R>) -> Self {
         Self { state_machine }
     }
 
     /// # Errors
     ///
-    /// Propagates state machine failures while executing the deterministic `Read` command.
+    /// Returns any error from the state machine while executing the deterministic `Read` command.
     pub async fn read(&self, key: ObjectKey) -> So3Result<Option<StoredObject>> {
         match self
             .state_machine
@@ -34,7 +33,7 @@ impl ObjectService {
 
     /// # Errors
     ///
-    /// Propagates state machine failures while executing the deterministic `Write` command.
+    /// Returns any error from the state machine while executing the deterministic `Write` command.
     pub async fn write(&self, key: ObjectKey, value: Vec<u8>) -> So3Result<StoredObject> {
         match self
             .state_machine
@@ -48,7 +47,7 @@ impl ObjectService {
 
     /// # Errors
     ///
-    /// Propagates state machine failures while executing the deterministic `Cas` command.
+    /// Returns any error from the state machine while executing the deterministic `Cas` command.
     pub async fn cas(
         &self,
         key: ObjectKey,
@@ -78,26 +77,22 @@ fn unexpected_result<T>(operation: &str, result: &ObjectResult) -> So3Result<T> 
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use tempfile::TempDir;
 
     use super::ObjectService;
     use crate::consensus::state_machine::LocalStateMachine;
     use crate::domain::{CasResult, ObjectKey, ObjectVersion};
-    use crate::storage::persistent_object_repository::PersistentObjectRepository;
+    use crate::storage::object::persistent::SqliteFsObjectRepository;
 
-    async fn test_service() -> (ObjectService, TempDir) {
+    async fn test_service() -> (ObjectService<SqliteFsObjectRepository>, TempDir) {
         let temp_dir = TempDir::new().unwrap();
-        let repository = Arc::new(
-            PersistentObjectRepository::new(
-                temp_dir.path().join("metadata"),
-                temp_dir.path().join("blobs"),
-            )
-            .await
-            .unwrap(),
-        );
-        let state_machine = Arc::new(LocalStateMachine::new(repository));
+        let repository = SqliteFsObjectRepository::new(
+            temp_dir.path().join("metadata"),
+            temp_dir.path().join("blobs"),
+        )
+        .await
+        .unwrap();
+        let state_machine = LocalStateMachine::new(repository);
         (ObjectService::new(state_machine), temp_dir)
     }
 

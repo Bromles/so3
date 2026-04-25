@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
 use tokio_util::sync::CancellationToken;
@@ -12,22 +10,27 @@ use crate::rpc_server::service::ConsensusTransportService;
 use crate::rpc_server::transport::{ConsensusTransportHandler, RejectingConsensusTransport};
 use uuid::Uuid;
 
-pub struct RpcServer {
-    handler: Arc<dyn ConsensusTransportHandler>,
+pub struct RpcServer<H: ConsensusTransportHandler> {
+    handler: H,
 }
 
-impl Default for RpcServer {
+impl Default for RpcServer<RejectingConsensusTransport> {
     fn default() -> Self {
-        Self::new(Arc::new(RejectingConsensusTransport::new(Uuid::nil())))
+        Self::new(RejectingConsensusTransport::new(Uuid::nil()))
     }
 }
 
-impl RpcServer {
+impl<H: ConsensusTransportHandler> RpcServer<H> {
     #[must_use]
-    pub fn new(handler: Arc<dyn ConsensusTransportHandler>) -> Self {
+    pub fn new(handler: H) -> Self {
         Self { handler }
     }
+}
 
+impl<H> RpcServer<H>
+where
+    H: ConsensusTransportHandler + Clone + Send + Sync + 'static,
+{
     /// # Errors
     ///
     /// Returns an error if the gRPC server fails while serving requests.
@@ -54,7 +57,6 @@ impl RpcServer {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use std::time::Duration;
 
     use super::{RpcServer, TcpListener};
@@ -101,7 +103,7 @@ mod tests {
         let shutdown_token = cancellation_token.clone();
 
         let server_task = spawn(async move {
-            RpcServer::new(Arc::new(RejectingConsensusTransport::new(Uuid::nil())))
+            RpcServer::new(RejectingConsensusTransport::new(Uuid::nil()))
                 .run(listener, shutdown_token)
                 .await
         });
@@ -128,7 +130,7 @@ mod tests {
         let shutdown_token = cancellation_token.clone();
 
         let server_task = spawn(async move {
-            RpcServer::new(Arc::new(RejectingConsensusTransport::new(Uuid::nil())))
+            RpcServer::new(RejectingConsensusTransport::new(Uuid::nil()))
                 .run(listener, shutdown_token)
                 .await
         });

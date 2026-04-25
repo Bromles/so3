@@ -10,7 +10,7 @@ use tokio::fs;
 
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::{ObjectKey, ObjectRecord, ObjectVersion};
-use crate::storage::metadata_repository::ObjectMetadataRepository;
+use crate::storage::metadata::repository::ObjectMetadataRepository;
 
 // SQLite runtime tuning.
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -47,6 +47,7 @@ const UPSERT_OBJECT_SQL: &str = r"
         checksum = excluded.checksum
 ";
 
+#[derive(Clone)]
 pub struct SqliteObjectMetadataRepository {
     pool: SqlitePool,
 }
@@ -54,7 +55,7 @@ pub struct SqliteObjectMetadataRepository {
 impl SqliteObjectMetadataRepository {
     /// # Errors
     ///
-    /// Returns an error if the local metadata database cannot be created or opened.
+    /// Returns an error if the local metadata database cannot be created, opened, or migrated.
     pub async fn new(metadata_dir: impl AsRef<Path>) -> So3Result<Self> {
         let metadata_dir = metadata_dir.as_ref().to_path_buf();
         fs::create_dir_all(&metadata_dir).await?;
@@ -174,7 +175,7 @@ mod tests {
     use super::SqliteObjectMetadataRepository;
     use crate::domain::error::So3Error;
     use crate::domain::{ObjectKey, ObjectRecord, ObjectVersion};
-    use crate::storage::metadata_repository::ObjectMetadataRepository;
+    use crate::storage::metadata::repository::ObjectMetadataRepository;
 
     const UNKNOWN_SCHEMA_VERSION: i64 = 99;
     const KEY_ALPHA: &str = "alpha";

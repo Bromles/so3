@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use tonic::Status;
 use tracing::{debug, warn};
@@ -21,14 +19,14 @@ pub trait ConsensusTransportHandler: Send + Sync {
 
 #[derive(Clone)]
 pub struct RejectingConsensusTransport {
-    node_id: Arc<str>,
+    node_id: String,
 }
 
 impl RejectingConsensusTransport {
     #[must_use]
     pub fn new(node_id: Uuid) -> Self {
         Self {
-            node_id: Arc::<str>::from(node_id.to_string()),
+            node_id: node_id.to_string(),
         }
     }
 }
