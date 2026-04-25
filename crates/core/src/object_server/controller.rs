@@ -11,15 +11,13 @@ use serde::{Deserialize, Serialize};
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
-use crate::consensus::state_machine::LocalStateMachine;
 use crate::domain::error::So3Error;
-use crate::domain::{
-    CasCommand, CasResult, ObjectCommand, ObjectKey, ObjectResult, ReadCommand, WriteCommand,
-};
+use crate::domain::{CasResult, ObjectKey, StoredObject};
+use crate::object_server::service::ObjectService;
 
 #[derive(Clone)]
 pub struct ObjectApiState {
-    pub state_machine: Arc<LocalStateMachine>,
+    pub service: Arc<ObjectService>,
     pub request_timeout: Duration,
 }
 
@@ -34,6 +32,17 @@ pub struct WriteResponse {
     pub version: i64,
     pub checksum: String,
     pub content_length: u64,
+}
+
+impl WriteResponse {
+    fn from_object(object: StoredObject) -> Self {
+        Self {
+            key: object.record.key.as_str().to_owned(),
+            version: object.record.version.get(),
+            checksum: object.record.checksum,
+            content_length: object.record.content_length,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -65,35 +74,23 @@ async fn handle_get(
     Path(key): Path<String>,
 ) -> Result<Response, ApiError> {
     let key = ObjectKey::new(key)?;
-    let result = state
-        .state_machine
-        .execute(ObjectCommand::Read(ReadCommand { key: key.clone() }))
-        .await?;
+    let Some(object) = state.service.read(key.clone()).await? else {
+        return Err(ApiError::from(So3Error::not_found(&key)));
+    };
 
-    match result {
-        ObjectResult::Read(read) => {
-            let Some(object) = read.object else {
-                return Err(ApiError::from(So3Error::not_found(&key)));
-            };
+    let mut response = object.value.into_response();
+    response.headers_mut().insert(
+        "x-so3-version",
+        HeaderValue::from_str(&object.record.version.get().to_string())
+            .map_err(|error| ApiError::from(So3Error::InvalidRequest(error.to_string())))?,
+    );
+    response.headers_mut().insert(
+        "etag",
+        HeaderValue::from_str(&object.record.checksum)
+            .map_err(|error| ApiError::from(So3Error::InvalidRequest(error.to_string())))?,
+    );
 
-            let mut response = object.value.into_response();
-            response.headers_mut().insert(
-                "x-so3-version",
-                HeaderValue::from_str(&object.record.version.get().to_string())
-                    .map_err(|error| ApiError::from(So3Error::InvalidRequest(error.to_string())))?,
-            );
-            response.headers_mut().insert(
-                "etag",
-                HeaderValue::from_str(&object.record.checksum)
-                    .map_err(|error| ApiError::from(So3Error::InvalidRequest(error.to_string())))?,
-            );
-
-            Ok(response)
-        }
-        _ => Err(ApiError::from(So3Error::InvalidRequest(
-            "unexpected read result".to_owned(),
-        ))),
-    }
+    Ok(response)
 }
 
 async fn handle_put(
@@ -103,42 +100,24 @@ async fn handle_put(
     body: Bytes,
 ) -> Result<Json<WriteResponse>, ApiError> {
     let key = ObjectKey::new(key)?;
-    let command = match query.expected_version {
-        Some(version) => ObjectCommand::Cas(CasCommand {
-            key: key.clone(),
-            expected_version: version.try_into()?,
-            value: body.to_vec(),
-        }),
-        None => ObjectCommand::Write(WriteCommand {
-            key: key.clone(),
-            value: body.to_vec(),
-        }),
-    };
-
-    match state.state_machine.execute(command).await? {
-        ObjectResult::Write(result) => Ok(Json(WriteResponse {
-            key: result.object.record.key.as_str().to_owned(),
-            version: result.object.record.version.get(),
-            checksum: result.object.record.checksum,
-            content_length: result.object.record.content_length,
-        })),
-        ObjectResult::Cas(CasResult::Applied(object)) => Ok(Json(WriteResponse {
-            key: object.record.key.as_str().to_owned(),
-            version: object.record.version.get(),
-            checksum: object.record.checksum,
-            content_length: object.record.content_length,
-        })),
-        ObjectResult::Cas(CasResult::NotFound) => Err(ApiError::from(So3Error::not_found(&key))),
-        ObjectResult::Cas(CasResult::Mismatch { current_version }) => {
-            Err(ApiError::from(So3Error::cas_mismatch(
-                &key,
-                query.expected_version.unwrap().try_into()?,
-                current_version,
-            )))
+    match query.expected_version {
+        None => {
+            let object = state.service.write(key, body.to_vec()).await?;
+            Ok(Json(WriteResponse::from_object(object)))
         }
-        _ => Err(ApiError::from(So3Error::InvalidRequest(
-            "unexpected write result".to_owned(),
-        ))),
+        Some(expected_version) => match state
+            .service
+            .cas(key.clone(), expected_version.try_into()?, body.to_vec())
+            .await?
+        {
+            CasResult::Applied(object) => Ok(Json(WriteResponse::from_object(object))),
+            CasResult::NotFound => Err(ApiError::from(So3Error::not_found(&key))),
+            CasResult::Mismatch { current_version } => Err(ApiError::from(So3Error::cas_mismatch(
+                &key,
+                expected_version.try_into()?,
+                current_version,
+            ))),
+        },
     }
 }
 
@@ -184,6 +163,7 @@ mod tests {
     use tower::util::ServiceExt;
 
     use crate::consensus::state_machine::LocalStateMachine;
+    use crate::object_server::service::ObjectService;
     use crate::storage::sqlite_fs::PersistentObjectStore;
 
     async fn test_app() -> (axum::Router, TempDir) {
@@ -191,10 +171,11 @@ mod tests {
         let state_machine = Arc::new(LocalStateMachine::new(Arc::new(
             PersistentObjectStore::new(temp_dir.path()).await.unwrap(),
         )));
+        let service = Arc::new(ObjectService::new(state_machine));
 
         (
             object_controller(ObjectApiState {
-                state_machine,
+                service,
                 request_timeout: TEST_REQUEST_TIMEOUT,
             }),
             temp_dir,

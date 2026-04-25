@@ -11,6 +11,7 @@ use crate::consensus::state_machine::LocalStateMachine;
 use crate::domain::error::{So3Error, So3Result};
 use crate::node::config::NodeConfig;
 use crate::object_server::server::ObjectServer;
+use crate::object_server::service::ObjectService;
 use crate::rpc_server::server::RpcServer;
 use crate::storage::sqlite_fs::PersistentObjectStore;
 
@@ -18,7 +19,7 @@ pub struct Node {
     config: NodeConfig,
     object_server: ObjectServer,
     rpc_server: RpcServer,
-    state_machine: Arc<LocalStateMachine>,
+    object_service: Arc<ObjectService>,
 }
 
 impl Node {
@@ -26,14 +27,16 @@ impl Node {
     ///
     /// Returns an error if durable local storage cannot be opened.
     pub async fn new(config: NodeConfig) -> So3Result<Self> {
+        config.validate()?;
         let repository = Arc::new(PersistentObjectStore::new(&config.data_dir).await?);
         let state_machine = Arc::new(LocalStateMachine::new(repository));
+        let object_service = Arc::new(ObjectService::new(state_machine));
 
         Ok(Self {
             config,
             object_server: ObjectServer::new(),
             rpc_server: RpcServer::new(),
-            state_machine,
+            object_service,
         })
     }
 
@@ -59,11 +62,11 @@ impl Node {
         let config = self.config.clone();
         let object_server = self.object_server;
         let rpc_server = self.rpc_server;
-        let state_machine = self.state_machine.clone();
+        let object_service = self.object_service.clone();
 
         let object_task = spawn(async move {
             object_server
-                .run(object_listener, &config, state_machine, object_token)
+                .run(object_listener, &config, object_service, object_token)
                 .await
         });
         let rpc_task = spawn(async move { rpc_server.run(rpc_listener, rpc_token).await });
@@ -125,8 +128,8 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let config = NodeConfig {
             node_id: Uuid::nil(),
-            object_api_addr: "127.0.0.1:0".parse().unwrap(),
-            rpc_api_addr: "127.0.0.1:0".parse().unwrap(),
+            object_api_addr: "127.0.0.1:3000".parse().unwrap(),
+            rpc_api_addr: "127.0.0.1:4000".parse().unwrap(),
             object_request_timeout: Duration::from_secs(10),
             data_dir: temp_dir.path().to_path_buf(),
             cluster: ClusterConfig::default(),

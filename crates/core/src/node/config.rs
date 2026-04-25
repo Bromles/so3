@@ -71,6 +71,20 @@ impl NodeConfig {
             cluster,
         })
     }
+
+    /// # Errors
+    ///
+    /// Returns an error when the configured local endpoints are internally inconsistent.
+    pub fn validate(&self) -> So3Result<()> {
+        if self.object_api_addr == self.rpc_api_addr {
+            return Err(So3Error::InvalidRequest(format!(
+                "SO3_OBJECT_ADDR and SO3_RPC_ADDR must differ, both resolved to {}",
+                self.object_api_addr
+            )));
+        }
+
+        Ok(())
+    }
 }
 
 fn read_socket_addr(
@@ -126,6 +140,7 @@ mod tests {
     #[test]
     fn from_env_with_uses_defaults() {
         let config = NodeConfig::from_env_with(|_| None).unwrap();
+        config.validate().unwrap();
 
         assert_eq!(config.object_api_addr.to_string(), "127.0.0.1:3000");
         assert_eq!(config.rpc_api_addr.to_string(), "127.0.0.1:4000");
@@ -146,6 +161,7 @@ mod tests {
             _ => None,
         })
         .unwrap();
+        config.validate().unwrap();
 
         assert_eq!(config.object_api_addr.to_string(), "127.0.0.1:3100");
         assert_eq!(config.rpc_api_addr.to_string(), "127.0.0.1:4100");
@@ -195,5 +211,18 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("SO3_CLUSTER_PEERS"));
+    }
+
+    #[test]
+    fn validate_rejects_same_object_and_rpc_addresses() {
+        let config = NodeConfig::from_env_with(|name| match name {
+            "SO3_OBJECT_ADDR" | "SO3_RPC_ADDR" => Some("127.0.0.1:3100".to_owned()),
+            _ => None,
+        })
+        .unwrap();
+
+        let error = config.validate().unwrap_err();
+
+        assert!(error.to_string().contains("must differ"));
     }
 }

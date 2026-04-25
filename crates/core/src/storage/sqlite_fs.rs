@@ -344,9 +344,8 @@ mod tests {
             .unwrap();
         drop(store);
 
-        let error = match PersistentObjectStore::new(temp_dir.path()).await {
-            Ok(_) => panic!("expected unsupported schema version error"),
-            Err(error) => error,
+        let Err(error) = PersistentObjectStore::new(temp_dir.path()).await else {
+            panic!("expected unsupported schema version error");
         };
 
         assert!(matches!(error, So3Error::Storage(_)));
