@@ -21,6 +21,24 @@ data_dir = "./var/so3"
 peers = ["127.0.0.1:4001", "127.0.0.1:4002"]
 ```
 
+## Maelstrom Adapter
+
+The Maelstrom stdin/stdout adapter lives in a separate crate and binary so it does not mix with
+the normal `so3` process:
+
+```text
+cargo run -p so3-maelstrom
+```
+
+Optional environment variables:
+
+- `SO3_MAELSTROM_DATA_DIR`
+- `SO3_MAELSTROM_METADATA_DIR`
+- `SO3_MAELSTROM_BLOB_DIR`
+
+Helper scripts and run instructions live in [docs/maelstrom.md](docs/maelstrom.md).
+Unix scripts are in `scripts/maelstrom/*.sh`, PowerShell scripts in `scripts/maelstrom/*.ps1`.
+
 ## License
 
 All code in this repository is dual-licensed under either:

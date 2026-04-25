@@ -3,12 +3,14 @@ resolver = "2"
 
 members = [
     "crates/core",
-    "crates/so3"
+    "crates/so3",
+    "crates/so3-maelstrom"
 ]
 
 default-members = [
     "crates/core",
-    "crates/so3"
+    "crates/so3",
+    "crates/so3-maelstrom"
 ]
 
 [workspace.package]
