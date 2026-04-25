@@ -133,6 +133,7 @@ where
             .load(&command_id)
             .await
             .map_err(|error| map_error(&error))?
+            .filter(|entry| entry.state == JournalState::Applied)
         {
             return Ok(ApplyResponse {
                 result: entry.result,
@@ -427,6 +428,51 @@ mod tests {
 
         assert_eq!(recovered.local_state, State::Applied as i32);
         assert_eq!(committed_result, applied_result);
+    }
+
+    #[tokio::test]
+    async fn apply_executes_command_that_was_only_pre_accepted() {
+        let (transport, _temp_dir) = test_transport().await;
+        let command = ObjectCommand::Write(WriteCommand {
+            key: ObjectKey::new(ALPHA_KEY).unwrap(),
+            value: FIRST_VALUE.to_vec(),
+        });
+
+        let _ = transport
+            .pre_accept(PreAcceptRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
+                event: Some(EventPayload {
+                    command: command.to_bytes().unwrap(),
+                }),
+                ..PreAcceptRequest::default()
+            })
+            .await
+            .unwrap();
+        let response = transport
+            .apply(ApplyRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
+                event: Some(EventPayload {
+                    command: command.to_bytes().unwrap(),
+                }),
+                ..ApplyRequest::default()
+            })
+            .await
+            .unwrap();
+        let recovered = transport
+            .recover(RecoverRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
+                ..RecoverRequest::default()
+            })
+            .await
+            .unwrap();
+
+        let result = ObjectResult::from_bytes(&response.result).unwrap();
+        let ObjectResult::Write(write) = result else {
+            panic!("expected write result");
+        };
+
+        assert_eq!(write.object.value, FIRST_VALUE.to_vec());
+        assert_eq!(recovered.local_state, State::Applied as i32);
     }
 
     #[tokio::test]

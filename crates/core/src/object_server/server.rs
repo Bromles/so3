@@ -2,11 +2,11 @@ use axum::serve as axum_serve;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
+use crate::consensus::state_machine::ObjectCommandExecutor;
 use crate::domain::error::{So3Error, So3Result};
 use crate::node::config::NodeConfig;
 use crate::object_server::controller::{ObjectApiState, object_controller};
 use crate::object_server::service::ObjectService;
-use crate::storage::object::repository::ObjectRepository;
 
 pub struct ObjectServer;
 
@@ -25,15 +25,15 @@ impl ObjectServer {
     /// # Errors
     ///
     /// Returns an error if the HTTP server fails while serving requests.
-    pub async fn run<R>(
+    pub async fn run<E>(
         self,
         listener: TcpListener,
         config: &NodeConfig,
-        service: ObjectService<R>,
+        service: ObjectService<E>,
         cancellation_token: CancellationToken,
     ) -> So3Result<()>
     where
-        R: ObjectRepository + Clone + Send + Sync + 'static,
+        E: ObjectCommandExecutor + Clone + Send + Sync + 'static,
     {
         axum_serve(
             listener,

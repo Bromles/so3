@@ -33,7 +33,8 @@ use crate::protocol::{
 };
 use crate::service::MaelstromService;
 
-type MaelstromObjectService = MaelstromService<SqliteFsPersistentObjectRepository>;
+type MaelstromObjectService =
+    MaelstromService<LocalStateMachine<SqliteFsPersistentObjectRepository>>;
 type MaelstromLocalTransport = ApplyingConsensusTransport<
     PersistentReplicatedCommandExecutor<
         SqliteFsPersistentObjectRepository,
@@ -423,11 +424,7 @@ impl Runtime {
         let mut coordinator = AccordCoordinator::new(config, &local_transport, self);
 
         match coordinator.execute(&command_id, command).await {
-            Ok(result) => {
-                MaelstromService::<SqliteFsPersistentObjectRepository>::response_from_result(
-                    msg_id, result,
-                )
-            }
+            Ok(result) => MaelstromObjectService::response_from_result(msg_id, result),
             Err(error) => map_internal_error(msg_id, &error),
         }
     }

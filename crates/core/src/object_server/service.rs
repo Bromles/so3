@@ -1,20 +1,19 @@
-use crate::consensus::state_machine::LocalStateMachine;
+use crate::consensus::state_machine::ObjectCommandExecutor;
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::{
     CasCommand, CasResult, ObjectCommand, ObjectKey, ObjectResult, ObjectVersion, ReadCommand,
     StoredObject, WriteCommand,
 };
-use crate::storage::object::repository::ObjectRepository;
 
 #[derive(Clone)]
-pub struct ObjectService<R: ObjectRepository> {
-    state_machine: LocalStateMachine<R>,
+pub struct ObjectService<E: ObjectCommandExecutor> {
+    executor: E,
 }
 
-impl<R: ObjectRepository> ObjectService<R> {
+impl<E: ObjectCommandExecutor> ObjectService<E> {
     #[must_use]
-    pub fn new(state_machine: LocalStateMachine<R>) -> Self {
-        Self { state_machine }
+    pub fn new(executor: E) -> Self {
+        Self { executor }
     }
 
     /// # Errors
@@ -22,8 +21,8 @@ impl<R: ObjectRepository> ObjectService<R> {
     /// Returns any error from the state machine while executing the deterministic `Read` command.
     pub async fn read(&self, key: ObjectKey) -> So3Result<Option<StoredObject>> {
         match self
-            .state_machine
-            .execute(ObjectCommand::Read(ReadCommand { key }))
+            .executor
+            .execute_command(ObjectCommand::Read(ReadCommand { key }))
             .await?
         {
             ObjectResult::Read(result) => Ok(result.object),
@@ -36,8 +35,8 @@ impl<R: ObjectRepository> ObjectService<R> {
     /// Returns any error from the state machine while executing the deterministic `Write` command.
     pub async fn write(&self, key: ObjectKey, value: Vec<u8>) -> So3Result<StoredObject> {
         match self
-            .state_machine
-            .execute(ObjectCommand::Write(WriteCommand { key, value }))
+            .executor
+            .execute_command(ObjectCommand::Write(WriteCommand { key, value }))
             .await?
         {
             ObjectResult::Write(result) => Ok(result.object),
@@ -55,8 +54,8 @@ impl<R: ObjectRepository> ObjectService<R> {
         value: Vec<u8>,
     ) -> So3Result<CasResult> {
         match self
-            .state_machine
-            .execute(ObjectCommand::Cas(CasCommand {
+            .executor
+            .execute_command(ObjectCommand::Cas(CasCommand {
                 key,
                 expected_version,
                 value,
@@ -92,7 +91,10 @@ mod tests {
     const NEXT_VERSION: i64 = 2;
     const VERSION_INCREMENT: i64 = 1;
 
-    async fn test_service() -> (ObjectService<SqliteFsPersistentObjectRepository>, TempDir) {
+    async fn test_service() -> (
+        ObjectService<LocalStateMachine<SqliteFsPersistentObjectRepository>>,
+        TempDir,
+    ) {
         let temp_dir = TempDir::new().unwrap();
         let repository = SqliteFsPersistentObjectRepository::new(
             temp_dir.path().join("metadata"),

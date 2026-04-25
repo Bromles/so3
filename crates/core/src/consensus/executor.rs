@@ -1,10 +1,11 @@
 use async_trait::async_trait;
 
 use crate::consensus::ConsensusCommandId;
+use crate::consensus::state_machine::{LocalStateMachine, ObjectCommandExecutor};
 use crate::domain::error::So3Result;
-use crate::domain::{CasResult, ObjectCommand, ObjectResult, ReadResult, WriteResult};
+use crate::domain::{ObjectCommand, ObjectResult};
 use crate::storage::applied_command::repository::AppliedCommandStore;
-use crate::storage::object::repository::{CasWriteOutcome, ObjectRepository};
+use crate::storage::object::repository::ObjectRepository;
 
 #[async_trait]
 pub trait ReplicatedCommandExecutor: Send + Sync {
@@ -20,7 +21,7 @@ pub trait ReplicatedCommandExecutor: Send + Sync {
 
 #[derive(Clone)]
 pub struct PersistentReplicatedCommandExecutor<R: ObjectRepository, S: AppliedCommandStore> {
-    object_repository: R,
+    state_machine: LocalStateMachine<R>,
     applied_command_store: S,
 }
 
@@ -28,7 +29,7 @@ impl<R: ObjectRepository, S: AppliedCommandStore> PersistentReplicatedCommandExe
     #[must_use]
     pub fn new(object_repository: R, applied_command_store: S) -> Self {
         Self {
-            object_repository,
+            state_machine: LocalStateMachine::new(object_repository),
             applied_command_store,
         }
     }
@@ -49,29 +50,7 @@ where
             return Ok(result);
         }
 
-        let result = match command {
-            ObjectCommand::Read(command) => ObjectResult::Read(ReadResult {
-                object: self.object_repository.read(&command.key).await?,
-            }),
-            ObjectCommand::Write(command) => {
-                let object = self
-                    .object_repository
-                    .write(&command.key, command.value)
-                    .await?;
-                ObjectResult::Write(WriteResult { object })
-            }
-            ObjectCommand::Cas(command) => match self
-                .object_repository
-                .cas(&command.key, command.expected_version, command.value)
-                .await?
-            {
-                CasWriteOutcome::Applied(object) => ObjectResult::Cas(CasResult::Applied(object)),
-                CasWriteOutcome::NotFound => ObjectResult::Cas(CasResult::NotFound),
-                CasWriteOutcome::Mismatch { current_version } => {
-                    ObjectResult::Cas(CasResult::Mismatch { current_version })
-                }
-            },
-        };
+        let result = self.state_machine.execute_command(command).await?;
 
         self.applied_command_store
             .save_result(command_id, &result)

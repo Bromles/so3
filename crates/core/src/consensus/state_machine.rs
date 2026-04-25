@@ -1,6 +1,16 @@
+use async_trait::async_trait;
+
 use crate::domain::error::So3Result;
 use crate::domain::{CasResult, ObjectCommand, ObjectResult, ReadResult, WriteResult};
 use crate::storage::object::repository::{CasWriteOutcome, ObjectRepository};
+
+#[async_trait]
+pub trait ObjectCommandExecutor: Send + Sync {
+    /// # Errors
+    ///
+    /// Returns any error raised while executing the deterministic object command.
+    async fn execute_command(&self, command: ObjectCommand) -> So3Result<ObjectResult>;
+}
 
 #[derive(Clone)]
 pub struct LocalStateMachine<R: ObjectRepository> {
@@ -13,10 +23,25 @@ impl<R: ObjectRepository> LocalStateMachine<R> {
         Self { repository }
     }
 
+    #[must_use]
+    pub fn repository(&self) -> &R {
+        &self.repository
+    }
+
     /// # Errors
     ///
     /// Returns any storage error raised while executing the deterministic object command.
     pub async fn execute(&self, command: ObjectCommand) -> So3Result<ObjectResult> {
+        self.execute_command(command).await
+    }
+}
+
+#[async_trait]
+impl<R> ObjectCommandExecutor for LocalStateMachine<R>
+where
+    R: ObjectRepository,
+{
+    async fn execute_command(&self, command: ObjectCommand) -> So3Result<ObjectResult> {
         match command {
             ObjectCommand::Read(command) => {
                 let object = self.repository.read(&command.key).await?;

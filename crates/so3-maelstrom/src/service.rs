@@ -1,12 +1,12 @@
 use serde_json::Value;
 
+use so3_core::consensus::state_machine::ObjectCommandExecutor;
 use so3_core::domain::error::So3Error;
 use so3_core::domain::{
     CasCommand, CasResult, ObjectCommand, ObjectKey, ObjectResult, ReadCommand, StoredObject,
     WriteCommand,
 };
 use so3_core::object_server::service::ObjectService;
-use so3_core::storage::object::repository::ObjectRepository;
 
 use crate::protocol::{
     CRASH_CODE, ClientRequest, KEY_DOES_NOT_EXIST_CODE, MALFORMED_REQUEST_CODE,
@@ -14,20 +14,20 @@ use crate::protocol::{
 };
 
 #[derive(Clone)]
-pub struct MaelstromService<R: ObjectRepository> {
-    object_service: ObjectService<R>,
+pub struct MaelstromService<E: ObjectCommandExecutor> {
+    object_service: ObjectService<E>,
 }
 
-impl<R: ObjectRepository> MaelstromService<R> {
+impl<E: ObjectCommandExecutor> MaelstromService<E> {
     #[must_use]
-    pub fn new(object_service: ObjectService<R>) -> Self {
+    pub fn new(object_service: ObjectService<E>) -> Self {
         Self { object_service }
     }
 }
 
-impl<R> MaelstromService<R>
+impl<E> MaelstromService<E>
 where
-    R: ObjectRepository + Clone + Send + Sync + 'static,
+    E: ObjectCommandExecutor + Clone + Send + Sync + 'static,
 {
     #[cfg(test)]
     pub async fn handle(&self, request: crate::protocol::RequestBody) -> ResponseBody {
@@ -352,7 +352,7 @@ mod tests {
     const TEST_MESSAGE_ID: u64 = 1;
 
     async fn test_service() -> (
-        MaelstromService<SqliteFsPersistentObjectRepository>,
+        MaelstromService<LocalStateMachine<SqliteFsPersistentObjectRepository>>,
         TempDir,
     ) {
         let temp_dir = TempDir::new().unwrap();

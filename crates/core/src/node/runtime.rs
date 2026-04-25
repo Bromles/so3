@@ -28,7 +28,7 @@ pub struct Node {
             >,
         >,
     >,
-    object_service: ObjectService<SqliteFsPersistentObjectRepository>,
+    object_service: ObjectService<LocalStateMachine<SqliteFsPersistentObjectRepository>>,
 }
 
 pub struct BoundNode {
@@ -44,7 +44,7 @@ pub struct BoundNode {
             >,
         >,
     >,
-    object_service: ObjectService<SqliteFsPersistentObjectRepository>,
+    object_service: ObjectService<LocalStateMachine<SqliteFsPersistentObjectRepository>>,
 }
 
 impl Node {

@@ -9,6 +9,7 @@ use axum::{Json, Router};
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
+use crate::consensus::state_machine::ObjectCommandExecutor;
 use crate::domain::error::So3Error;
 use crate::domain::{CasResult, ObjectKey, StoredObject};
 use crate::object_server::api::{
@@ -16,17 +17,16 @@ use crate::object_server::api::{
     ObjectMetadataResponse, VERSION_HEADER, WriteQuery,
 };
 use crate::object_server::service::ObjectService;
-use crate::storage::object::repository::ObjectRepository;
 
 #[derive(Clone)]
-pub struct ObjectApiState<R: ObjectRepository> {
-    pub service: ObjectService<R>,
+pub struct ObjectApiState<E: ObjectCommandExecutor> {
+    pub service: ObjectService<E>,
     pub request_timeout: Duration,
 }
 
-pub fn object_controller<R>(state: ObjectApiState<R>) -> Router
+pub fn object_controller<E>(state: ObjectApiState<E>) -> Router
 where
-    R: ObjectRepository + Clone + Send + Sync + 'static,
+    E: ObjectCommandExecutor + Clone + Send + Sync + 'static,
 {
     let request_timeout = state.request_timeout;
 
@@ -43,12 +43,12 @@ where
         ))
 }
 
-async fn handle_get<R>(
-    State(state): State<ObjectApiState<R>>,
+async fn handle_get<E>(
+    State(state): State<ObjectApiState<E>>,
     Path(key): Path<String>,
 ) -> Result<Response, ApiError>
 where
-    R: ObjectRepository + Clone + Send + Sync + 'static,
+    E: ObjectCommandExecutor + Clone + Send + Sync + 'static,
 {
     let object = load_object(&state, key).await?;
     let metadata = ObjectMetadataResponse::from(&object);
@@ -58,12 +58,12 @@ where
     Ok(response)
 }
 
-async fn handle_head<R>(
-    State(state): State<ObjectApiState<R>>,
+async fn handle_head<E>(
+    State(state): State<ObjectApiState<E>>,
     Path(key): Path<String>,
 ) -> Result<Response, ApiError>
 where
-    R: ObjectRepository + Clone + Send + Sync + 'static,
+    E: ObjectCommandExecutor + Clone + Send + Sync + 'static,
 {
     let object = load_object(&state, key).await?;
     let mut response = StatusCode::OK.into_response();
@@ -73,25 +73,25 @@ where
     Ok(response)
 }
 
-async fn handle_get_metadata<R>(
-    State(state): State<ObjectApiState<R>>,
+async fn handle_get_metadata<E>(
+    State(state): State<ObjectApiState<E>>,
     Path(key): Path<String>,
 ) -> Result<Json<ObjectMetadataResponse>, ApiError>
 where
-    R: ObjectRepository + Clone + Send + Sync + 'static,
+    E: ObjectCommandExecutor + Clone + Send + Sync + 'static,
 {
     let object = load_object(&state, key).await?;
     Ok(Json(ObjectMetadataResponse::from(object)))
 }
 
-async fn handle_put<R>(
-    State(state): State<ObjectApiState<R>>,
+async fn handle_put<E>(
+    State(state): State<ObjectApiState<E>>,
     Path(key): Path<String>,
     Query(query): Query<WriteQuery>,
     body: Bytes,
 ) -> Result<Json<ObjectMetadataResponse>, ApiError>
 where
-    R: ObjectRepository + Clone + Send + Sync + 'static,
+    E: ObjectCommandExecutor + Clone + Send + Sync + 'static,
 {
     let key = ObjectKey::new(key)?;
     match query.expected_version {
@@ -146,9 +146,9 @@ impl IntoResponse for ApiError {
     }
 }
 
-async fn load_object<R>(state: &ObjectApiState<R>, key: String) -> Result<StoredObject, ApiError>
+async fn load_object<E>(state: &ObjectApiState<E>, key: String) -> Result<StoredObject, ApiError>
 where
-    R: ObjectRepository + Clone + Send + Sync + 'static,
+    E: ObjectCommandExecutor + Clone + Send + Sync + 'static,
 {
     let key = ObjectKey::new(key)?;
     state
