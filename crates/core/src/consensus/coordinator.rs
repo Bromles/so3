@@ -226,40 +226,37 @@ where
                 self.config.node_id
             )));
         }
-        if timestamp_advanced(&local_response.timestamp, timestamp_zero) {
+        if timestamp_advanced(local_response.timestamp.as_ref(), timestamp_zero) {
             decision.fast_path = false;
         }
         apply_pre_accept_response(&mut decision, &self.config.node_id, local_response)?;
         ack_count += 1;
 
         for peer_id in &self.config.peer_ids.clone() {
-            match self
+            if let Ok(response) = self
                 .peer_transport
                 .pre_accept_peer(peer_id, request.clone())
                 .await
             {
-                Ok(response) => {
-                    if response.nack {
-                        return Err(So3Error::InvalidRequest(format!(
-                            "pre_accept rejected by replica {peer_id}"
-                        )));
-                    }
-                    if timestamp_advanced(&response.timestamp, timestamp_zero) {
-                        decision.fast_path = false;
-                    }
-                    apply_pre_accept_response(&mut decision, peer_id, response)?;
-                    ack_count += 1;
+                if response.nack {
+                    return Err(So3Error::InvalidRequest(format!(
+                        "pre_accept rejected by replica {peer_id}"
+                    )));
                 }
-                Err(_) => {
-                    error_count += 1;
-                    if error_count > max_errors {
-                        return Err(So3Error::InvalidRequest(
-                            "pre_accept failed to reach quorum: too many peer failures".to_owned(),
-                        ));
-                    }
-                    // An unreachable peer cannot confirm unanimity for the fast path.
+                if timestamp_advanced(response.timestamp.as_ref(), timestamp_zero) {
                     decision.fast_path = false;
                 }
+                apply_pre_accept_response(&mut decision, peer_id, response)?;
+                ack_count += 1;
+            } else {
+                error_count += 1;
+                if error_count > max_errors {
+                    return Err(So3Error::InvalidRequest(
+                        "pre_accept failed to reach quorum: too many peer failures".to_owned(),
+                    ));
+                }
+                // An unreachable peer cannot confirm unanimity for the fast path.
+                decision.fast_path = false;
             }
         }
 
@@ -544,12 +541,10 @@ impl RecoveryDecision {
 }
 
 fn timestamp_advanced(
-    proposed: &Option<LogicalTimestamp>,
+    proposed: Option<&LogicalTimestamp>,
     timestamp_zero: &LogicalTimestamp,
 ) -> bool {
-    proposed
-        .as_ref()
-        .map_or(false, |ts| timestamp_is_after(ts, timestamp_zero))
+    proposed.is_some_and(|ts| timestamp_is_after(ts, timestamp_zero))
 }
 
 fn apply_pre_accept_response(
@@ -1214,7 +1209,7 @@ mod tests {
         recover_ballots: Mutex<Vec<Ballot>>,
         commit_timestamps: Mutex<Vec<LogicalTimestamp>>,
         commit_dependencies: Mutex<Vec<DependencySet>>,
-        /// When set, pre_accept returns this timestamp to force the slow path (Accept required).
+        /// When set, `pre_accept` returns this timestamp to force the slow path (Accept required).
         pre_accept_timestamp: Option<LogicalTimestamp>,
     }
 
@@ -1411,12 +1406,6 @@ mod tests {
             }
         }
 
-        fn with_accept_results<const N: usize>(results: [PeerResult<AcceptResponse>; N]) -> Self {
-            Self {
-                accepts: VecDeque::from(results),
-                ..Self::new()
-            }
-        }
     }
 
     #[async_trait]

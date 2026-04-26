@@ -136,12 +136,11 @@ pub async fn wait_for_unapplied_dependencies(
 
         // If the dep's known timestamp is strictly after ours, the dep is not in our causal
         // past and we do not block on it (it will wait for us instead).
-        if let Some(current_ts) = current_timestamp {
-            if let Some(dep_ts) = entry.as_ref().and_then(|e| e.metadata.timestamp.as_ref()) {
-                if timestamp_is_after(dep_ts, current_ts) {
-                    continue;
-                }
-            }
+        if let Some(current_ts) = current_timestamp
+            && let Some(dep_ts) = entry.as_ref().and_then(|e| e.metadata.timestamp.as_ref())
+            && timestamp_is_after(dep_ts, current_ts)
+        {
+            continue;
         }
 
         wait_for.push(dependency.clone());
