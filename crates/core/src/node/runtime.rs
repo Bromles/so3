@@ -14,7 +14,7 @@ use crate::node::config::NodeConfig;
 use crate::object_server::server::ObjectServer;
 use crate::object_server::service::ObjectService;
 use crate::rpc_server::server::RpcServer;
-use crate::rpc_server::transport::ApplyingConsensusTransport;
+use crate::rpc_server::transport::{ApplyingConsensusTransport, TonicConsensusPeerTransport};
 use crate::storage::metadata::sqlite::SqliteObjectMetadataRepository;
 use crate::storage::registry::{PersistentStorage, SqliteFsPersistentObjectRepository};
 
@@ -86,12 +86,20 @@ impl Node {
             .await?;
         let local_transport =
             ApplyingConsensusTransport::new(node_id.clone(), executor, storage.consensus_journal);
-        let object_service =
-            ObjectService::new(LocalConsensusObjectCommandExecutor::with_initial_sequence(
-                node_id,
-                local_transport.clone(),
-                next_sequence,
-            ));
+        let peer_ids = config
+            .cluster
+            .peers
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let peer_transport = TonicConsensusPeerTransport::from_peer_ids(peer_ids.clone())?;
+        let object_service = ObjectService::new(LocalConsensusObjectCommandExecutor::with_peers(
+            node_id,
+            local_transport.clone(),
+            next_sequence,
+            peer_ids,
+            peer_transport,
+        ));
 
         Ok(Self {
             config,
@@ -379,6 +387,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn object_api_write_is_committed_to_configured_rpc_peer() {
+        let temp_dir = TempDir::new().unwrap();
+        let client = Client::new();
+        let follower_bound = Node::new(test_config_with_node(
+            &temp_dir.path().join("follower"),
+            "123e4567-e89b-12d3-a456-426614174001",
+        ))
+        .await
+        .unwrap()
+        .bind()
+        .await
+        .unwrap();
+        let follower_rpc_addr = follower_bound.config().rpc_api_addr;
+        let follower_base_url = format!("http://{}", follower_bound.config().object_api_addr);
+        let follower_token = CancellationToken::new();
+        let follower_shutdown = follower_token.clone();
+        let follower_task = spawn(async move { follower_bound.run(follower_shutdown).await });
+        wait_for_http_ready(&client, &follower_base_url).await;
+
+        let mut leader_config = test_config_with_node(
+            &temp_dir.path().join("leader"),
+            "123e4567-e89b-12d3-a456-426614174002",
+        );
+        leader_config.cluster.peers = vec![follower_rpc_addr];
+        let leader_bound = Node::new(leader_config)
+            .await
+            .unwrap()
+            .bind()
+            .await
+            .unwrap();
+        let leader_base_url = format!("http://{}", leader_bound.config().object_api_addr);
+        let leader_token = CancellationToken::new();
+        let leader_shutdown = leader_token.clone();
+        let leader_task = spawn(async move { leader_bound.run(leader_shutdown).await });
+        wait_for_http_ready(&client, &leader_base_url).await;
+
+        let put_response = client
+            .put(format!("{leader_base_url}/{OBJECT_PATH}"))
+            .body(FIRST_PAYLOAD.to_vec())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(put_response.status(), StatusCode::OK);
+
+        let follower_get = client
+            .get(format!("{follower_base_url}/{OBJECT_PATH}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(follower_get.status(), StatusCode::OK);
+        assert_eq!(follower_get.bytes().await.unwrap().as_ref(), FIRST_PAYLOAD);
+
+        leader_token.cancel();
+        follower_token.cancel();
+        leader_task.await.unwrap().unwrap();
+        follower_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
     async fn new_replays_committed_commands_from_journal() {
         let temp_dir = TempDir::new().unwrap();
         let journal = SqliteConsensusJournal::new(temp_dir.path().join(METADATA_DIR_NAME))
@@ -458,8 +525,12 @@ mod tests {
     }
 
     fn test_config(data_dir: &std::path::Path) -> NodeConfig {
+        test_config_with_node(data_dir, NODE_ID_NIL.to_string())
+    }
+
+    fn test_config_with_node(data_dir: &std::path::Path, node_id: impl AsRef<str>) -> NodeConfig {
         NodeConfig {
-            node_id: NODE_ID_NIL,
+            node_id: Uuid::parse_str(node_id.as_ref()).unwrap(),
             object_api_addr: EPHEMERAL_LOOPBACK_ADDR.parse().unwrap(),
             rpc_api_addr: EPHEMERAL_LOOPBACK_ADDR.parse().unwrap(),
             object_request_timeout: Duration::from_secs(REQUEST_TIMEOUT_SECS),

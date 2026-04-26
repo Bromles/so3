@@ -46,12 +46,12 @@ impl TonicConsensusPeerTransport {
 
         Ok(ConsensusTransportClient::new(channel))
     }
-}
 
-#[async_trait(?Send)]
-impl ConsensusPeerTransport for TonicConsensusPeerTransport {
-    async fn pre_accept_peer(
-        &mut self,
+    /// # Errors
+    ///
+    /// Returns an error when the peer is unknown or rejects the pre-accept request.
+    pub async fn pre_accept(
+        &self,
         peer_id: &str,
         request: PreAcceptRequest,
     ) -> So3Result<PreAcceptResponse> {
@@ -62,11 +62,10 @@ impl ConsensusPeerTransport for TonicConsensusPeerTransport {
             .map_err(|status| map_tonic_status(&status))
     }
 
-    async fn accept_peer(
-        &mut self,
-        peer_id: &str,
-        request: AcceptRequest,
-    ) -> So3Result<AcceptResponse> {
+    /// # Errors
+    ///
+    /// Returns an error when the peer is unknown or rejects the accept request.
+    pub async fn accept(&self, peer_id: &str, request: AcceptRequest) -> So3Result<AcceptResponse> {
         self.client_for(peer_id)?
             .accept(Request::new(request))
             .await
@@ -74,16 +73,42 @@ impl ConsensusPeerTransport for TonicConsensusPeerTransport {
             .map_err(|status| map_tonic_status(&status))
     }
 
-    async fn commit_peer(
-        &mut self,
-        peer_id: &str,
-        request: CommitRequest,
-    ) -> So3Result<CommitResponse> {
+    /// # Errors
+    ///
+    /// Returns an error when the peer is unknown or rejects the commit request.
+    pub async fn commit(&self, peer_id: &str, request: CommitRequest) -> So3Result<CommitResponse> {
         self.client_for(peer_id)?
             .commit(Request::new(request))
             .await
             .map(Response::into_inner)
             .map_err(|status| map_tonic_status(&status))
+    }
+}
+
+#[async_trait(?Send)]
+impl ConsensusPeerTransport for TonicConsensusPeerTransport {
+    async fn pre_accept_peer(
+        &mut self,
+        peer_id: &str,
+        request: PreAcceptRequest,
+    ) -> So3Result<PreAcceptResponse> {
+        self.pre_accept(peer_id, request).await
+    }
+
+    async fn accept_peer(
+        &mut self,
+        peer_id: &str,
+        request: AcceptRequest,
+    ) -> So3Result<AcceptResponse> {
+        self.accept(peer_id, request).await
+    }
+
+    async fn commit_peer(
+        &mut self,
+        peer_id: &str,
+        request: CommitRequest,
+    ) -> So3Result<CommitResponse> {
+        self.commit(peer_id, request).await
     }
 }
 

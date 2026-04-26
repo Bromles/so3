@@ -4,15 +4,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use async_trait::async_trait;
 
 use crate::consensus::ConsensusCommandId;
-use crate::consensus::clock::HybridLogicalClock;
+use crate::consensus::clock::{HybridLogicalClock, timestamp_is_after};
 use crate::consensus::state_machine::{LocalStateMachine, ObjectCommandExecutor};
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::{ObjectCommand, ObjectResult};
 use crate::rpc_server::proto::{
-    AcceptRequest, Ballot, CommitRequest, DependencySet, EventPayload, LastApplied,
-    PreAcceptRequest,
+    AcceptRequest, AcceptResponse, Ballot, CommitRequest, DependencySet, EventPayload, LastApplied,
+    LogicalTimestamp, PreAcceptRequest, PreAcceptResponse,
 };
-use crate::rpc_server::transport::ConsensusTransportHandler;
+use crate::rpc_server::transport::{ConsensusTransportHandler, TonicConsensusPeerTransport};
 use crate::storage::applied_command::repository::AppliedCommandStore;
 use crate::storage::object::repository::ObjectRepository;
 
@@ -74,6 +74,8 @@ where
 pub struct LocalConsensusObjectCommandExecutor<H: ConsensusTransportHandler> {
     node_id: String,
     local_transport: H,
+    peer_ids: Vec<String>,
+    peer_transport: TonicConsensusPeerTransport,
     next_sequence: Arc<AtomicU64>,
     clock: HybridLogicalClock,
 }
@@ -90,10 +92,29 @@ impl<H: ConsensusTransportHandler> LocalConsensusObjectCommandExecutor<H> {
         local_transport: H,
         initial_sequence: u64,
     ) -> Self {
+        Self::with_peers(
+            node_id,
+            local_transport,
+            initial_sequence,
+            Vec::new(),
+            TonicConsensusPeerTransport::new(),
+        )
+    }
+
+    #[must_use]
+    pub fn with_peers(
+        node_id: String,
+        local_transport: H,
+        initial_sequence: u64,
+        peer_ids: Vec<String>,
+        peer_transport: TonicConsensusPeerTransport,
+    ) -> Self {
         Self {
             clock: HybridLogicalClock::new(node_id.clone()),
             node_id,
             local_transport,
+            peer_ids,
+            peer_transport,
             next_sequence: Arc::new(AtomicU64::new(initial_sequence)),
         }
     }
@@ -117,63 +138,147 @@ where
         let timestamp_zero = self.clock.tick().await;
         let command_id = command_id_proto(&command_id);
         let event = event_payload(&command_bytes);
-        let dependencies = empty_dependencies();
+        let mut dependencies = empty_dependencies();
 
-        let pre_accept = self
+        let pre_accept_request = PreAcceptRequest {
+            command_id: Some(command_id.clone()),
+            event: Some(event.clone()),
+            timestamp_zero: Some(timestamp_zero.clone()),
+            last_applied: Some(LastApplied {
+                commands: Vec::new(),
+            }),
+        };
+        let local_pre_accept = self
             .local_transport
-            .pre_accept(PreAcceptRequest {
-                command_id: Some(command_id.clone()),
-                event: Some(event.clone()),
-                timestamp_zero: Some(timestamp_zero.clone()),
-                last_applied: Some(LastApplied {
-                    commands: Vec::new(),
-                }),
-            })
+            .pre_accept(pre_accept_request.clone())
             .await
             .map_err(|status| map_status(&status))?;
-        if pre_accept.nack {
-            return Err(So3Error::InvalidRequest(
-                "local pre_accept rejected object command".to_owned(),
-            ));
+        let mut timestamp = apply_pre_accept_response(
+            &mut dependencies,
+            Some(timestamp_zero.clone()),
+            &self.node_id,
+            local_pre_accept,
+        )?;
+        for peer_id in &self.peer_ids {
+            let response = self
+                .peer_transport
+                .pre_accept(peer_id, pre_accept_request.clone())
+                .await?;
+            timestamp = apply_pre_accept_response(&mut dependencies, timestamp, peer_id, response)?;
         }
-        let timestamp = pre_accept
-            .timestamp
-            .unwrap_or_else(|| timestamp_zero.clone());
+        let timestamp = self
+            .clock
+            .observe(&timestamp.unwrap_or(timestamp_zero.clone()))
+            .await;
 
-        let accept = self
+        let accept_request = AcceptRequest {
+            command_id: Some(command_id.clone()),
+            ballot: Some(ballot(&self.node_id)),
+            event: Some(event.clone()),
+            timestamp_zero: Some(timestamp_zero.clone()),
+            timestamp: Some(timestamp.clone()),
+            dependencies: Some(dependencies.clone()),
+            last_applied: Some(LastApplied {
+                commands: Vec::new(),
+            }),
+        };
+        let local_accept = self
             .local_transport
-            .accept(AcceptRequest {
-                command_id: Some(command_id.clone()),
-                ballot: Some(ballot(&self.node_id)),
-                event: Some(event.clone()),
-                timestamp_zero: Some(timestamp_zero.clone()),
-                timestamp: Some(timestamp.clone()),
-                dependencies: Some(pre_accept.dependencies.unwrap_or(dependencies)),
-                last_applied: Some(LastApplied {
-                    commands: Vec::new(),
-                }),
-            })
+            .accept(accept_request.clone())
             .await
             .map_err(|status| map_status(&status))?;
-        if accept.nack {
-            return Err(So3Error::InvalidRequest(
-                "local accept rejected object command".to_owned(),
-            ));
+        apply_accept_response(&mut dependencies, &self.node_id, local_accept)?;
+        for peer_id in &self.peer_ids {
+            let response = self
+                .peer_transport
+                .accept(peer_id, accept_request.clone())
+                .await?;
+            apply_accept_response(&mut dependencies, peer_id, response)?;
         }
 
+        let commit_request = CommitRequest {
+            command_id: Some(command_id.clone()),
+            event: Some(event.clone()),
+            timestamp_zero: Some(timestamp_zero.clone()),
+            timestamp: Some(timestamp.clone()),
+            dependencies: Some(dependencies),
+        };
+        for peer_id in &self.peer_ids {
+            let _response = self
+                .peer_transport
+                .commit(peer_id, commit_request.clone())
+                .await?;
+        }
         let commit = self
             .local_transport
-            .commit(CommitRequest {
-                command_id: Some(command_id),
-                event: Some(event),
-                timestamp_zero: Some(timestamp_zero),
-                timestamp: Some(timestamp),
-                dependencies: accept.dependencies,
-            })
+            .commit(commit_request)
             .await
             .map_err(|status| map_status(&status))?;
 
         ObjectResult::from_bytes(&commit.result)
+    }
+}
+
+fn apply_pre_accept_response(
+    dependencies: &mut DependencySet,
+    current: Option<LogicalTimestamp>,
+    node_id: &str,
+    response: PreAcceptResponse,
+) -> So3Result<Option<LogicalTimestamp>> {
+    if response.nack {
+        return Err(So3Error::InvalidRequest(format!(
+            "pre_accept rejected by replica {node_id}"
+        )));
+    }
+
+    merge_dependencies(dependencies, response.dependencies);
+
+    Ok(max_timestamp(current, response.timestamp))
+}
+
+fn apply_accept_response(
+    dependencies: &mut DependencySet,
+    node_id: &str,
+    response: AcceptResponse,
+) -> So3Result<()> {
+    if response.nack {
+        return Err(So3Error::InvalidRequest(format!(
+            "accept rejected by replica {node_id}"
+        )));
+    }
+
+    merge_dependencies(dependencies, response.dependencies);
+
+    Ok(())
+}
+
+fn max_timestamp(
+    current: Option<LogicalTimestamp>,
+    candidate: Option<LogicalTimestamp>,
+) -> Option<LogicalTimestamp> {
+    match (current, candidate) {
+        (Some(current), Some(candidate)) => Some(if timestamp_is_after(&candidate, &current) {
+            candidate
+        } else {
+            current
+        }),
+        (None, candidate) => candidate,
+        (current, None) => current,
+    }
+}
+
+fn merge_dependencies(target: &mut DependencySet, source: Option<DependencySet>) {
+    let Some(source) = source else {
+        return;
+    };
+
+    for command in source.commands {
+        if !target.commands.iter().any(|existing| {
+            existing.origin_node_id == command.origin_node_id
+                && existing.sequence == command.sequence
+        }) {
+            target.commands.push(command);
+        }
     }
 }
 
