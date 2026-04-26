@@ -1,11 +1,22 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 use async_trait::async_trait;
 
 use crate::consensus::ConsensusCommandId;
 use crate::consensus::state_machine::{LocalStateMachine, ObjectCommandExecutor};
-use crate::domain::error::So3Result;
+use crate::domain::error::{So3Error, So3Result};
 use crate::domain::{ObjectCommand, ObjectResult};
+use crate::rpc_server::proto::{
+    AcceptRequest, Ballot, CommitRequest, DependencySet, EventPayload, LastApplied,
+    LogicalTimestamp, PreAcceptRequest,
+};
+use crate::rpc_server::transport::ConsensusTransportHandler;
 use crate::storage::applied_command::repository::AppliedCommandStore;
 use crate::storage::object::repository::ObjectRepository;
+
+const INITIAL_COMMAND_SEQUENCE: u64 = 1;
 
 #[async_trait]
 pub trait ReplicatedCommandExecutor: Send + Sync {
@@ -57,6 +68,160 @@ where
             .await?;
         Ok(result)
     }
+}
+
+#[derive(Clone)]
+pub struct LocalConsensusObjectCommandExecutor<H: ConsensusTransportHandler> {
+    node_id: String,
+    local_transport: H,
+    next_sequence: Arc<AtomicU64>,
+}
+
+impl<H: ConsensusTransportHandler> LocalConsensusObjectCommandExecutor<H> {
+    #[must_use]
+    pub fn new(node_id: String, local_transport: H) -> Self {
+        Self::with_initial_sequence(node_id, local_transport, durable_process_sequence_floor())
+    }
+
+    #[must_use]
+    pub fn with_initial_sequence(
+        node_id: String,
+        local_transport: H,
+        initial_sequence: u64,
+    ) -> Self {
+        Self {
+            node_id,
+            local_transport,
+            next_sequence: Arc::new(AtomicU64::new(initial_sequence)),
+        }
+    }
+
+    fn next_command_id(&self) -> ConsensusCommandId {
+        ConsensusCommandId::new(
+            self.node_id.clone(),
+            self.next_sequence.fetch_add(1, Ordering::Relaxed),
+        )
+    }
+}
+
+#[async_trait]
+impl<H> ObjectCommandExecutor for LocalConsensusObjectCommandExecutor<H>
+where
+    H: ConsensusTransportHandler + Clone + Send + Sync + 'static,
+{
+    async fn execute_command(&self, command: ObjectCommand) -> So3Result<ObjectResult> {
+        let command_id = self.next_command_id();
+        let command_bytes = command.to_bytes()?;
+        let timestamp_zero = logical_timestamp(&self.node_id, command_id.sequence());
+        let command_id = command_id_proto(&command_id);
+        let event = event_payload(&command_bytes);
+        let dependencies = empty_dependencies();
+
+        let pre_accept = self
+            .local_transport
+            .pre_accept(PreAcceptRequest {
+                command_id: Some(command_id.clone()),
+                event: Some(event.clone()),
+                timestamp_zero: Some(timestamp_zero.clone()),
+                last_applied: Some(LastApplied {
+                    commands: Vec::new(),
+                }),
+            })
+            .await
+            .map_err(|status| map_status(&status))?;
+        if pre_accept.nack {
+            return Err(So3Error::InvalidRequest(
+                "local pre_accept rejected object command".to_owned(),
+            ));
+        }
+        let timestamp = pre_accept
+            .timestamp
+            .unwrap_or_else(|| timestamp_zero.clone());
+
+        let accept = self
+            .local_transport
+            .accept(AcceptRequest {
+                command_id: Some(command_id.clone()),
+                ballot: Some(ballot(&self.node_id)),
+                event: Some(event.clone()),
+                timestamp_zero: Some(timestamp_zero.clone()),
+                timestamp: Some(timestamp.clone()),
+                dependencies: Some(pre_accept.dependencies.unwrap_or(dependencies)),
+                last_applied: Some(LastApplied {
+                    commands: Vec::new(),
+                }),
+            })
+            .await
+            .map_err(|status| map_status(&status))?;
+        if accept.nack {
+            return Err(So3Error::InvalidRequest(
+                "local accept rejected object command".to_owned(),
+            ));
+        }
+
+        let commit = self
+            .local_transport
+            .commit(CommitRequest {
+                command_id: Some(command_id),
+                event: Some(event),
+                timestamp_zero: Some(timestamp_zero),
+                timestamp: Some(timestamp),
+                dependencies: accept.dependencies,
+            })
+            .await
+            .map_err(|status| map_status(&status))?;
+
+        ObjectResult::from_bytes(&commit.result)
+    }
+}
+
+fn durable_process_sequence_floor() -> u64 {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_nanos();
+
+    u64::try_from(nanos)
+        .unwrap_or(u64::MAX)
+        .max(INITIAL_COMMAND_SEQUENCE)
+}
+
+fn command_id_proto(command_id: &ConsensusCommandId) -> crate::rpc_server::proto::CommandId {
+    crate::rpc_server::proto::CommandId {
+        origin_node_id: command_id.origin_node_id().to_owned(),
+        sequence: command_id.sequence(),
+    }
+}
+
+fn event_payload(command: &[u8]) -> EventPayload {
+    EventPayload {
+        command: command.to_vec(),
+    }
+}
+
+fn logical_timestamp(node_id: &str, counter: u64) -> LogicalTimestamp {
+    LogicalTimestamp {
+        epoch: 0,
+        counter,
+        node_id: node_id.to_owned(),
+    }
+}
+
+fn empty_dependencies() -> DependencySet {
+    DependencySet {
+        commands: Vec::new(),
+    }
+}
+
+fn ballot(node_id: &str) -> Ballot {
+    Ballot {
+        round: 0,
+        node_id: node_id.to_owned(),
+    }
+}
+
+fn map_status(status: &tonic::Status) -> So3Error {
+    So3Error::InvalidRequest(status.to_string())
 }
 
 #[cfg(test)]

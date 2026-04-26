@@ -5,9 +5,10 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-use crate::consensus::executor::PersistentReplicatedCommandExecutor;
+use crate::consensus::executor::{
+    LocalConsensusObjectCommandExecutor, PersistentReplicatedCommandExecutor,
+};
 use crate::consensus::recovery::replay_committed_commands;
-use crate::consensus::state_machine::LocalStateMachine;
 use crate::domain::error::{So3Error, So3Result};
 use crate::node::config::NodeConfig;
 use crate::object_server::server::ObjectServer;
@@ -28,7 +29,16 @@ pub struct Node {
             >,
         >,
     >,
-    object_service: ObjectService<LocalStateMachine<SqliteFsPersistentObjectRepository>>,
+    object_service: ObjectService<
+        LocalConsensusObjectCommandExecutor<
+            ApplyingConsensusTransport<
+                PersistentReplicatedCommandExecutor<
+                    SqliteFsPersistentObjectRepository,
+                    SqliteObjectMetadataRepository,
+                >,
+            >,
+        >,
+    >,
 }
 
 pub struct BoundNode {
@@ -44,7 +54,16 @@ pub struct BoundNode {
             >,
         >,
     >,
-    object_service: ObjectService<LocalStateMachine<SqliteFsPersistentObjectRepository>>,
+    object_service: ObjectService<
+        LocalConsensusObjectCommandExecutor<
+            ApplyingConsensusTransport<
+                PersistentReplicatedCommandExecutor<
+                    SqliteFsPersistentObjectRepository,
+                    SqliteObjectMetadataRepository,
+                >,
+            >,
+        >,
+    >,
 }
 
 impl Node {
@@ -60,17 +79,20 @@ impl Node {
             storage.metadata_repository.clone(),
         );
         replay_committed_commands(&storage.consensus_journal, &executor).await?;
-        let state_machine = LocalStateMachine::new(storage.object_repository.clone());
-        let object_service = ObjectService::new(state_machine);
+        let local_transport = ApplyingConsensusTransport::new(
+            node_id.to_string(),
+            executor,
+            storage.consensus_journal,
+        );
+        let object_service = ObjectService::new(LocalConsensusObjectCommandExecutor::new(
+            node_id.to_string(),
+            local_transport.clone(),
+        ));
 
         Ok(Self {
             config,
             object_server: ObjectServer::new(),
-            rpc_server: RpcServer::new(ApplyingConsensusTransport::new(
-                node_id.to_string(),
-                executor,
-                storage.consensus_journal,
-            )),
+            rpc_server: RpcServer::new(local_transport),
             object_service,
         })
     }
@@ -304,6 +326,52 @@ mod tests {
 
         second_token.cancel();
         second_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn object_api_write_is_recorded_in_consensus_journal() {
+        let temp_dir = TempDir::new().unwrap();
+        let client = Client::new();
+        let bound = Node::new(test_config(temp_dir.path()))
+            .await
+            .unwrap()
+            .bind()
+            .await
+            .unwrap();
+        let base_url = format!("http://{}", bound.config().object_api_addr);
+        let token = CancellationToken::new();
+        let shutdown = token.clone();
+        let task = spawn(async move { bound.run(shutdown).await });
+
+        wait_for_http_ready(&client, &base_url).await;
+        let journal = SqliteConsensusJournal::new(temp_dir.path().join(METADATA_DIR_NAME))
+            .await
+            .unwrap();
+        let applied_before = journal
+            .list_by_state(JournalState::Applied)
+            .await
+            .unwrap()
+            .len();
+        let response = client
+            .put(format!("{base_url}/{OBJECT_PATH}"))
+            .body(FIRST_PAYLOAD.to_vec())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        token.cancel();
+        task.await.unwrap().unwrap();
+
+        let applied = journal.list_by_state(JournalState::Applied).await.unwrap();
+
+        assert_eq!(applied.len(), applied_before + 1);
+        assert!(
+            applied
+                .iter()
+                .all(|entry| entry.command_id.origin_node_id() == NODE_ID_NIL.to_string())
+        );
+        assert!(applied.iter().all(|entry| !entry.result.is_empty()));
     }
 
     #[tokio::test]
