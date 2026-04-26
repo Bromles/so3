@@ -6,14 +6,14 @@ use crate::consensus::ConsensusCommandId;
 use crate::consensus::clock::HybridLogicalClock;
 use crate::consensus::executor::ReplicatedCommandExecutor;
 use crate::consensus::journal::{
-    JournalEntry, JournalMetadata, JournalState, SqliteConsensusJournal,
+    JournalEntry, JournalMetadata, JournalState, SqliteConsensusJournal, ballot_is_after,
 };
 use crate::domain::error::So3Error;
 use crate::domain::{ObjectCommand, ObjectKey};
 use crate::rpc_server::proto::{
-    AcceptRequest, AcceptResponse, ApplyRequest, ApplyResponse, CommitRequest, CommitResponse,
-    DependencySet, LogicalTimestamp, PreAcceptRequest, PreAcceptResponse, RecoverRequest,
-    RecoverResponse, State,
+    AcceptRequest, AcceptResponse, ApplyRequest, ApplyResponse, Ballot, CommitRequest,
+    CommitResponse, DependencySet, LogicalTimestamp, PreAcceptRequest, PreAcceptResponse,
+    RecoverRequest, RecoverResponse, State,
 };
 use crate::rpc_server::transport::ConsensusTransportHandler;
 
@@ -71,6 +71,7 @@ where
                     timestamp_zero: request.timestamp_zero.clone(),
                     timestamp: Some(timestamp.clone()),
                     dependencies: dependencies.clone(),
+                    ballot: None,
                 },
             )
             .await
@@ -95,6 +96,12 @@ where
     async fn accept(&self, request: AcceptRequest) -> Result<AcceptResponse, Status> {
         let command_id = extract_command_id(request.command_id.as_ref())?;
         let command_bytes = extract_command_bytes(request.event.as_ref())?;
+        if let Some(response) = self
+            .reject_stale_accept(&command_id, request.ballot.as_ref())
+            .await?
+        {
+            return Ok(response);
+        }
         let observed_timestamp = self
             .observe_or_tick(
                 request
@@ -114,6 +121,7 @@ where
                     timestamp_zero: request.timestamp_zero.clone(),
                     timestamp: Some(accepted_timestamp),
                     dependencies: dependencies.clone(),
+                    ballot: request.ballot.clone(),
                 },
             )
             .await
@@ -155,6 +163,7 @@ where
                     timestamp_zero: request.timestamp_zero.clone(),
                     timestamp: Some(committed_timestamp),
                     dependencies,
+                    ballot: None,
                 },
             )
             .await
@@ -224,6 +233,7 @@ where
                     timestamp_zero: request.timestamp_zero,
                     timestamp: request.timestamp,
                     dependencies: request.dependencies.unwrap_or_else(empty_dependencies),
+                    ballot: None,
                 },
             )
             .await
@@ -251,6 +261,16 @@ where
             .load(&command_id)
             .await
             .map_err(|error| map_error(&error))?;
+        if let Some(nack) = recover_nack(entry.as_ref(), request.ballot.as_ref()) {
+            return Ok(RecoverResponse {
+                local_state: State::Undefined.into(),
+                wait_for: Vec::new(),
+                superseding: false,
+                dependencies: Some(empty_dependencies()),
+                timestamp: Some(timestamp),
+                nack: Some(nack),
+            });
+        }
         let (local_state, dependencies, response_timestamp) = entry.map_or(
             (State::Undefined, empty_dependencies(), timestamp.clone()),
             |entry| {
@@ -264,6 +284,10 @@ where
                 )
             },
         );
+        let wait_for = self
+            .wait_for_unapplied_dependencies(&dependencies)
+            .await
+            .map_err(|error| map_error(&error))?;
 
         debug!(
             node_id = %self.node_id,
@@ -274,7 +298,7 @@ where
 
         Ok(RecoverResponse {
             local_state: local_state.into(),
-            wait_for: Vec::new(),
+            wait_for,
             superseding: false,
             dependencies: Some(dependencies),
             timestamp: Some(response_timestamp),
@@ -304,6 +328,50 @@ where
         }
 
         Ok(dependencies)
+    }
+
+    async fn reject_stale_accept(
+        &self,
+        command_id: &ConsensusCommandId,
+        ballot: Option<&Ballot>,
+    ) -> Result<Option<AcceptResponse>, Status> {
+        let entry = self
+            .journal
+            .load(command_id)
+            .await
+            .map_err(|error| map_error(&error))?;
+
+        if recover_nack(entry.as_ref(), ballot).is_some() {
+            return Ok(Some(AcceptResponse {
+                dependencies: Some(
+                    entry.map_or_else(empty_dependencies, |entry| entry.metadata.dependencies),
+                ),
+                nack: true,
+            }));
+        }
+
+        Ok(None)
+    }
+
+    async fn wait_for_unapplied_dependencies(
+        &self,
+        dependencies: &DependencySet,
+    ) -> crate::domain::error::So3Result<Vec<crate::rpc_server::proto::CommandId>> {
+        let mut wait_for = Vec::new();
+
+        for dependency in &dependencies.commands {
+            let command_id = ConsensusCommandId::try_from(dependency)?;
+            let is_applied = self
+                .journal
+                .load(&command_id)
+                .await?
+                .is_some_and(|entry| entry.state == JournalState::Applied);
+            if !is_applied {
+                wait_for.push(dependency.clone());
+            }
+        }
+
+        Ok(wait_for)
     }
 }
 
@@ -361,6 +429,14 @@ fn command_key(command: &ObjectCommand) -> &ObjectKey {
     }
 }
 
+fn recover_nack(entry: Option<&JournalEntry>, request_ballot: Option<&Ballot>) -> Option<Ballot> {
+    let existing = entry?.metadata.ballot.as_ref()?;
+    match request_ballot {
+        Some(request) if !ballot_is_after(existing, request) => None,
+        _ => Some(existing.clone()),
+    }
+}
+
 fn journal_state_to_proto(state: JournalState) -> State {
     match state {
         JournalState::PreAccepted => State::PreAccepted,
@@ -398,7 +474,7 @@ mod tests {
         ObjectCommand, ObjectKey, ObjectResult, ObjectVersion, ReadCommand, WriteCommand,
     };
     use crate::rpc_server::proto::{
-        AcceptRequest, ApplyRequest, CommandId, CommitRequest, DependencySet, EventPayload,
+        AcceptRequest, ApplyRequest, Ballot, CommandId, CommitRequest, DependencySet, EventPayload,
         LogicalTimestamp, PreAcceptRequest, RecoverRequest, State,
     };
     use crate::rpc_server::transport::ConsensusTransportHandler;
@@ -413,6 +489,7 @@ mod tests {
     const COMMAND_SEQUENCE_THREE: u64 = 3;
     const TEST_TIMESTAMP_EPOCH: u64 = 17;
     const TEST_TIMESTAMP_COUNTER: u64 = 23;
+    const TEST_BALLOT_ROUND: u64 = 5;
 
     async fn test_transport() -> (
         ApplyingConsensusTransport<
@@ -454,6 +531,13 @@ mod tests {
         CommandId {
             origin_node_id: COMMAND_ORIGIN_NODE_ID.to_owned(),
             sequence,
+        }
+    }
+
+    fn ballot(round: u64, node_id: &str) -> Ballot {
+        Ballot {
+            round,
+            node_id: node_id.to_owned(),
         }
     }
 
@@ -617,6 +701,121 @@ mod tests {
         assert_eq!(recovered.local_state, State::Accepted as i32);
         assert_eq!(recovered.timestamp, Some(timestamp));
         assert_eq!(recovered.dependencies, Some(dependencies));
+    }
+
+    #[tokio::test]
+    async fn recover_waits_for_durable_dependencies_that_are_not_applied_locally() {
+        let (transport, _temp_dir) = test_transport().await;
+        let command = ObjectCommand::Write(WriteCommand {
+            key: ObjectKey::new(ALPHA_KEY).unwrap(),
+            value: FIRST_VALUE.to_vec(),
+        });
+        let applied_dependency = ObjectCommand::Write(WriteCommand {
+            key: ObjectKey::new(BETA_KEY).unwrap(),
+            value: b"dependency".to_vec(),
+        });
+        let dependencies = DependencySet {
+            commands: vec![
+                command_id(COMMAND_SEQUENCE_TWO),
+                command_id(COMMAND_SEQUENCE_THREE),
+            ],
+        };
+
+        let _ = transport
+            .accept(AcceptRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
+                dependencies: Some(dependencies),
+                event: Some(EventPayload {
+                    command: command.to_bytes().unwrap(),
+                }),
+                ..AcceptRequest::default()
+            })
+            .await
+            .unwrap();
+        let _ = transport
+            .apply(ApplyRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_TWO)),
+                event: Some(EventPayload {
+                    command: applied_dependency.to_bytes().unwrap(),
+                }),
+                ..ApplyRequest::default()
+            })
+            .await
+            .unwrap();
+        let recovered = transport
+            .recover(RecoverRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
+                ..RecoverRequest::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(recovered.wait_for, vec![command_id(COMMAND_SEQUENCE_THREE)]);
+    }
+
+    #[tokio::test]
+    async fn accept_rejects_ballot_older_than_durable_accept_ballot() {
+        let (transport, _temp_dir) = test_transport().await;
+        let command = ObjectCommand::Write(WriteCommand {
+            key: ObjectKey::new(ALPHA_KEY).unwrap(),
+            value: FIRST_VALUE.to_vec(),
+        });
+
+        let _ = transport
+            .accept(AcceptRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
+                ballot: Some(ballot(TEST_BALLOT_ROUND, "node-c")),
+                event: Some(EventPayload {
+                    command: command.to_bytes().unwrap(),
+                }),
+                ..AcceptRequest::default()
+            })
+            .await
+            .unwrap();
+        let stale = transport
+            .accept(AcceptRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
+                ballot: Some(ballot(TEST_BALLOT_ROUND - 1, "node-d")),
+                event: Some(EventPayload {
+                    command: command.to_bytes().unwrap(),
+                }),
+                ..AcceptRequest::default()
+            })
+            .await
+            .unwrap();
+
+        assert!(stale.nack);
+    }
+
+    #[tokio::test]
+    async fn recover_reports_nack_for_ballot_older_than_durable_accept_ballot() {
+        let (transport, _temp_dir) = test_transport().await;
+        let command = ObjectCommand::Write(WriteCommand {
+            key: ObjectKey::new(ALPHA_KEY).unwrap(),
+            value: FIRST_VALUE.to_vec(),
+        });
+
+        let _ = transport
+            .accept(AcceptRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
+                ballot: Some(ballot(TEST_BALLOT_ROUND, "node-c")),
+                event: Some(EventPayload {
+                    command: command.to_bytes().unwrap(),
+                }),
+                ..AcceptRequest::default()
+            })
+            .await
+            .unwrap();
+        let recovered = transport
+            .recover(RecoverRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
+                ballot: Some(ballot(TEST_BALLOT_ROUND - 1, "node-d")),
+                ..RecoverRequest::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(recovered.nack, Some(ballot(TEST_BALLOT_ROUND, "node-c")));
     }
 
     #[tokio::test]

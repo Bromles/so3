@@ -12,12 +12,12 @@ use tokio::sync::Mutex;
 
 use crate::consensus::ConsensusCommandId;
 use crate::domain::error::{So3Error, So3Result};
-use crate::rpc_server::proto::{DependencySet, LogicalTimestamp};
+use crate::rpc_server::proto::{Ballot, DependencySet, LogicalTimestamp};
 
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SQLITE_MAX_CONNECTIONS: u32 = 1;
 const DATABASE_FILE_NAME: &str = "consensus.sqlite";
-const CURRENT_SCHEMA_VERSION: i64 = 2;
+const CURRENT_SCHEMA_VERSION: i64 = 3;
 const EMPTY_RESULT_BYTES: &[u8] = b"";
 const STATE_PRE_ACCEPTED: i64 = 1;
 const STATE_ACCEPTED: i64 = 2;
@@ -36,7 +36,7 @@ const COMMANDS_TABLE_SQL: &str = r"
 ";
 const LOAD_COMMAND_SQL: &str = r"
     SELECT origin_node_id, sequence, state, command, result,
-           timestamp_zero, timestamp, dependencies
+           timestamp_zero, timestamp, dependencies, ballot
     FROM command_journal
     WHERE origin_node_id = ? AND sequence = ?
 ";
@@ -47,7 +47,7 @@ const NEXT_SEQUENCE_SQL: &str = r"
 ";
 const LIST_COMMANDS_BY_STATE_SQL: &str = r"
     SELECT origin_node_id, sequence, state, command, result,
-           timestamp_zero, timestamp, dependencies
+           timestamp_zero, timestamp, dependencies, ballot
     FROM command_journal
     WHERE state = ?
     ORDER BY origin_node_id, sequence
@@ -55,14 +55,14 @@ const LIST_COMMANDS_BY_STATE_SQL: &str = r"
 const INSERT_APPLIED_COMMAND_SQL: &str = r"
     INSERT INTO command_journal (
         origin_node_id, sequence, state, command, result,
-        timestamp_zero, timestamp, dependencies
+        timestamp_zero, timestamp, dependencies, ballot
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ";
 const UPDATE_COMMAND_SQL: &str = r"
     UPDATE command_journal
     SET state = ?, command = ?, result = ?,
-        timestamp_zero = ?, timestamp = ?, dependencies = ?
+        timestamp_zero = ?, timestamp = ?, dependencies = ?, ballot = ?
     WHERE origin_node_id = ? AND sequence = ?
 ";
 const ADD_TIMESTAMP_ZERO_SQL: &str = r"
@@ -76,6 +76,10 @@ const ADD_TIMESTAMP_SQL: &str = r"
 const ADD_DEPENDENCIES_SQL: &str = r"
     ALTER TABLE command_journal
     ADD COLUMN dependencies BLOB NOT NULL DEFAULT X''
+";
+const ADD_BALLOT_SQL: &str = r"
+    ALTER TABLE command_journal
+    ADD COLUMN ballot BLOB NOT NULL DEFAULT X''
 ";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,6 +104,7 @@ pub struct JournalMetadata {
     pub timestamp_zero: Option<LogicalTimestamp>,
     pub timestamp: Option<LogicalTimestamp>,
     pub dependencies: DependencySet,
+    pub ballot: Option<Ballot>,
 }
 
 #[derive(Clone, Debug)]
@@ -144,9 +149,14 @@ impl SqliteConsensusJournal {
         match version {
             0 => {
                 self.migrate_to_v1().await?;
-                self.migrate_to_v2().await
+                self.migrate_to_v2().await?;
+                self.migrate_to_v3().await
             }
-            1 => self.migrate_to_v2().await,
+            1 => {
+                self.migrate_to_v2().await?;
+                self.migrate_to_v3().await
+            }
+            2 => self.migrate_to_v3().await,
             CURRENT_SCHEMA_VERSION => Ok(()),
             unsupported => Err(So3Error::Storage(format!(
                 "unsupported consensus sqlite schema version: {unsupported}"
@@ -164,6 +174,12 @@ impl SqliteConsensusJournal {
         query(ADD_TIMESTAMP_ZERO_SQL).execute(&self.pool).await?;
         query(ADD_TIMESTAMP_SQL).execute(&self.pool).await?;
         query(ADD_DEPENDENCIES_SQL).execute(&self.pool).await?;
+        query("PRAGMA user_version = 2").execute(&self.pool).await?;
+        Ok(())
+    }
+
+    async fn migrate_to_v3(&self) -> So3Result<()> {
+        query(ADD_BALLOT_SQL).execute(&self.pool).await?;
         query(&format!("PRAGMA user_version = {CURRENT_SCHEMA_VERSION}"))
             .execute(&self.pool)
             .await?;
@@ -401,6 +417,7 @@ impl SqliteConsensusJournal {
             .bind(encode_optional_proto(metadata.timestamp_zero.as_ref()))
             .bind(encode_optional_proto(metadata.timestamp.as_ref()))
             .bind(metadata.dependencies.encode_to_vec())
+            .bind(encode_optional_proto(metadata.ballot.as_ref()))
             .execute(&self.pool)
             .await?;
 
@@ -422,6 +439,7 @@ impl SqliteConsensusJournal {
             .bind(encode_optional_proto(metadata.timestamp_zero.as_ref()))
             .bind(encode_optional_proto(metadata.timestamp.as_ref()))
             .bind(metadata.dependencies.encode_to_vec())
+            .bind(encode_optional_proto(metadata.ballot.as_ref()))
             .bind(command_id.origin_node_id())
             .bind(sequence_to_i64(command_id.sequence())?)
             .execute(&self.pool)
@@ -455,6 +473,7 @@ fn row_to_entry(row: &SqliteRow) -> So3Result<JournalEntry> {
             timestamp_zero: decode_optional_proto(&row.try_get::<Vec<u8>, _>("timestamp_zero")?)?,
             timestamp: decode_optional_proto(&row.try_get::<Vec<u8>, _>("timestamp")?)?,
             dependencies: decode_dependencies(&row.try_get::<Vec<u8>, _>("dependencies")?)?,
+            ballot: decode_optional_proto(&row.try_get::<Vec<u8>, _>("ballot")?)?,
         },
     })
 }
@@ -474,7 +493,30 @@ fn merge_metadata(existing: &JournalMetadata, next: &JournalMetadata) -> Journal
         } else {
             next.dependencies.clone()
         },
+        ballot: merge_ballot(existing.ballot.as_ref(), next.ballot.as_ref()),
     }
+}
+
+fn merge_ballot(existing: Option<&Ballot>, next: Option<&Ballot>) -> Option<Ballot> {
+    match (existing, next) {
+        (Some(existing), Some(next)) => Some(max_ballot(existing, next).clone()),
+        (None, Some(next)) => Some(next.clone()),
+        (Some(existing), None) => Some(existing.clone()),
+        (None, None) => None,
+    }
+}
+
+fn max_ballot<'a>(left: &'a Ballot, right: &'a Ballot) -> &'a Ballot {
+    if ballot_is_after(right, left) {
+        right
+    } else {
+        left
+    }
+}
+
+pub(crate) fn ballot_is_after(candidate: &Ballot, current: &Ballot) -> bool {
+    candidate.round > current.round
+        || (candidate.round == current.round && candidate.node_id > current.node_id)
 }
 
 fn encode_optional_proto<T: ProstMessage>(value: Option<&T>) -> Vec<u8> {
@@ -551,7 +593,7 @@ mod tests {
     use super::{JournalMetadata, JournalState, SqliteConsensusJournal};
     use crate::consensus::ConsensusCommandId;
     use crate::domain::error::So3Error;
-    use crate::rpc_server::proto::{CommandId, DependencySet, LogicalTimestamp};
+    use crate::rpc_server::proto::{Ballot, CommandId, DependencySet, LogicalTimestamp};
 
     const ORIGIN_NODE_ID: &str = "node-a";
     const COMMAND_SEQUENCE: u64 = 3;
@@ -620,6 +662,10 @@ mod tests {
                     sequence: 2,
                 }],
             },
+            ballot: Some(Ballot {
+                round: 7,
+                node_id: "node-c".to_owned(),
+            }),
         };
 
         let _ = journal
