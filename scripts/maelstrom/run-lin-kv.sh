@@ -7,6 +7,14 @@ TIME_LIMIT="${TIME_LIMIT:-20}"
 RATE="${RATE:-100}"
 CONCURRENCY="${CONCURRENCY:-2n}"
 LOG_STDERR="${LOG_STDERR:-1}"
+LOG_NET_SEND="${LOG_NET_SEND:-0}"
+LOG_NET_RECV="${LOG_NET_RECV:-0}"
+NEMESIS="${NEMESIS:-}"
+NEMESIS_INTERVAL="${NEMESIS_INTERVAL:-}"
+LATENCY="${LATENCY:-}"
+LATENCY_DIST="${LATENCY_DIST:-}"
+AVAILABILITY="${AVAILABILITY:-}"
+CONSISTENCY_MODELS="${CONSISTENCY_MODELS:-}"
 NO_BUILD="${NO_BUILD:-0}"
 MAELSTROM_BIN="${MAELSTROM_BIN:-}"
 MAELSTROM_JAR="${MAELSTROM_JAR:-}"
@@ -93,6 +101,38 @@ command=(
 
 if [[ "$LOG_STDERR" == "1" ]]; then
   command+=(--log-stderr)
+fi
+
+if [[ "$LOG_NET_SEND" == "1" ]]; then
+  command+=(--log-net-send)
+fi
+
+if [[ "$LOG_NET_RECV" == "1" ]]; then
+  command+=(--log-net-recv)
+fi
+
+if [[ -n "$NEMESIS" ]]; then
+  command+=(--nemesis "$NEMESIS")
+fi
+
+if [[ -n "$NEMESIS_INTERVAL" ]]; then
+  command+=(--nemesis-interval "$NEMESIS_INTERVAL")
+fi
+
+if [[ -n "$LATENCY" ]]; then
+  command+=(--latency "$LATENCY")
+fi
+
+if [[ -n "$LATENCY_DIST" ]]; then
+  command+=(--latency-dist "$LATENCY_DIST")
+fi
+
+if [[ -n "$AVAILABILITY" ]]; then
+  command+=(--availability "$AVAILABILITY")
+fi
+
+if [[ -n "$CONSISTENCY_MODELS" ]]; then
+  command+=(--consistency-models "$CONSISTENCY_MODELS")
 fi
 
 printf 'Running:'

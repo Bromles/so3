@@ -4,12 +4,20 @@ param(
     [string]$TimeLimit = "20",
     [string]$Rate = "100",
     [string]$Concurrency = "2n",
+    [string]$Nemesis = "",
+    [string]$NemesisInterval = "",
+    [string]$Latency = "",
+    [string]$LatencyDist = "",
+    [string]$Availability = "",
+    [string]$ConsistencyModels = "",
     [string]$MaelstromBin = "",
     [string]$MaelstromJar = "",
     [string]$BinaryPath = "",
     [string]$OutputDir = "var/maelstrom",
     [string]$DataDir = "",
     [switch]$LogStderr,
+    [switch]$LogNetSend,
+    [switch]$LogNetRecv,
     [switch]$NoBuild
 )
 
@@ -122,6 +130,30 @@ try {
 
     if ($LogStderr) {
         $command += "--log-stderr"
+    }
+    if ($LogNetSend) {
+        $command += "--log-net-send"
+    }
+    if ($LogNetRecv) {
+        $command += "--log-net-recv"
+    }
+    if ($Nemesis) {
+        $command += @("--nemesis", $Nemesis)
+    }
+    if ($NemesisInterval) {
+        $command += @("--nemesis-interval", $NemesisInterval)
+    }
+    if ($Latency) {
+        $command += @("--latency", $Latency)
+    }
+    if ($LatencyDist) {
+        $command += @("--latency-dist", $LatencyDist)
+    }
+    if ($Availability) {
+        $command += @("--availability", $Availability)
+    }
+    if ($ConsistencyModels) {
+        $command += @("--consistency-models", $ConsistencyModels)
     }
 
     Write-Host "Running:" ($command -join " ")

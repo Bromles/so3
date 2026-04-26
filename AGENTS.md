@@ -8,12 +8,15 @@ The near-term product goal is narrow on purpose:
 
 - Support only `Read`, `Write`, and `CAS`.
 - Verify behavior with Jepsen Maelstrom's lin-kv workload.
+- Expose a tiny S3-compatible HTTP facade for basic performance tests, without expanding the
+  replicated command model.
 - Prefer correctness, determinism, and recoverability over throughput or feature breadth.
 - Avoid dependencies on external services.
 - Persist metadata in SQLite and object blobs on the local filesystem.
 
 This repo is an early but functional prototype scaffold. Agents should optimize for clarifying and completing the intended architecture, not for preserving accidental placeholders.
-Full S3 API support is planned, but only in the distant future.
+Full S3 API support remains out of scope; the current S3 surface is intentionally only a thin
+benchmark/client-compatibility facade over the existing object commands.
 
 ## Current Repository State
 
@@ -23,6 +26,8 @@ The codebase currently compiles and has working prototype paths for storage, nod
 - `crates/so3` is the binary crate for config loading, node bootstrap, and signal handling.
 - `crates/so3-maelstrom` is the Maelstrom adapter used for lin-kv verification.
 - `object_server` exposes the minimal object API and maps requests to object commands.
+- `object_server` also exposes a tiny path-style S3 facade for `PUT Object`, `GET Object`, and
+  `HEAD Object`; it maps bucket/key paths into the same single object keyspace.
 - `rpc_server` exposes the intra-cluster Accord transport over tonic.
 - `node` wires storage, recovery, local/peer consensus transports, object API, and RPC API.
 - `proto/consensus.proto` describes the current Accord transport RPCs and should be treated as the seed of the intra-cluster protocol.
@@ -77,7 +82,8 @@ Target runtime shape:
 
 ## Product Scope
 
-The prototype is not an S3 clone. Keep the API surface minimal until Maelstrom verification is in place.
+The prototype is not an S3 clone. Keep the replicated API surface minimal and preserve Maelstrom
+verification as the correctness gate.
 
 Preferred logical model:
 
@@ -94,7 +100,28 @@ Preferred logical model:
   - `Write(key, value) -> version`
   - `CAS(key, expected_version, value) -> ok | mismatch | not_found`
 
-Do not add auth, ACLs, multipart upload, listing, leases, TTLs, or garbage collection unless they are necessary for correctness or required by tests.
+Client-facing HTTP surfaces:
+
+- Native prototype API:
+  - `PUT /objects/{key}` -> replicated `Write`
+  - `GET /objects/{key}` -> replicated `Read`
+  - `HEAD /objects/{key}` -> replicated `Read` metadata
+  - `PUT /objects/{key}?expected_version=N` -> replicated `CAS`
+  - this interface is the stable, explicit API for tests and internal development
+- Minimal S3-style facade:
+  - path-style only: `/{bucket}/{key...}`
+  - `PUT /{bucket}/{key...}` -> replicated `Write` using internal key `{bucket}/{key...}`
+  - `GET /{bucket}/{key...}` -> replicated `Read`
+  - `HEAD /{bucket}/{key...}` -> replicated `Read` metadata
+  - response headers may include `ETag`, `Content-Length`, and `x-amz-version-id`
+  - intended for simple clients and Grafana k6 performance scripts, not for S3 conformance
+
+For now, do not add bucket lifecycle or independent bucket metadata. Buckets in the S3 facade are
+only namespace prefixes in the single object keyspace.
+
+Do not add auth, SigV4, ACLs, bucket creation/deletion, object listing, multipart upload, range
+reads, deletes, leases, TTLs, garbage collection, or S3 XML compatibility unless they are necessary
+for correctness or required by tests.
 
 ## Core Invariants
 
@@ -150,6 +177,7 @@ Suggested internal shape:
 Keep consensus isolated from HTTP and storage details:
 
 - HTTP handlers translate requests into commands.
+- S3 facade handlers translate path-style bucket/key requests into the same typed object commands.
 - RPC handlers translate network messages into consensus calls.
 - The state machine applies commands against storage-facing traits.
 
@@ -188,6 +216,8 @@ Minimum expectations over time:
 - restart/recovery tests
 - concurrency tests around CAS semantics
 - Maelstrom verification for `Read`/`Write`/`CAS`
+- HTTP tests for native object API and the minimal S3 facade
+- k6 performance scripts for the minimal S3 facade once the public HTTP path is stable
 
 Before finishing a change, run what is relevant:
 
@@ -256,7 +286,8 @@ When making edits:
 
 If a new feature is proposed, ask:
 
-1. Does it help `Read`, `Write`, `CAS`, durability, recovery, or Maelstrom verification?
+1. Does it help `Read`, `Write`, `CAS`, durability, recovery, Maelstrom verification, or the
+   minimal k6-testable S3 facade?
 2. Does it simplify the path to a correct Accord-backed prototype?
 3. Can it be implemented without introducing external dependencies?
 
@@ -331,19 +362,26 @@ Remaining work before calling the prototype ready:
    - Verify that committed-but-not-applied commands recover safely after node restart.
    - Record only reproducible commands, parameters, and validity verdicts in docs.
 
-2. Improve availability under load without weakening safety.
+2. Add a minimal S3/k6 performance harness.
+   - Keep it focused on `PUT Object`, `GET Object`, and `HEAD Object` against the path-style S3
+     facade.
+   - Record exact k6 commands, node count, request mix, duration, rate/concurrency, and basic
+     latency/throughput summaries.
+   - Performance testing must not replace Maelstrom correctness verification.
+
+3. Improve availability under load without weakening safety.
    - Longer three-node lin-kv currently remains valid but can produce client `:net-timeout`
      `info` operations at higher rate/concurrency.
    - Any improvement must preserve the rule that clients do not receive success before the command
      is durably committed and locally applied.
 
-3. Tighten Accord completeness.
+4. Tighten Accord completeness.
    - The coordinator has majority quorum, fast path, slow path accept, recovery retry, and
      best-effort commit broadcast.
    - It still is not a full Accord implementation with all production-grade recovery orchestration,
      background anti-entropy, or optimized dependency pruning.
 
-4. Keep documentation current.
+5. Keep documentation current.
    - `docs/classDiagram.puml` is the current detailed structural diagram.
    - `docs/moduleDiagram.drawio` is the slide-sized editable architectural module diagram.
    - `docs/maelstrom.md` records verification commands and verdicts without gitignored result paths.

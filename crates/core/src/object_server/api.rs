@@ -4,7 +4,9 @@ use crate::domain::StoredObject;
 
 pub const OBJECT_ROUTE_PATH: &str = "/objects/{key}";
 pub const OBJECT_METADATA_ROUTE_PATH: &str = "/objects/{key}/metadata";
+pub const S3_OBJECT_ROUTE_PATH: &str = "/{bucket}/{*key}";
 pub const VERSION_HEADER: &str = "x-so3-version";
+pub const S3_VERSION_ID_HEADER: &str = "x-amz-version-id";
 pub const ETAG_HEADER: &str = "etag";
 pub const DEFAULT_ERROR_LABEL: &str = "error";
 

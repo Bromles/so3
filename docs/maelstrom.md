@@ -65,6 +65,22 @@ through Maelstrom messages before replying to the client.
 ./scripts/maelstrom/run-lin-kv.sh
 ```
 
+## Fault Run
+
+The stock Maelstrom binary currently exposes `partition` as the supported fault for this workload.
+Use this three-node wrapper to run `lin-kv` while Maelstrom injects network partitions:
+
+```powershell
+./scripts/maelstrom/fault-3-node-lin-kv.ps1 -MaelstromJar .\.tools\maelstrom\maelstrom\lib\maelstrom.jar
+```
+
+```bash
+./scripts/maelstrom/fault-3-node-lin-kv.sh
+```
+
+This defaults to `NODE_COUNT=3`, `TIME_LIMIT=30`, `RATE=20`, `CONCURRENCY=2n`,
+`NEMESIS=partition`, and `NEMESIS_INTERVAL=5`.
+
 ## Platform Notes
 
 - Windows: use `*.ps1` under PowerShell 7.
@@ -84,9 +100,17 @@ Default settings:
 - time limit: `20`
 - rate: `100`
 - concurrency: `2n`
+- nemesis: unset
+- nemesis interval: Maelstrom default unless `NEMESIS_INTERVAL` / `-NemesisInterval` is set
 
 The three-node smoke scripts override these defaults with `NODE_COUNT=3`, `TIME_LIMIT=10`,
 `RATE=10`, and `CONCURRENCY=2n`.
+
+The general `run-lin-kv` scripts also pass through optional fault and checker parameters:
+`NEMESIS`, `NEMESIS_INTERVAL`, `LATENCY`, `LATENCY_DIST`, `AVAILABILITY`,
+`CONSISTENCY_MODELS`, `LOG_NET_SEND`, and `LOG_NET_RECV` for bash; `-Nemesis`,
+`-NemesisInterval`, `-Latency`, `-LatencyDist`, `-Availability`, `-ConsistencyModels`,
+`-LogNetSend`, and `-LogNetRecv` for PowerShell.
 
 ## Recent Verification
 
@@ -114,6 +138,16 @@ Validated on 2026-04-26 after the dependency handling fixes:
   - concurrency: `4n`
   - result: `:valid? true`
   - stats: 1313 operations, 637 ok, 535 fail, 141 info; ok fraction 0.48514852
+- `TIME_LIMIT=30 RATE=20 CONCURRENCY=2n bash scripts/maelstrom/fault-3-node-lin-kv.sh`
+  - workload: `lin-kv`
+  - nemesis: `partition`
+  - nemesis interval: `5`
+  - nodes: `3`
+  - time limit: `30`
+  - rate: `20`
+  - concurrency: `2n`
+  - result: `:valid? true`
+  - stats: 515 operations, 309 ok, 180 fail, 26 info; ok fraction 0.6
 
 Maelstrom writes detailed histories under `store/lin-kv/`, which is intentionally gitignored.
 Do not commit run-specific result paths; keep only reproducible commands, parameters, and verdicts

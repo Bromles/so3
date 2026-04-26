@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
+use axum::http::header::CONTENT_LENGTH;
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -14,7 +15,7 @@ use crate::domain::error::So3Error;
 use crate::domain::{CasResult, ObjectKey, StoredObject};
 use crate::object_server::api::{
     DEFAULT_ERROR_LABEL, ETAG_HEADER, ErrorResponse, OBJECT_METADATA_ROUTE_PATH, OBJECT_ROUTE_PATH,
-    ObjectMetadataResponse, VERSION_HEADER, WriteQuery,
+    ObjectMetadataResponse, S3_OBJECT_ROUTE_PATH, S3_VERSION_ID_HEADER, VERSION_HEADER, WriteQuery,
 };
 use crate::object_server::service::ObjectService;
 
@@ -36,6 +37,10 @@ where
             get(handle_get).head(handle_head).put(handle_put),
         )
         .route(OBJECT_METADATA_ROUTE_PATH, get(handle_get_metadata))
+        .route(
+            S3_OBJECT_ROUTE_PATH,
+            get(handle_s3_get).head(handle_s3_head).put(handle_s3_put),
+        )
         .with_state(state)
         .layer((
             TraceLayer::new_for_http(),
@@ -82,6 +87,53 @@ where
 {
     let object = load_object(&state, key).await?;
     Ok(Json(ObjectMetadataResponse::from(object)))
+}
+
+async fn handle_s3_get<E>(
+    State(state): State<ObjectApiState<E>>,
+    Path((bucket, key)): Path<(String, String)>,
+) -> Result<Response, ApiError>
+where
+    E: ObjectCommandExecutor + Clone + Send + Sync + 'static,
+{
+    let object = load_object(&state, s3_object_key(&bucket, &key)?).await?;
+    let metadata = ObjectMetadataResponse::from(&object);
+    let mut response = object.value.into_response();
+    attach_s3_metadata_headers(response.headers_mut(), &metadata)?;
+
+    Ok(response)
+}
+
+async fn handle_s3_head<E>(
+    State(state): State<ObjectApiState<E>>,
+    Path((bucket, key)): Path<(String, String)>,
+) -> Result<Response, ApiError>
+where
+    E: ObjectCommandExecutor + Clone + Send + Sync + 'static,
+{
+    let object = load_object(&state, s3_object_key(&bucket, &key)?).await?;
+    let mut response = StatusCode::OK.into_response();
+    let metadata = ObjectMetadataResponse::from(&object);
+    attach_s3_metadata_headers(response.headers_mut(), &metadata)?;
+
+    Ok(response)
+}
+
+async fn handle_s3_put<E>(
+    State(state): State<ObjectApiState<E>>,
+    Path((bucket, key)): Path<(String, String)>,
+    body: Bytes,
+) -> Result<Response, ApiError>
+where
+    E: ObjectCommandExecutor + Clone + Send + Sync + 'static,
+{
+    let key = ObjectKey::new(s3_object_key(&bucket, &key)?)?;
+    let object = state.service.write(key, body.to_vec()).await?;
+    let metadata = ObjectMetadataResponse::from(object);
+    let mut response = StatusCode::OK.into_response();
+    attach_s3_metadata_headers(response.headers_mut(), &metadata)?;
+
+    Ok(response)
 }
 
 async fn handle_put<E>(
@@ -172,7 +224,51 @@ fn attach_metadata_headers(
         HeaderValue::from_str(&metadata.checksum)
             .map_err(|error| ApiError::from(So3Error::InvalidRequest(error.to_string())))?,
     );
+    headers.insert(
+        CONTENT_LENGTH,
+        HeaderValue::from_str(&metadata.content_length.to_string())
+            .map_err(|error| ApiError::from(So3Error::InvalidRequest(error.to_string())))?,
+    );
     Ok(())
+}
+
+fn attach_s3_metadata_headers(
+    headers: &mut axum::http::HeaderMap,
+    metadata: &ObjectMetadataResponse,
+) -> Result<(), ApiError> {
+    headers.insert(
+        S3_VERSION_ID_HEADER,
+        HeaderValue::from_str(&metadata.version.to_string())
+            .map_err(|error| ApiError::from(So3Error::InvalidRequest(error.to_string())))?,
+    );
+    headers.insert(
+        ETAG_HEADER,
+        HeaderValue::from_str(&quoted_etag(&metadata.checksum))
+            .map_err(|error| ApiError::from(So3Error::InvalidRequest(error.to_string())))?,
+    );
+    headers.insert(
+        CONTENT_LENGTH,
+        HeaderValue::from_str(&metadata.content_length.to_string())
+            .map_err(|error| ApiError::from(So3Error::InvalidRequest(error.to_string())))?,
+    );
+    Ok(())
+}
+
+fn quoted_etag(checksum: &str) -> String {
+    if checksum.starts_with('"') && checksum.ends_with('"') {
+        checksum.to_owned()
+    } else {
+        format!("\"{checksum}\"")
+    }
+}
+
+fn s3_object_key(bucket: &str, key: &str) -> Result<String, ApiError> {
+    let bucket = bucket.trim();
+    if bucket.is_empty() || key.trim().is_empty() {
+        return Err(ApiError::from(So3Error::InvalidKey));
+    }
+
+    Ok(format!("{bucket}/{key}"))
 }
 
 #[cfg(test)]
@@ -195,6 +291,8 @@ mod tests {
     const OBJECT_PATH: &str = "/objects/alpha";
     const OBJECT_METADATA_PATH: &str = "/objects/alpha/metadata";
     const MISSING_OBJECT_PATH: &str = "/objects/missing";
+    const S3_OBJECT_PATH: &str = "/bench/alpha";
+    const S3_NESTED_OBJECT_PATH: &str = "/bench/path/to/object";
     const CAS_MISMATCH_PATH: &str = "/objects/alpha?expected_version=9";
     const INVALID_VERSION_PATH: &str = "/objects/alpha?expected_version=0";
     const FIRST_VALUE: &str = "first";
@@ -454,5 +552,99 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn s3_put_then_get_returns_object_headers_and_body() {
+        let (app, _temp_dir) = test_app().await;
+
+        let put_response = app
+            .clone()
+            .oneshot(
+                Request::put(S3_OBJECT_PATH)
+                    .body(Body::from(HELLO_VALUE))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(put_response.status(), StatusCode::OK);
+        assert_eq!(
+            put_response
+                .headers()
+                .get("x-amz-version-id")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            VERSION_ONE_HEADER
+        );
+        assert!(
+            put_response
+                .headers()
+                .get("etag")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with('"')
+        );
+
+        let get_response = app
+            .oneshot(Request::get(S3_OBJECT_PATH).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(get_response.status(), StatusCode::OK);
+        assert_eq!(
+            get_response
+                .headers()
+                .get("x-amz-version-id")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            VERSION_ONE_HEADER
+        );
+        let get_body = to_bytes(get_response.into_body(), TEST_MAX_RESPONSE_BYTES)
+            .await
+            .unwrap();
+        assert_eq!(&get_body[..], HELLO_VALUE.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn s3_head_supports_nested_object_keys() {
+        let (app, _temp_dir) = test_app().await;
+
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::put(S3_NESTED_OBJECT_PATH)
+                    .body(Body::from(HELLO_VALUE))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let response = app
+            .oneshot(
+                Request::head(S3_NESTED_OBJECT_PATH)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("content-length")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            HELLO_VALUE.len().to_string()
+        );
+        let body = to_bytes(response.into_body(), TEST_MAX_RESPONSE_BYTES)
+            .await
+            .unwrap();
+        assert!(body.is_empty());
     }
 }
