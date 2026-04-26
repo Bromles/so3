@@ -562,6 +562,7 @@ mod tests {
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             value: FIRST_VALUE.to_vec(),
+            last_modified: test_last_modified(),
         });
 
         let response = transport
@@ -590,6 +591,7 @@ mod tests {
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             value: FIRST_VALUE.to_vec(),
+            last_modified: test_last_modified(),
         });
 
         let _ = transport
@@ -637,10 +639,12 @@ mod tests {
         let first = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             value: FIRST_VALUE.to_vec(),
+            last_modified: test_last_modified(),
         });
         let second = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             value: b"second".to_vec(),
+            last_modified: test_last_modified(),
         });
 
         let _ = transport
@@ -677,10 +681,12 @@ mod tests {
         let first = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             value: FIRST_VALUE.to_vec(),
+            last_modified: test_last_modified(),
         });
         let second = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             value: b"second".to_vec(),
+            last_modified: test_last_modified(),
         });
 
         let _ = transport
@@ -713,6 +719,7 @@ mod tests {
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             value: FIRST_VALUE.to_vec(),
+            last_modified: test_last_modified(),
         });
         let timestamp_zero = LogicalTimestamp {
             epoch: TEST_TIMESTAMP_EPOCH,
@@ -760,10 +767,12 @@ mod tests {
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             value: FIRST_VALUE.to_vec(),
+            last_modified: test_last_modified(),
         });
         let applied_dependency = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(BETA_KEY).unwrap(),
             value: b"dependency".to_vec(),
+            last_modified: test_last_modified(),
         });
         let dependencies = DependencySet {
             commands: vec![
@@ -810,6 +819,7 @@ mod tests {
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             value: FIRST_VALUE.to_vec(),
+            last_modified: test_last_modified(),
         });
 
         let _ = transport
@@ -844,6 +854,7 @@ mod tests {
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             value: FIRST_VALUE.to_vec(),
+            last_modified: test_last_modified(),
         });
 
         let _ = transport
@@ -875,10 +886,12 @@ mod tests {
         let applied = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             value: FIRST_VALUE.to_vec(),
+            last_modified: test_last_modified(),
         });
         let other_key = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(BETA_KEY).unwrap(),
             value: FIRST_VALUE.to_vec(),
+            last_modified: test_last_modified(),
         });
         let current = ObjectCommand::Read(ReadCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
@@ -924,6 +937,7 @@ mod tests {
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             value: FIRST_VALUE.to_vec(),
+            last_modified: test_last_modified(),
         });
 
         let response = transport
@@ -967,10 +981,12 @@ mod tests {
         let first = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             value: FIRST_VALUE.to_vec(),
+            last_modified: test_last_modified(),
         });
         let second = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             value: b"second".to_vec(),
+            last_modified: test_last_modified(),
         });
 
         // Commit with unresolved dep returns OK (empty result) — non-blocking.
@@ -995,7 +1011,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(pending.result.is_empty(), "result should be empty when dep is unresolved");
+        assert!(
+            pending.result.is_empty(),
+            "result should be empty when dep is unresolved"
+        );
         assert_eq!(blocked.local_state, State::Committed as i32);
         assert_eq!(blocked.wait_for, vec![command_id(COMMAND_SEQUENCE_ONE)]);
 
@@ -1055,6 +1074,7 @@ mod tests {
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             value: FIRST_VALUE.to_vec(),
+            last_modified: test_last_modified(),
         });
 
         let _ = transport
@@ -1115,6 +1135,7 @@ mod tests {
         let write = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             value: FIRST_VALUE.to_vec(),
+            last_modified: test_last_modified(),
         });
         let read = ObjectCommand::Read(ReadCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
@@ -1156,6 +1177,7 @@ mod tests {
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             value: FIRST_VALUE.to_vec(),
+            last_modified: test_last_modified(),
         });
 
         let first = transport
@@ -1191,6 +1213,7 @@ mod tests {
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             value: FIRST_VALUE.to_vec(),
+            last_modified: test_last_modified(),
         });
 
         let _ = transport
@@ -1212,5 +1235,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.local_state, State::Applied as i32);
+    }
+    fn test_last_modified() -> crate::domain::ObjectLastModified {
+        const TEST_LAST_MODIFIED_UNIX_MILLIS: i64 = 1_775_000_000_123;
+        crate::domain::ObjectLastModified::try_from(TEST_LAST_MODIFIED_UNIX_MILLIS).unwrap()
     }
 }

@@ -3,8 +3,8 @@ use serde_json::Value;
 use so3_core::consensus::state_machine::ObjectCommandExecutor;
 use so3_core::domain::error::So3Error;
 use so3_core::domain::{
-    CasCommand, CasResult, ObjectCommand, ObjectKey, ObjectResult, ReadCommand, StoredObject,
-    WriteCommand,
+    CasCommand, CasResult, ObjectCommand, ObjectKey, ObjectLastModified, ObjectResult, ReadCommand,
+    StoredObject, WriteCommand,
 };
 use so3_core::object_server::service::ObjectService;
 
@@ -104,7 +104,11 @@ where
             ClientRequest::Write { key, value } => {
                 let key = object_key_from_json(&key).map_err(|error| map_error(msg_id, &error))?;
                 let value = value_to_bytes(&value).map_err(|error| map_error(msg_id, &error))?;
-                Ok(ObjectCommand::Write(WriteCommand { key, value }))
+                Ok(ObjectCommand::Write(WriteCommand {
+                    key,
+                    value,
+                    last_modified: command_last_modified(msg_id)?,
+                }))
             }
             ClientRequest::Cas {
                 key,
@@ -122,7 +126,11 @@ where
 
                 let Some(current) = current else {
                     if create_if_not_exists {
-                        return Ok(ObjectCommand::Write(WriteCommand { key, value }));
+                        return Ok(ObjectCommand::Write(WriteCommand {
+                            key,
+                            value,
+                            last_modified: command_last_modified(msg_id)?,
+                        }));
                     }
 
                     return Err(error_response(
@@ -146,6 +154,7 @@ where
                     key,
                     expected_version: current.record.version,
                     value,
+                    last_modified: command_last_modified(msg_id)?,
                 }))
             }
         }
@@ -336,6 +345,10 @@ fn map_error(in_reply_to: u64, error: &So3Error) -> ResponseBody {
             error_response(in_reply_to, CRASH_CODE, error.to_string())
         }
     }
+}
+
+fn command_last_modified(msg_id: u64) -> Result<ObjectLastModified, ResponseBody> {
+    ObjectLastModified::now().map_err(|error| map_error(msg_id, &error))
 }
 
 #[cfg(test)]

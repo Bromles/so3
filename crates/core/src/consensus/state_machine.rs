@@ -48,12 +48,20 @@ where
                 Ok(ObjectResult::Read(ReadResult { object }))
             }
             ObjectCommand::Write(command) => {
-                let object = self.repository.write(&command.key, command.value).await?;
+                let object = self
+                    .repository
+                    .write(&command.key, command.value, command.last_modified)
+                    .await?;
                 Ok(ObjectResult::Write(WriteResult { object }))
             }
             ObjectCommand::Cas(command) => match self
                 .repository
-                .cas(&command.key, command.expected_version, command.value)
+                .cas(
+                    &command.key,
+                    command.expected_version,
+                    command.value,
+                    command.last_modified,
+                )
                 .await?
             {
                 CasWriteOutcome::Applied(object) => {
@@ -78,8 +86,8 @@ mod tests {
     use super::LocalStateMachine;
     use crate::domain::error::So3Result;
     use crate::domain::{
-        CasCommand, CasResult, ObjectCommand, ObjectKey, ObjectRecord, ObjectResult, ObjectVersion,
-        ReadCommand, ReadResult, StoredObject, WriteCommand,
+        CasCommand, CasResult, ObjectCommand, ObjectKey, ObjectLastModified, ObjectRecord,
+        ObjectResult, ObjectVersion, ReadCommand, ReadResult, StoredObject, WriteCommand,
     };
     use crate::storage::object::repository::{CasWriteOutcome, ObjectRepository};
 
@@ -109,14 +117,19 @@ mod tests {
             Ok(self.objects.lock().await.get(key.as_str()).cloned())
         }
 
-        async fn write(&self, key: &ObjectKey, value: Vec<u8>) -> So3Result<StoredObject> {
+        async fn write(
+            &self,
+            key: &ObjectKey,
+            value: Vec<u8>,
+            last_modified: ObjectLastModified,
+        ) -> So3Result<StoredObject> {
             let mut objects = self.objects.lock().await;
             let version = objects
                 .get(key.as_str())
                 .map_or_else(ObjectVersion::initial, |object| {
                     object.record.version.next()
                 });
-            let object = stored_object(key.clone(), version, value);
+            let object = stored_object(key.clone(), version, value, last_modified);
             objects.insert(key.as_str().to_owned(), object.clone());
             Ok(object)
         }
@@ -126,6 +139,7 @@ mod tests {
             key: &ObjectKey,
             expected_version: ObjectVersion,
             value: Vec<u8>,
+            last_modified: ObjectLastModified,
         ) -> So3Result<CasWriteOutcome> {
             let mut objects = self.objects.lock().await;
             let Some(current) = objects.get(key.as_str()).cloned() else {
@@ -138,13 +152,23 @@ mod tests {
                 });
             }
 
-            let object = stored_object(key.clone(), current.record.version.next(), value);
+            let object = stored_object(
+                key.clone(),
+                current.record.version.next(),
+                value,
+                last_modified,
+            );
             objects.insert(key.as_str().to_owned(), object.clone());
             Ok(CasWriteOutcome::Applied(object))
         }
     }
 
-    fn stored_object(key: ObjectKey, version: ObjectVersion, value: Vec<u8>) -> StoredObject {
+    fn stored_object(
+        key: ObjectKey,
+        version: ObjectVersion,
+        value: Vec<u8>,
+        last_modified: ObjectLastModified,
+    ) -> StoredObject {
         StoredObject {
             record: ObjectRecord {
                 key,
@@ -152,6 +176,7 @@ mod tests {
                 blob_id: format!("blob-{}", version.get()),
                 content_length: value.len() as u64,
                 checksum: CHECKSUM.to_owned(),
+                last_modified,
             },
             value,
         }
@@ -165,6 +190,7 @@ mod tests {
             .execute(ObjectCommand::Write(WriteCommand {
                 key: ObjectKey::new(KEY_ALPHA).unwrap(),
                 value: WRITE_VALUE.to_vec(),
+                last_modified: test_last_modified(),
             }))
             .await
             .unwrap();
@@ -185,6 +211,7 @@ mod tests {
             .execute(ObjectCommand::Write(WriteCommand {
                 key: ObjectKey::new(KEY_ALPHA).unwrap(),
                 value: FIRST_VALUE.to_vec(),
+                last_modified: test_last_modified(),
             }))
             .await
             .unwrap();
@@ -194,6 +221,7 @@ mod tests {
                 key: ObjectKey::new(KEY_ALPHA).unwrap(),
                 expected_version: ObjectVersion::try_from(STALE_VERSION).unwrap(),
                 value: SECOND_VALUE.to_vec(),
+                last_modified: test_last_modified(),
             }))
             .await
             .unwrap();
@@ -218,5 +246,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(result, ObjectResult::Read(ReadResult { object: None }));
+    }
+    fn test_last_modified() -> crate::domain::ObjectLastModified {
+        const TEST_LAST_MODIFIED_UNIX_MILLIS: i64 = 1_775_000_000_123;
+        crate::domain::ObjectLastModified::try_from(TEST_LAST_MODIFIED_UNIX_MILLIS).unwrap()
     }
 }

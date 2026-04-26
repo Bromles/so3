@@ -130,7 +130,10 @@ pub async fn wait_for_unapplied_dependencies(
         let command_id = ConsensusCommandId::try_from(dependency)?;
         let entry = journal.load(&command_id).await?;
 
-        if entry.as_ref().is_some_and(|e| e.state == JournalState::Applied) {
+        if entry
+            .as_ref()
+            .is_some_and(|e| e.state == JournalState::Applied)
+        {
             continue;
         }
 
@@ -229,6 +232,7 @@ mod tests {
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             value: FIRST_VALUE.to_vec(),
+            last_modified: test_last_modified(),
         });
 
         let _ = journal
@@ -257,6 +261,7 @@ mod tests {
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             value: FIRST_VALUE.to_vec(),
+            last_modified: test_last_modified(),
         });
 
         let _ = journal
@@ -285,10 +290,12 @@ mod tests {
         let first = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             value: FIRST_VALUE.to_vec(),
+            last_modified: test_last_modified(),
         });
         let second = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             value: SECOND_VALUE.to_vec(),
+            last_modified: test_last_modified(),
         });
 
         let _ = journal
@@ -359,6 +366,7 @@ mod tests {
         let second = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             value: SECOND_VALUE.to_vec(),
+            last_modified: test_last_modified(),
         });
 
         let _ = journal
@@ -402,6 +410,7 @@ mod tests {
             let command = ObjectCommand::Write(WriteCommand {
                 key: ObjectKey::new(ALPHA_KEY).unwrap(),
                 value: FIRST_VALUE.to_vec(),
+                last_modified: test_last_modified(),
             });
             let bytes = command.to_bytes().unwrap();
 
@@ -409,10 +418,7 @@ mod tests {
                 .record_pre_accepted(&pre_accepted_id, &bytes)
                 .await
                 .unwrap();
-            let _ = journal
-                .record_accepted(&accepted_id, &bytes)
-                .await
-                .unwrap();
+            let _ = journal.record_accepted(&accepted_id, &bytes).await.unwrap();
             let _ = journal
                 .record_committed(&peer_committed_id, &bytes)
                 .await
@@ -432,7 +438,10 @@ mod tests {
             .unwrap();
 
         // next_sequence must be strictly greater than any seen sequence number.
-        assert_eq!(next_local, 3, "must advance past both local commands (seq 1, 2)");
+        assert_eq!(
+            next_local, 3,
+            "must advance past both local commands (seq 1, 2)"
+        );
         assert_eq!(next_peer, 2, "must advance past the peer command (seq 1)");
     }
 
@@ -445,8 +454,7 @@ mod tests {
 
         let local_id =
             ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
-        let peer_id =
-            ConsensusCommandId::new(PEER_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
+        let peer_id = ConsensusCommandId::new(PEER_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
 
         // Record committed commands: peer's command depends on local's.
         {
@@ -454,10 +462,12 @@ mod tests {
             let local_cmd = ObjectCommand::Write(WriteCommand {
                 key: ObjectKey::new(ALPHA_KEY).unwrap(),
                 value: FIRST_VALUE.to_vec(),
+                last_modified: test_last_modified(),
             });
             let peer_cmd = ObjectCommand::Write(WriteCommand {
                 key: ObjectKey::new(BETA_KEY).unwrap(),
                 value: SECOND_VALUE.to_vec(),
+                last_modified: test_last_modified(),
             });
             let _ = journal
                 .record_committed(&local_id, &local_cmd.to_bytes().unwrap())
@@ -486,12 +496,10 @@ mod tests {
         let metadata_repo = SqliteObjectMetadataRepository::new(&metadata_path)
             .await
             .unwrap();
-        let object_repo =
-            SqliteFsPersistentObjectRepository::new(&metadata_path, &blobs_path)
-                .await
-                .unwrap();
-        let executor =
-            PersistentReplicatedCommandExecutor::new(object_repo.clone(), metadata_repo);
+        let object_repo = SqliteFsPersistentObjectRepository::new(&metadata_path, &blobs_path)
+            .await
+            .unwrap();
+        let executor = PersistentReplicatedCommandExecutor::new(object_repo.clone(), metadata_repo);
 
         replay_committed_commands(&journal, &executor)
             .await
@@ -533,6 +541,7 @@ mod tests {
             ObjectCommand::Write(WriteCommand {
                 key: ObjectKey::new(key).unwrap(),
                 value: value.to_vec(),
+                last_modified: test_last_modified(),
             })
             .to_bytes()
             .unwrap()
@@ -558,10 +567,7 @@ mod tests {
             .await
             .unwrap();
         let _ = journal
-            .record_accepted(
-                &accepted_id,
-                &cmd(BETA_KEY, SECOND_VALUE),
-            )
+            .record_accepted(&accepted_id, &cmd(BETA_KEY, SECOND_VALUE))
             .await
             .unwrap();
         // Committed command depends on both pre-accepted and accepted commands.
@@ -598,21 +604,11 @@ mod tests {
 
         // Pre-accepted and accepted commands must remain in their original states.
         assert_eq!(
-            journal
-                .load(&pre_accepted_id)
-                .await
-                .unwrap()
-                .unwrap()
-                .state,
+            journal.load(&pre_accepted_id).await.unwrap().unwrap().state,
             JournalState::PreAccepted
         );
         assert_eq!(
-            journal
-                .load(&accepted_id)
-                .await
-                .unwrap()
-                .unwrap()
-                .state,
+            journal.load(&accepted_id).await.unwrap().unwrap().state,
             JournalState::Accepted
         );
         // Durable ballot and timestamp on the pre-accepted entry must be preserved.
@@ -631,5 +627,9 @@ mod tests {
             origin_node_id: COMMAND_ORIGIN_NODE_ID.to_owned(),
             sequence,
         }
+    }
+    fn test_last_modified() -> crate::domain::ObjectLastModified {
+        const TEST_LAST_MODIFIED_UNIX_MILLIS: i64 = 1_775_000_000_123;
+        crate::domain::ObjectLastModified::try_from(TEST_LAST_MODIFIED_UNIX_MILLIS).unwrap()
     }
 }

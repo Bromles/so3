@@ -44,7 +44,9 @@ mod tests {
 
     use super::PersistentStorage;
     use crate::consensus::ConsensusCommandId;
-    use crate::domain::{ObjectCommand, ObjectKey, ObjectResult, ReadResult, WriteCommand};
+    use crate::domain::{
+        ObjectCommand, ObjectKey, ObjectLastModified, ObjectResult, ReadResult, WriteCommand,
+    };
     use crate::storage::applied_command::repository::AppliedCommandStore;
     use crate::storage::object::repository::ObjectRepository;
 
@@ -52,6 +54,7 @@ mod tests {
     const FIRST_VALUE: &[u8] = b"first";
     const COMMAND_ORIGIN_NODE_ID: &str = "node-a";
     const COMMAND_SEQUENCE_ONE: u64 = 1;
+    const LAST_MODIFIED_UNIX_MILLIS: i64 = 1_775_000_000_123;
 
     #[tokio::test]
     async fn open_exposes_shared_durable_repositories() {
@@ -68,7 +71,7 @@ mod tests {
 
         let written = storage
             .object_repository
-            .write(&key, FIRST_VALUE.to_vec())
+            .write(&key, FIRST_VALUE.to_vec(), last_modified())
             .await
             .unwrap();
         let expected_result = ObjectResult::Read(ReadResult {
@@ -106,6 +109,7 @@ mod tests {
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             value: FIRST_VALUE.to_vec(),
+            last_modified: last_modified(),
         });
 
         let entry = storage
@@ -123,5 +127,9 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(loaded, entry);
+    }
+
+    fn last_modified() -> ObjectLastModified {
+        ObjectLastModified::try_from(LAST_MODIFIED_UNIX_MILLIS).unwrap()
     }
 }

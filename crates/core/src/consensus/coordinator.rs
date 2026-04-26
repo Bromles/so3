@@ -841,6 +841,7 @@ mod tests {
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(KEY_ALPHA).unwrap(),
             value: b"value".to_vec(),
+            last_modified: test_last_modified(),
         });
         let error = coordinator
             .execute(
@@ -1405,7 +1406,6 @@ mod tests {
                 ..Self::new()
             }
         }
-
     }
 
     #[async_trait]
@@ -1416,11 +1416,13 @@ mod tests {
             _request: PreAcceptRequest,
         ) -> crate::domain::error::So3Result<PreAcceptResponse> {
             self.pre_accept_peer_ids.push(peer_id.to_owned());
-            self.pre_accepts.pop_front().unwrap_or(Ok(PreAcceptResponse {
-                timestamp: None,
-                dependencies: Some(empty_dependencies()),
-                nack: false,
-            }))
+            self.pre_accepts
+                .pop_front()
+                .unwrap_or(Ok(PreAcceptResponse {
+                    timestamp: None,
+                    dependencies: Some(empty_dependencies()),
+                    nack: false,
+                }))
         }
 
         async fn accept_peer(
@@ -1504,7 +1506,10 @@ mod tests {
         assert_eq!(actual, result);
         assert_eq!(peers.pre_accept_peer_ids, vec![PEER_A, PEER_B]);
         // Fast path: Accept is skipped entirely.
-        assert!(peers.accept_peer_ids.is_empty(), "accept must not be called on fast path");
+        assert!(
+            peers.accept_peer_ids.is_empty(),
+            "accept must not be called on fast path"
+        );
         // Commit still broadcasts to all peers.
         assert_eq!(peers.commit_peer_ids, vec![PEER_A, PEER_B]);
     }
@@ -1544,7 +1549,10 @@ mod tests {
 
         assert_eq!(actual, result);
         // Unreachable peer prevents unanimity → must go through Accept.
-        assert!(!peers.accept_peer_ids.is_empty(), "slow path required when peer unreachable");
+        assert!(
+            !peers.accept_peer_ids.is_empty(),
+            "slow path required when peer unreachable"
+        );
     }
 
     #[tokio::test]
@@ -1578,7 +1586,10 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(error.to_string().contains("quorum"), "expected quorum failure");
+        assert!(
+            error.to_string().contains("quorum"),
+            "expected quorum failure"
+        );
         assert!(peers.accept_peer_ids.is_empty());
         assert!(peers.commit_peer_ids.is_empty());
     }
@@ -1606,9 +1617,7 @@ mod tests {
                     nack: false,
                 }),
             ]),
-            accepts: VecDeque::from([Err(So3Error::InvalidRequest(
-                "peer unreachable".to_owned(),
-            ))]),
+            accepts: VecDeque::from([Err(So3Error::InvalidRequest("peer unreachable".to_owned()))]),
             ..FakePeerTransport::new()
         };
         let mut coordinator = AccordCoordinator::new(
@@ -1697,5 +1706,9 @@ mod tests {
             origin_node_id: origin_node_id.to_owned(),
             sequence,
         }
+    }
+    fn test_last_modified() -> crate::domain::ObjectLastModified {
+        const TEST_LAST_MODIFIED_UNIX_MILLIS: i64 = 1_775_000_000_123;
+        crate::domain::ObjectLastModified::try_from(TEST_LAST_MODIFIED_UNIX_MILLIS).unwrap()
     }
 }

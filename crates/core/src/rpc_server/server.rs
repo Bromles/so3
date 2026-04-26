@@ -203,6 +203,7 @@ mod tests {
         let write = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             value: FIRST_VALUE.to_vec(),
+            last_modified: test_last_modified(),
         });
         let read = ObjectCommand::Read(ReadCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
@@ -238,5 +239,9 @@ mod tests {
         assert_eq!(read.object.unwrap().value, FIRST_VALUE.to_vec());
         cancellation_token.cancel();
         server_task.await.unwrap().unwrap();
+    }
+    fn test_last_modified() -> crate::domain::ObjectLastModified {
+        const TEST_LAST_MODIFIED_UNIX_MILLIS: i64 = 1_775_000_000_123;
+        crate::domain::ObjectLastModified::try_from(TEST_LAST_MODIFIED_UNIX_MILLIS).unwrap()
     }
 }

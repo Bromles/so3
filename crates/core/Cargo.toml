@@ -14,6 +14,7 @@ axum = { workspace = true }
 tower-http = { workspace = true, features = ["trace", "timeout"] }
 tower = { workspace = true, features = ["util"] }
 bytes = { workspace = true }
+httpdate = { workspace = true }
 serde = { workspace = true, features = ["derive", "std"] }
 serde_json = { workspace = true, features = ["std"] }
 toml = { workspace = true, features = ["parse", "serde"] }

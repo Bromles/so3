@@ -228,7 +228,7 @@ mod tests {
     use super::{Node, fail_fast_join};
     use crate::consensus::journal::{JournalState, SqliteConsensusJournal};
     use crate::domain::error::So3Error;
-    use crate::domain::{ObjectCommand, ObjectKey, WriteCommand};
+    use crate::domain::{ObjectCommand, ObjectKey, ObjectLastModified, WriteCommand};
     use crate::node::config::{ClusterConfig, NodeConfig};
     use crate::storage::object::repository::ObjectRepository;
     use crate::storage::registry::SqliteFsPersistentObjectRepository;
@@ -249,6 +249,7 @@ mod tests {
     const FIRST_PAYLOAD: &[u8] = b"first";
     const COMMAND_ORIGIN_NODE_ID: &str = "node-a";
     const COMMAND_SEQUENCE_ONE: u64 = 1;
+    const LAST_MODIFIED_UNIX_MILLIS: i64 = 1_775_000_000_123;
 
     #[tokio::test]
     async fn new_initializes_node_with_persistent_storage() {
@@ -454,6 +455,7 @@ mod tests {
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             value: FIRST_PAYLOAD.to_vec(),
+            last_modified: ObjectLastModified::try_from(LAST_MODIFIED_UNIX_MILLIS).unwrap(),
         });
         let command_id = crate::consensus::ConsensusCommandId::new(
             COMMAND_ORIGIN_NODE_ID.to_owned(),

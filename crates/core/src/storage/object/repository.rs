@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 use crate::domain::error::So3Result;
-use crate::domain::{ObjectKey, ObjectVersion, StoredObject};
+use crate::domain::{ObjectKey, ObjectLastModified, ObjectVersion, StoredObject};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CasWriteOutcome {
@@ -20,7 +20,12 @@ pub trait ObjectRepository: Send + Sync {
     /// # Errors
     ///
     /// Returns an error when the repository cannot durably commit a new object version.
-    async fn write(&self, key: &ObjectKey, value: Vec<u8>) -> So3Result<StoredObject>;
+    async fn write(
+        &self,
+        key: &ObjectKey,
+        value: Vec<u8>,
+        last_modified: ObjectLastModified,
+    ) -> So3Result<StoredObject>;
 
     /// # Errors
     ///
@@ -30,5 +35,6 @@ pub trait ObjectRepository: Send + Sync {
         key: &ObjectKey,
         expected_version: ObjectVersion,
         value: Vec<u8>,
+        last_modified: ObjectLastModified,
     ) -> So3Result<CasWriteOutcome>;
 }

@@ -150,13 +150,9 @@ fn endpoint_from_peer_id(peer_id: &str) -> So3Result<Endpoint> {
 
 fn map_tonic_status(status: &tonic::Status) -> So3Error {
     match status.code() {
-        tonic::Code::Unavailable | tonic::Code::DeadlineExceeded => {
-            So3Error::PeerUnavailable(format!(
-                "peer returned {}: {}",
-                status.code(),
-                status.message()
-            ))
-        }
+        tonic::Code::Unavailable | tonic::Code::DeadlineExceeded => So3Error::PeerUnavailable(
+            format!("peer returned {}: {}", status.code(), status.message()),
+        ),
         _ => So3Error::InvalidRequest(format!(
             "consensus peer returned {}: {}",
             status.code(),
@@ -247,6 +243,7 @@ mod tests {
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             value: FIRST_VALUE.to_vec(),
+            last_modified: test_last_modified(),
         });
         let mut transport = TonicConsensusPeerTransport::from_peer_ids([peer_id.clone()]).unwrap();
 
@@ -330,5 +327,9 @@ mod tests {
             origin_node_id: COMMAND_ORIGIN_NODE_ID.to_owned(),
             sequence,
         }
+    }
+    fn test_last_modified() -> crate::domain::ObjectLastModified {
+        const TEST_LAST_MODIFIED_UNIX_MILLIS: i64 = 1_775_000_000_123;
+        crate::domain::ObjectLastModified::try_from(TEST_LAST_MODIFIED_UNIX_MILLIS).unwrap()
     }
 }

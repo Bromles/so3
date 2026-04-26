@@ -1,8 +1,8 @@
 use crate::consensus::state_machine::ObjectCommandExecutor;
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::{
-    CasCommand, CasResult, ObjectCommand, ObjectKey, ObjectResult, ObjectVersion, ReadCommand,
-    StoredObject, WriteCommand,
+    CasCommand, CasResult, ObjectCommand, ObjectKey, ObjectLastModified, ObjectResult,
+    ObjectVersion, ReadCommand, StoredObject, WriteCommand,
 };
 
 #[derive(Clone)]
@@ -34,9 +34,14 @@ impl<E: ObjectCommandExecutor> ObjectService<E> {
     ///
     /// Returns any error from the state machine while executing the deterministic `Write` command.
     pub async fn write(&self, key: ObjectKey, value: Vec<u8>) -> So3Result<StoredObject> {
+        let last_modified = ObjectLastModified::now()?;
         match self
             .executor
-            .execute_command(ObjectCommand::Write(WriteCommand { key, value }))
+            .execute_command(ObjectCommand::Write(WriteCommand {
+                key,
+                value,
+                last_modified,
+            }))
             .await?
         {
             ObjectResult::Write(result) => Ok(result.object),
@@ -53,12 +58,14 @@ impl<E: ObjectCommandExecutor> ObjectService<E> {
         expected_version: ObjectVersion,
         value: Vec<u8>,
     ) -> So3Result<CasResult> {
+        let last_modified = ObjectLastModified::now()?;
         match self
             .executor
             .execute_command(ObjectCommand::Cas(CasCommand {
                 key,
                 expected_version,
                 value,
+                last_modified,
             }))
             .await?
         {

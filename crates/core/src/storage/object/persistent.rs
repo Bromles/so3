@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use tokio::sync::Mutex;
 
 use crate::domain::error::So3Result;
-use crate::domain::{ObjectKey, ObjectRecord, ObjectVersion, StoredObject};
+use crate::domain::{ObjectKey, ObjectLastModified, ObjectRecord, ObjectVersion, StoredObject};
 use crate::storage::blob::fs::FileSystemBlobRepository;
 use crate::storage::blob::repository::BlobRepository;
 use crate::storage::metadata::repository::ObjectMetadataRepository;
@@ -34,6 +34,7 @@ impl<M: ObjectMetadataRepository, B: BlobRepository> PersistentObjectRepository<
         key: &ObjectKey,
         version: ObjectVersion,
         value: Vec<u8>,
+        last_modified: ObjectLastModified,
     ) -> So3Result<StoredObject> {
         let blob = self.blob_repository.store(&value).await?;
         let record = ObjectRecord {
@@ -42,6 +43,7 @@ impl<M: ObjectMetadataRepository, B: BlobRepository> PersistentObjectRepository<
             blob_id: blob.blob_id,
             content_length: blob.content_length,
             checksum: blob.checksum,
+            last_modified,
         };
         self.metadata_repository.write(&record).await?;
 
@@ -79,7 +81,12 @@ where
         Ok(Some(StoredObject { record, value }))
     }
 
-    async fn write(&self, key: &ObjectKey, value: Vec<u8>) -> So3Result<StoredObject> {
+    async fn write(
+        &self,
+        key: &ObjectKey,
+        value: Vec<u8>,
+        last_modified: ObjectLastModified,
+    ) -> So3Result<StoredObject> {
         let _guard = self.write_lock.lock().await;
         let next_version = self
             .metadata_repository
@@ -87,7 +94,8 @@ where
             .await?
             .map_or_else(ObjectVersion::initial, |record| record.version.next());
 
-        self.write_next_version(key, next_version, value).await
+        self.write_next_version(key, next_version, value, last_modified)
+            .await
     }
 
     async fn cas(
@@ -95,6 +103,7 @@ where
         key: &ObjectKey,
         expected_version: ObjectVersion,
         value: Vec<u8>,
+        last_modified: ObjectLastModified,
     ) -> So3Result<CasWriteOutcome> {
         let _guard = self.write_lock.lock().await;
         let Some(current) = self.metadata_repository.read(key).await? else {
@@ -108,7 +117,7 @@ where
         }
 
         let object = self
-            .write_next_version(key, current.version.next(), value)
+            .write_next_version(key, current.version.next(), value, last_modified)
             .await?;
         Ok(CasWriteOutcome::Applied(object))
     }
@@ -120,7 +129,7 @@ mod tests {
     use tokio::task::JoinHandle;
 
     use super::PersistentObjectRepository;
-    use crate::domain::{ObjectKey, ObjectVersion};
+    use crate::domain::{ObjectKey, ObjectLastModified, ObjectVersion};
     use crate::storage::blob::fs::FileSystemBlobRepository;
     use crate::storage::metadata::sqlite::SqliteObjectMetadataRepository;
     use crate::storage::object::repository::{CasWriteOutcome, ObjectRepository};
@@ -133,6 +142,9 @@ mod tests {
     const KEY_BETA: &str = "beta";
     const KEY_GAMMA: &str = "gamma";
     const KEY_DELTA: &str = "delta";
+    const FIRST_LAST_MODIFIED: i64 = 1_775_000_000_123;
+    const SECOND_LAST_MODIFIED: i64 = 1_775_000_001_456;
+    const THIRD_LAST_MODIFIED: i64 = 1_775_000_002_789;
 
     #[tokio::test]
     async fn write_survives_reopen() {
@@ -146,7 +158,11 @@ mod tests {
         .await
         .unwrap();
         let written = repository
-            .write(&key, HELLO_PAYLOAD.to_vec())
+            .write(
+                &key,
+                HELLO_PAYLOAD.to_vec(),
+                last_modified(FIRST_LAST_MODIFIED),
+            )
             .await
             .unwrap();
         assert_eq!(written.record.version, ObjectVersion::initial());
@@ -161,6 +177,7 @@ mod tests {
         let loaded = reopened.read(&key).await.unwrap().unwrap();
 
         assert_eq!(loaded.record.version, ObjectVersion::initial());
+        assert_eq!(loaded.record.last_modified, written.record.last_modified);
         assert_eq!(loaded.value, HELLO_PAYLOAD.to_vec());
     }
 
@@ -176,7 +193,11 @@ mod tests {
         .unwrap();
 
         let written = repository
-            .write(&key, FIRST_PAYLOAD.to_vec())
+            .write(
+                &key,
+                FIRST_PAYLOAD.to_vec(),
+                last_modified(FIRST_LAST_MODIFIED),
+            )
             .await
             .unwrap();
         let outcome = repository
@@ -184,6 +205,7 @@ mod tests {
                 &key,
                 ObjectVersion::try_from(STALE_VERSION_NUMBER).unwrap(),
                 SECOND_PAYLOAD.to_vec(),
+                last_modified(SECOND_LAST_MODIFIED),
             )
             .await
             .unwrap();
@@ -211,11 +233,20 @@ mod tests {
         .unwrap();
 
         let written = repository
-            .write(&key, FIRST_PAYLOAD.to_vec())
+            .write(
+                &key,
+                FIRST_PAYLOAD.to_vec(),
+                last_modified(FIRST_LAST_MODIFIED),
+            )
             .await
             .unwrap();
         let outcome = repository
-            .cas(&key, written.record.version, SECOND_PAYLOAD.to_vec())
+            .cas(
+                &key,
+                written.record.version,
+                SECOND_PAYLOAD.to_vec(),
+                last_modified(SECOND_LAST_MODIFIED),
+            )
             .await
             .unwrap();
 
@@ -224,6 +255,10 @@ mod tests {
         };
 
         assert_eq!(object.record.version, written.record.version.next());
+        assert_eq!(
+            object.record.last_modified,
+            last_modified(SECOND_LAST_MODIFIED)
+        );
         assert_eq!(object.value, SECOND_PAYLOAD.to_vec());
     }
 
@@ -238,7 +273,11 @@ mod tests {
         .await
         .unwrap();
         let written = repository
-            .write(&key, FIRST_PAYLOAD.to_vec())
+            .write(
+                &key,
+                FIRST_PAYLOAD.to_vec(),
+                last_modified(FIRST_LAST_MODIFIED),
+            )
             .await
             .unwrap();
 
@@ -247,12 +286,14 @@ mod tests {
             key.clone(),
             written.record.version,
             SECOND_PAYLOAD.to_vec(),
+            last_modified(SECOND_LAST_MODIFIED),
         );
         let right_task = spawn_cas(
             repository.clone(),
             key.clone(),
             written.record.version,
             HELLO_PAYLOAD.to_vec(),
+            last_modified(THIRD_LAST_MODIFIED),
         );
 
         let left = left_task.await.unwrap();
@@ -282,7 +323,17 @@ mod tests {
         key: ObjectKey,
         expected_version: ObjectVersion,
         value: Vec<u8>,
+        last_modified: ObjectLastModified,
     ) -> JoinHandle<CasWriteOutcome> {
-        tokio::spawn(async move { repository.cas(&key, expected_version, value).await.unwrap() })
+        tokio::spawn(async move {
+            repository
+                .cas(&key, expected_version, value, last_modified)
+                .await
+                .unwrap()
+        })
+    }
+
+    fn last_modified(unix_millis: i64) -> ObjectLastModified {
+        ObjectLastModified::try_from(unix_millis).unwrap()
     }
 }

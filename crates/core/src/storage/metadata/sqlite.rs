@@ -10,7 +10,7 @@ use tokio::fs;
 
 use crate::consensus::ConsensusCommandId;
 use crate::domain::error::{So3Error, So3Result};
-use crate::domain::{ObjectKey, ObjectRecord, ObjectResult, ObjectVersion};
+use crate::domain::{ObjectKey, ObjectLastModified, ObjectRecord, ObjectResult, ObjectVersion};
 use crate::storage::applied_command::repository::AppliedCommandStore;
 use crate::storage::metadata::repository::ObjectMetadataRepository;
 
@@ -19,7 +19,8 @@ const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SQLITE_MAX_CONNECTIONS: u32 = 1;
 
 // Metadata schema versioning.
-const CURRENT_SCHEMA_VERSION: i64 = 2;
+const CURRENT_SCHEMA_VERSION: i64 = 3;
+const APPLIED_COMMANDS_SCHEMA_VERSION: i64 = 2;
 
 // On-disk metadata layout.
 const DATABASE_FILE_NAME: &str = "objects.sqlite";
@@ -43,7 +44,7 @@ const APPLIED_COMMANDS_TABLE_SQL: &str = r"
     )
 ";
 const LOAD_OBJECT_SQL: &str = r"
-    SELECT key, version, blob_id, content_length, checksum
+    SELECT key, version, blob_id, content_length, checksum, last_modified_unix_millis
     FROM objects
     WHERE key = ?
 ";
@@ -53,13 +54,14 @@ const LOAD_APPLIED_RESULT_SQL: &str = r"
     WHERE origin_node_id = ? AND sequence = ?
 ";
 const UPSERT_OBJECT_SQL: &str = r"
-    INSERT INTO objects (key, version, blob_id, content_length, checksum)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO objects (key, version, blob_id, content_length, checksum, last_modified_unix_millis)
+    VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(key) DO UPDATE SET
         version = excluded.version,
         blob_id = excluded.blob_id,
         content_length = excluded.content_length,
-        checksum = excluded.checksum
+        checksum = excluded.checksum,
+        last_modified_unix_millis = excluded.last_modified_unix_millis
 ";
 const INSERT_APPLIED_RESULT_SQL: &str = r"
     INSERT OR IGNORE INTO applied_commands (origin_node_id, sequence, result)
@@ -104,9 +106,14 @@ impl SqliteObjectMetadataRepository {
         match version {
             0 => {
                 self.migrate_to_v1().await?;
-                self.migrate_to_v2().await
+                self.migrate_to_v2().await?;
+                self.migrate_to_v3().await
             }
-            1 => self.migrate_to_v2().await,
+            1 => {
+                self.migrate_to_v2().await?;
+                self.migrate_to_v3().await
+            }
+            2 => self.migrate_to_v3().await,
             CURRENT_SCHEMA_VERSION => Ok(()),
             unsupported => Err(So3Error::Storage(format!(
                 "unsupported sqlite schema version: {unsupported}"
@@ -124,6 +131,26 @@ impl SqliteObjectMetadataRepository {
         query(APPLIED_COMMANDS_TABLE_SQL)
             .execute(&self.pool)
             .await?;
+        query(&format!(
+            "PRAGMA user_version = {APPLIED_COMMANDS_SCHEMA_VERSION}"
+        ))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn migrate_to_v3(&self) -> So3Result<()> {
+        query(
+            "ALTER TABLE objects ADD COLUMN last_modified_unix_millis INTEGER NOT NULL DEFAULT 0",
+        )
+        .execute(&self.pool)
+        .await?;
+        query(
+            "UPDATE objects SET last_modified_unix_millis = ? WHERE last_modified_unix_millis = 0",
+        )
+        .bind(ObjectLastModified::now()?.unix_millis())
+        .execute(&self.pool)
+        .await?;
         query(&format!("PRAGMA user_version = {CURRENT_SCHEMA_VERSION}"))
             .execute(&self.pool)
             .await?;
@@ -137,6 +164,9 @@ impl SqliteObjectMetadataRepository {
             blob_id: row.try_get("blob_id")?,
             content_length: read_content_length(row)?,
             checksum: row.try_get("checksum")?,
+            last_modified: ObjectLastModified::try_from(
+                row.try_get::<i64, _>("last_modified_unix_millis")?,
+            )?,
         })
     }
 
@@ -175,6 +205,7 @@ impl ObjectMetadataRepository for SqliteObjectMetadataRepository {
             .bind(&record.blob_id)
             .bind(content_length_to_i64(record.content_length)?)
             .bind(&record.checksum)
+            .bind(record.last_modified.unix_millis())
             .execute(&self.pool)
             .await?;
 
@@ -249,7 +280,9 @@ mod tests {
     use super::SqliteObjectMetadataRepository;
     use crate::consensus::ConsensusCommandId;
     use crate::domain::error::So3Error;
-    use crate::domain::{ObjectKey, ObjectRecord, ObjectResult, ObjectVersion, ReadResult};
+    use crate::domain::{
+        ObjectKey, ObjectLastModified, ObjectRecord, ObjectResult, ObjectVersion, ReadResult,
+    };
     use crate::storage::applied_command::repository::AppliedCommandStore;
     use crate::storage::metadata::repository::ObjectMetadataRepository;
 
@@ -258,6 +291,7 @@ mod tests {
     const BLOB_ID: &str = "blob-1.blob";
     const CHECKSUM: &str = "checksum";
     const CONTENT_LENGTH: u64 = 5;
+    const LAST_MODIFIED_UNIX_MILLIS: i64 = 1_775_000_000_123;
     const COMMAND_ORIGIN_NODE_ID: &str = "node-a";
     const COMMAND_SEQUENCE_ONE: u64 = 1;
 
@@ -268,6 +302,7 @@ mod tests {
             blob_id: BLOB_ID.to_owned(),
             content_length: CONTENT_LENGTH,
             checksum: CHECKSUM.to_owned(),
+            last_modified: ObjectLastModified::try_from(LAST_MODIFIED_UNIX_MILLIS).unwrap(),
         }
     }
 
@@ -292,7 +327,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(repository.schema_version().await.unwrap(), 2);
+        assert_eq!(
+            repository.schema_version().await.unwrap(),
+            super::CURRENT_SCHEMA_VERSION
+        );
     }
 
     #[tokio::test]

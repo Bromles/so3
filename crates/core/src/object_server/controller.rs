@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
@@ -14,8 +14,10 @@ use crate::consensus::state_machine::ObjectCommandExecutor;
 use crate::domain::error::So3Error;
 use crate::domain::{CasResult, ObjectKey, StoredObject};
 use crate::object_server::api::{
-    DEFAULT_ERROR_LABEL, ETAG_HEADER, ErrorResponse, OBJECT_METADATA_ROUTE_PATH, OBJECT_ROUTE_PATH,
-    ObjectMetadataResponse, S3_OBJECT_ROUTE_PATH, S3_VERSION_ID_HEADER, VERSION_HEADER, WriteQuery,
+    DEFAULT_ERROR_LABEL, ETAG_HEADER, ErrorResponse, LAST_MODIFIED_HEADER,
+    OBJECT_METADATA_ROUTE_PATH, OBJECT_ROUTE_PATH, ObjectMetadataResponse, S3_OBJECT_ROUTE_PATH,
+    S3_OBJECT_SIZE_HEADER, S3_STORAGE_CLASS_HEADER, S3_VERSION_ID_HEADER, VERSION_HEADER,
+    WriteQuery,
 };
 use crate::object_server::service::ObjectService;
 
@@ -251,7 +253,38 @@ fn attach_s3_metadata_headers(
         HeaderValue::from_str(&metadata.content_length.to_string())
             .map_err(|error| ApiError::from(So3Error::InvalidRequest(error.to_string())))?,
     );
+    headers.insert(
+        S3_OBJECT_SIZE_HEADER,
+        HeaderValue::from_str(&metadata.content_length.to_string())
+            .map_err(|error| ApiError::from(So3Error::InvalidRequest(error.to_string())))?,
+    );
+    headers.insert(
+        S3_STORAGE_CLASS_HEADER,
+        HeaderValue::from_static("STANDARD"),
+    );
+    headers.insert(
+        LAST_MODIFIED_HEADER,
+        HeaderValue::from_str(&http_last_modified(metadata.last_modified_unix_millis)?)
+            .map_err(|error| ApiError::from(So3Error::InvalidRequest(error.to_string())))?,
+    );
     Ok(())
+}
+
+fn http_last_modified(unix_millis: i64) -> Result<String, ApiError> {
+    let unix_millis = u64::try_from(unix_millis).map_err(|_| {
+        ApiError::from(So3Error::InvalidRequest(format!(
+            "last_modified_unix_millis cannot be negative: {unix_millis}"
+        )))
+    })?;
+    let system_time = UNIX_EPOCH
+        .checked_add(Duration::from_millis(unix_millis))
+        .ok_or_else(|| {
+            ApiError::from(So3Error::InvalidRequest(format!(
+                "last_modified_unix_millis exceeds supported HTTP date range: {unix_millis}"
+            )))
+        })?;
+
+    Ok(httpdate::fmt_http_date(system_time))
 }
 
 fn quoted_etag(checksum: &str) -> String {
@@ -273,7 +306,7 @@ fn s3_object_key(bucket: &str, key: &str) -> Result<String, ApiError> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::time::{Duration, UNIX_EPOCH};
 
     use axum::body::{Body, to_bytes};
     use axum::http::{Request, StatusCode};
@@ -282,7 +315,10 @@ mod tests {
 
     use super::{ObjectApiState, object_controller};
     use crate::consensus::state_machine::LocalStateMachine;
-    use crate::object_server::api::{ObjectMetadataResponse, VERSION_HEADER};
+    use crate::object_server::api::{
+        LAST_MODIFIED_HEADER, ObjectMetadataResponse, S3_OBJECT_SIZE_HEADER,
+        S3_STORAGE_CLASS_HEADER, VERSION_HEADER,
+    };
     use crate::object_server::service::ObjectService;
     use crate::storage::registry::SqliteFsPersistentObjectRepository;
 
@@ -452,6 +488,7 @@ mod tests {
         assert_eq!(metadata.key, ALPHA_KEY);
         assert_eq!(metadata.version, FIRST_VERSION);
         assert_eq!(metadata.content_length, HELLO_VALUE.len() as u64);
+        assert!(metadata.last_modified_unix_millis > 0);
     }
 
     #[tokio::test]
@@ -587,6 +624,15 @@ mod tests {
                 .unwrap()
                 .starts_with('"')
         );
+        assert_eq!(
+            put_response
+                .headers()
+                .get(S3_OBJECT_SIZE_HEADER)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            HELLO_VALUE.len().to_string()
+        );
 
         let get_response = app
             .oneshot(Request::get(S3_OBJECT_PATH).body(Body::empty()).unwrap())
@@ -602,6 +648,45 @@ mod tests {
                 .to_str()
                 .unwrap(),
             VERSION_ONE_HEADER
+        );
+        assert_eq!(
+            get_response
+                .headers()
+                .get("etag")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            put_response
+                .headers()
+                .get("etag")
+                .unwrap()
+                .to_str()
+                .unwrap()
+        );
+        let last_modified = get_response
+            .headers()
+            .get(LAST_MODIFIED_HEADER)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(
+            last_modified,
+            put_response
+                .headers()
+                .get(LAST_MODIFIED_HEADER)
+                .unwrap()
+                .to_str()
+                .unwrap()
+        );
+        assert!(httpdate::parse_http_date(last_modified).unwrap() > UNIX_EPOCH);
+        assert_eq!(
+            get_response
+                .headers()
+                .get(S3_STORAGE_CLASS_HEADER)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "STANDARD"
         );
         let get_body = to_bytes(get_response.into_body(), TEST_MAX_RESPONSE_BYTES)
             .await

@@ -78,6 +78,7 @@ package "crates/core::object_server" {
 package "crates/core::domain" {
     class ObjectKey
     class ObjectVersion
+    class ObjectLastModified
 
     class ObjectRecord {
         +key: ObjectKey
@@ -85,6 +86,7 @@ package "crates/core::domain" {
         +blob_id: String
         +content_length: u64
         +checksum: String
+        +last_modified: ObjectLastModified
     }
 
     class StoredObject {
@@ -214,8 +216,8 @@ package "crates/core::storage" {
 
     interface ObjectRepository {
         +read(key): Result<Option<StoredObject>>
-        +write(key, value): Result<StoredObject>
-        +cas(key, expected_version, value): Result<CasWriteOutcome>
+        +write(key, value, last_modified): Result<StoredObject>
+        +cas(key, expected_version, value, last_modified): Result<CasWriteOutcome>
     }
 
     class PersistentObjectRepository {
@@ -287,6 +289,7 @@ CasResult --> StoredObject
 StoredObject *-- ObjectRecord
 ObjectRecord --> ObjectKey
 ObjectRecord --> ObjectVersion
+ObjectRecord --> ObjectLastModified
 ApiError --> So3Error
 
 Runtime --> MaelstromService

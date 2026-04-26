@@ -2,7 +2,7 @@ use postcard::{from_bytes as postcard_from_bytes, to_allocvec as postcard_to_all
 use serde::{Deserialize, Serialize};
 
 use crate::domain::error::{So3Error, So3Result};
-use crate::domain::{ObjectKey, ObjectVersion, StoredObject};
+use crate::domain::{ObjectKey, ObjectLastModified, ObjectVersion, StoredObject};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ObjectCommand {
@@ -36,6 +36,7 @@ pub struct ReadCommand {
 pub struct WriteCommand {
     pub key: ObjectKey,
     pub value: Vec<u8>,
+    pub last_modified: ObjectLastModified,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,6 +44,7 @@ pub struct CasCommand {
     pub key: ObjectKey,
     pub expected_version: ObjectVersion,
     pub value: Vec<u8>,
+    pub last_modified: ObjectLastModified,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,8 +90,8 @@ pub enum CasResult {
 #[cfg(test)]
 mod tests {
     use crate::domain::{
-        CasCommand, ObjectCommand, ObjectKey, ObjectResult, ObjectVersion, ReadCommand, ReadResult,
-        WriteCommand,
+        CasCommand, ObjectCommand, ObjectKey, ObjectLastModified, ObjectResult, ObjectVersion,
+        ReadCommand, ReadResult, WriteCommand,
     };
 
     const KEY_ALPHA: &str = "alpha";
@@ -98,6 +100,7 @@ mod tests {
     const PAYLOAD: &[u8] = b"payload";
     const WRITE_VALUE: &[u8] = b"v";
     const EXPECTED_VERSION: i64 = 7;
+    const LAST_MODIFIED_UNIX_MILLIS: i64 = 1_775_000_000_123;
 
     #[test]
     fn object_command_roundtrip_is_stable() {
@@ -105,6 +108,7 @@ mod tests {
             key: ObjectKey::new(KEY_ALPHA).unwrap(),
             expected_version: ObjectVersion::try_from(EXPECTED_VERSION).unwrap(),
             value: PAYLOAD.to_vec(),
+            last_modified: ObjectLastModified::try_from(LAST_MODIFIED_UNIX_MILLIS).unwrap(),
         });
 
         let encoded = command.to_bytes().unwrap();
@@ -121,6 +125,7 @@ mod tests {
         let write = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(WRITE_KEY).unwrap(),
             value: WRITE_VALUE.to_vec(),
+            last_modified: ObjectLastModified::try_from(LAST_MODIFIED_UNIX_MILLIS).unwrap(),
         });
 
         assert!(matches!(read, ObjectCommand::Read(_)));

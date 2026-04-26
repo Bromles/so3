@@ -179,7 +179,8 @@ mod tests {
     use super::{PersistentReplicatedCommandExecutor, ReplicatedCommandExecutor};
     use crate::consensus::ConsensusCommandId;
     use crate::domain::{
-        ObjectCommand, ObjectKey, ObjectResult, ObjectVersion, ReadCommand, WriteCommand,
+        ObjectCommand, ObjectKey, ObjectLastModified, ObjectResult, ObjectVersion, ReadCommand,
+        WriteCommand,
     };
     use crate::storage::metadata::sqlite::SqliteObjectMetadataRepository;
     use crate::storage::registry::SqliteFsPersistentObjectRepository;
@@ -190,6 +191,8 @@ mod tests {
     const COMMAND_ORIGIN_NODE_ID: &str = "node-a";
     const COMMAND_SEQUENCE_ONE: u64 = 1;
     const COMMAND_SEQUENCE_TWO: u64 = 2;
+    const FIRST_LAST_MODIFIED: i64 = 1_775_000_000_123;
+    const SECOND_LAST_MODIFIED: i64 = 1_775_000_001_456;
 
     async fn test_executor() -> (
         PersistentReplicatedCommandExecutor<
@@ -224,6 +227,7 @@ mod tests {
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             value: FIRST_VALUE.to_vec(),
+            last_modified: last_modified(FIRST_LAST_MODIFIED),
         });
 
         let first = executor
@@ -236,6 +240,7 @@ mod tests {
                 ObjectCommand::Write(WriteCommand {
                     key: ObjectKey::new(ALPHA_KEY).unwrap(),
                     value: SECOND_VALUE.to_vec(),
+                    last_modified: last_modified(SECOND_LAST_MODIFIED),
                 }),
             )
             .await
@@ -263,6 +268,7 @@ mod tests {
                 ObjectCommand::Write(WriteCommand {
                     key: ObjectKey::new(ALPHA_KEY).unwrap(),
                     value: FIRST_VALUE.to_vec(),
+                    last_modified: last_modified(FIRST_LAST_MODIFIED),
                 }),
             )
             .await
@@ -282,5 +288,9 @@ mod tests {
         };
         let object = read.object.expect("expected stored object");
         assert_eq!(object.value, FIRST_VALUE.to_vec());
+    }
+
+    fn last_modified(unix_millis: i64) -> ObjectLastModified {
+        ObjectLastModified::try_from(unix_millis).unwrap()
     }
 }

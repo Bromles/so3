@@ -640,13 +640,14 @@ mod tests {
     use crate::config::StorageRoots;
     use crate::protocol::{ClientRequest, ResponseBody};
     use so3_core::consensus::ConsensusCommandId;
-    use so3_core::domain::{ObjectCommand, ObjectKey, WriteCommand};
+    use so3_core::domain::{ObjectCommand, ObjectKey, ObjectLastModified, WriteCommand};
     use so3_core::storage::registry::PersistentStorage;
 
     const NODE_ID: &str = "n0";
     const KEY_ALPHA: &str = "alpha";
     const COMMAND_SEQUENCE_SEVEN: u64 = 7;
     const MESSAGE_ID: u64 = 1;
+    const LAST_MODIFIED_UNIX_MILLIS: i64 = 1_775_000_000_123;
 
     #[tokio::test]
     async fn build_components_replays_committed_commands_and_recovers_next_sequence() {
@@ -664,6 +665,7 @@ mod tests {
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(serde_json::to_string(KEY_ALPHA).unwrap()).unwrap(),
             value: serde_json::to_vec(&json!(42)).unwrap(),
+            last_modified: ObjectLastModified::try_from(LAST_MODIFIED_UNIX_MILLIS).unwrap(),
         });
         storage
             .consensus_journal
