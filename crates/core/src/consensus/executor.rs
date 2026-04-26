@@ -4,14 +4,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use async_trait::async_trait;
 
 use crate::consensus::ConsensusCommandId;
-use crate::consensus::clock::{HybridLogicalClock, timestamp_is_after};
+use crate::consensus::clock::HybridLogicalClock;
+use crate::consensus::coordinator::{AccordCoordinator, AccordCoordinatorConfig};
 use crate::consensus::state_machine::{LocalStateMachine, ObjectCommandExecutor};
-use crate::domain::error::{So3Error, So3Result};
+use crate::domain::error::So3Result;
 use crate::domain::{ObjectCommand, ObjectResult};
-use crate::rpc_server::proto::{
-    AcceptRequest, AcceptResponse, Ballot, CommitRequest, DependencySet, EventPayload, LastApplied,
-    LogicalTimestamp, PreAcceptRequest, PreAcceptResponse,
-};
 use crate::rpc_server::transport::{ConsensusTransportHandler, TonicConsensusPeerTransport};
 use crate::storage::applied_command::repository::AppliedCommandStore;
 use crate::storage::object::repository::ObjectRepository;
@@ -134,182 +131,20 @@ where
 {
     async fn execute_command(&self, command: ObjectCommand) -> So3Result<ObjectResult> {
         let command_id = self.next_command_id();
-        let command_bytes = command.to_bytes()?;
-        let timestamp_zero = self.clock.tick().await;
-        let command_id = command_id_proto(&command_id);
-        let event = event_payload(&command_bytes);
-        let mut dependencies = empty_dependencies();
-
-        let pre_accept_request = PreAcceptRequest {
-            command_id: Some(command_id.clone()),
-            event: Some(event.clone()),
-            timestamp_zero: Some(timestamp_zero.clone()),
-            last_applied: Some(LastApplied {
-                commands: Vec::new(),
-            }),
+        let config = AccordCoordinatorConfig {
+            node_id: self.node_id.clone(),
+            peer_ids: self.peer_ids.clone(),
         };
-        let local_pre_accept = self
-            .local_transport
-            .pre_accept(pre_accept_request.clone())
-            .await
-            .map_err(|status| map_status(&status))?;
-        let mut timestamp = apply_pre_accept_response(
-            &mut dependencies,
-            Some(timestamp_zero.clone()),
-            &self.node_id,
-            local_pre_accept,
-        )?;
-        for peer_id in &self.peer_ids {
-            let response = self
-                .peer_transport
-                .pre_accept(peer_id, pre_accept_request.clone())
-                .await?;
-            timestamp = apply_pre_accept_response(&mut dependencies, timestamp, peer_id, response)?;
-        }
-        let timestamp = self
-            .clock
-            .observe(&timestamp.unwrap_or(timestamp_zero.clone()))
-            .await;
+        let mut peer_transport = self.peer_transport.clone();
+        let mut coordinator = AccordCoordinator::with_clock(
+            self.clock.clone(),
+            config,
+            &self.local_transport,
+            &mut peer_transport,
+        );
 
-        let accept_request = AcceptRequest {
-            command_id: Some(command_id.clone()),
-            ballot: Some(ballot(&self.node_id)),
-            event: Some(event.clone()),
-            timestamp_zero: Some(timestamp_zero.clone()),
-            timestamp: Some(timestamp.clone()),
-            dependencies: Some(dependencies.clone()),
-            last_applied: Some(LastApplied {
-                commands: Vec::new(),
-            }),
-        };
-        let local_accept = self
-            .local_transport
-            .accept(accept_request.clone())
-            .await
-            .map_err(|status| map_status(&status))?;
-        apply_accept_response(&mut dependencies, &self.node_id, local_accept)?;
-        for peer_id in &self.peer_ids {
-            let response = self
-                .peer_transport
-                .accept(peer_id, accept_request.clone())
-                .await?;
-            apply_accept_response(&mut dependencies, peer_id, response)?;
-        }
-
-        let commit_request = CommitRequest {
-            command_id: Some(command_id.clone()),
-            event: Some(event.clone()),
-            timestamp_zero: Some(timestamp_zero.clone()),
-            timestamp: Some(timestamp.clone()),
-            dependencies: Some(dependencies),
-        };
-        for peer_id in &self.peer_ids {
-            let _response = self
-                .peer_transport
-                .commit(peer_id, commit_request.clone())
-                .await?;
-        }
-        let commit = self
-            .local_transport
-            .commit(commit_request)
-            .await
-            .map_err(|status| map_status(&status))?;
-
-        ObjectResult::from_bytes(&commit.result)
+        coordinator.execute(&command_id, command).await
     }
-}
-
-fn apply_pre_accept_response(
-    dependencies: &mut DependencySet,
-    current: Option<LogicalTimestamp>,
-    node_id: &str,
-    response: PreAcceptResponse,
-) -> So3Result<Option<LogicalTimestamp>> {
-    if response.nack {
-        return Err(So3Error::InvalidRequest(format!(
-            "pre_accept rejected by replica {node_id}"
-        )));
-    }
-
-    merge_dependencies(dependencies, response.dependencies);
-
-    Ok(max_timestamp(current, response.timestamp))
-}
-
-fn apply_accept_response(
-    dependencies: &mut DependencySet,
-    node_id: &str,
-    response: AcceptResponse,
-) -> So3Result<()> {
-    if response.nack {
-        return Err(So3Error::InvalidRequest(format!(
-            "accept rejected by replica {node_id}"
-        )));
-    }
-
-    merge_dependencies(dependencies, response.dependencies);
-
-    Ok(())
-}
-
-fn max_timestamp(
-    current: Option<LogicalTimestamp>,
-    candidate: Option<LogicalTimestamp>,
-) -> Option<LogicalTimestamp> {
-    match (current, candidate) {
-        (Some(current), Some(candidate)) => Some(if timestamp_is_after(&candidate, &current) {
-            candidate
-        } else {
-            current
-        }),
-        (None, candidate) => candidate,
-        (current, None) => current,
-    }
-}
-
-fn merge_dependencies(target: &mut DependencySet, source: Option<DependencySet>) {
-    let Some(source) = source else {
-        return;
-    };
-
-    for command in source.commands {
-        if !target.commands.iter().any(|existing| {
-            existing.origin_node_id == command.origin_node_id
-                && existing.sequence == command.sequence
-        }) {
-            target.commands.push(command);
-        }
-    }
-}
-
-fn command_id_proto(command_id: &ConsensusCommandId) -> crate::rpc_server::proto::CommandId {
-    crate::rpc_server::proto::CommandId {
-        origin_node_id: command_id.origin_node_id().to_owned(),
-        sequence: command_id.sequence(),
-    }
-}
-
-fn event_payload(command: &[u8]) -> EventPayload {
-    EventPayload {
-        command: command.to_vec(),
-    }
-}
-
-fn empty_dependencies() -> DependencySet {
-    DependencySet {
-        commands: Vec::new(),
-    }
-}
-
-fn ballot(node_id: &str) -> Ballot {
-    Ballot {
-        round: 0,
-        node_id: node_id.to_owned(),
-    }
-}
-
-fn map_status(status: &tonic::Status) -> So3Error {
-    So3Error::InvalidRequest(status.to_string())
 }
 
 #[cfg(test)]

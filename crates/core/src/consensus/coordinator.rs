@@ -11,7 +11,7 @@ use crate::rpc_server::proto::{
 };
 use crate::rpc_server::transport::ConsensusTransportHandler;
 
-#[async_trait(?Send)]
+#[async_trait]
 pub trait ConsensusPeerTransport: Send {
     async fn pre_accept_peer(
         &mut self,
@@ -54,11 +54,26 @@ where
         local_transport: &'a L,
         peer_transport: &'a mut P,
     ) -> Self {
-        Self {
-            clock: HybridLogicalClock::new(config.node_id.clone()),
+        Self::with_clock(
+            HybridLogicalClock::new(config.node_id.clone()),
             config,
             local_transport,
             peer_transport,
+        )
+    }
+
+    #[must_use]
+    pub fn with_clock(
+        clock: HybridLogicalClock,
+        config: AccordCoordinatorConfig,
+        local_transport: &'a L,
+        peer_transport: &'a mut P,
+    ) -> Self {
+        Self {
+            config,
+            local_transport,
+            peer_transport,
+            clock,
         }
     }
 
@@ -507,7 +522,7 @@ mod tests {
         }
     }
 
-    #[async_trait(?Send)]
+    #[async_trait]
     impl ConsensusPeerTransport for FakePeerTransport {
         async fn pre_accept_peer(
             &mut self,

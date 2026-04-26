@@ -85,7 +85,7 @@ impl TonicConsensusPeerTransport {
     }
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl ConsensusPeerTransport for TonicConsensusPeerTransport {
     async fn pre_accept_peer(
         &mut self,

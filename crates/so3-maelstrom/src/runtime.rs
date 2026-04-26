@@ -118,7 +118,7 @@ impl Runtime {
     fn dispatch(
         &mut self,
         message: Message<RequestBody>,
-    ) -> Pin<Box<dyn Future<Output = So3Result<()>> + '_>> {
+    ) -> Pin<Box<dyn Future<Output = So3Result<()>> + Send + '_>> {
         Box::pin(async move {
             let src = message.src;
             match message.body {
@@ -532,7 +532,7 @@ impl Runtime {
     }
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl ConsensusPeerTransport for Runtime {
     async fn pre_accept_peer(
         &mut self,
