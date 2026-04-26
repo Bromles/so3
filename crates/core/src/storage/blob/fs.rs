@@ -1,4 +1,6 @@
 use std::fmt::Write as FmtWrite;
+use std::fs::File as StdFile;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
@@ -77,6 +79,7 @@ impl BlobRepository for FileSystemBlobRepository {
         drop(file);
 
         fs::rename(&temp_path, &final_path).await?;
+        sync_directory(self.committed_dir()).await?;
 
         Ok(BlobMetadata {
             blob_id,
@@ -105,12 +108,39 @@ async fn next_dir_entry(entries: &mut ReadDir) -> So3Result<Option<fs::DirEntry>
     entries.next_entry().await.map_err(So3Error::from)
 }
 
+async fn sync_directory(path: PathBuf) -> So3Result<()> {
+    tokio::task::spawn_blocking(move || {
+        let directory = open_directory_for_sync(&path)?;
+        directory.sync_all()
+    })
+    .await
+    .map_err(|error| So3Error::Io(format!("directory sync task failed: {error}")))?
+    .map_err(So3Error::from)
+}
+
+#[cfg(windows)]
+fn open_directory_for_sync(path: &Path) -> io::Result<StdFile> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+}
+
+#[cfg(not(windows))]
+fn open_directory_for_sync(path: &Path) -> io::Result<StdFile> {
+    StdFile::open(path)
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::TempDir;
     use tokio::fs;
 
-    use super::{FileSystemBlobRepository, TEMP_BLOBS_DIR_NAME};
+    use super::{COMMITTED_BLOBS_DIR_NAME, FileSystemBlobRepository, TEMP_BLOBS_DIR_NAME};
     use crate::storage::blob::repository::BlobRepository;
 
     const TEST_PAYLOAD: &[u8] = b"blob-data";
@@ -128,6 +158,13 @@ mod tests {
 
         assert_eq!(metadata.content_length, TEST_PAYLOAD.len() as u64);
         assert_eq!(loaded, TEST_PAYLOAD.to_vec());
+        assert!(
+            temp_dir
+                .path()
+                .join(COMMITTED_BLOBS_DIR_NAME)
+                .join(&metadata.blob_id)
+                .exists()
+        );
     }
 
     #[tokio::test]
