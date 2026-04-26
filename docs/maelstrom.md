@@ -88,6 +88,37 @@ Default settings:
 The three-node smoke scripts override these defaults with `NODE_COUNT=3`, `TIME_LIMIT=10`,
 `RATE=10`, and `CONCURRENCY=2n`.
 
+## Recent Verification
+
+Validated on 2026-04-26 after the dependency handling fixes:
+
+- `bash scripts/maelstrom/smoke-lin-kv.sh`
+  - workload: `lin-kv`
+  - nodes: `1`
+  - time limit: `10`
+  - rate: `20`
+  - concurrency: `2n`
+  - result: `:valid? true`
+- `bash scripts/maelstrom/smoke-3-node-lin-kv.sh`
+  - workload: `lin-kv`
+  - nodes: `3`
+  - time limit: `10`
+  - rate: `10`
+  - concurrency: `2n`
+  - result: `:valid? true`
+- `NODE_COUNT=3 TIME_LIMIT=30 RATE=50 CONCURRENCY=4n LOG_STDERR=1 bash scripts/maelstrom/run-lin-kv.sh`
+  - workload: `lin-kv`
+  - nodes: `3`
+  - time limit: `30`
+  - rate: `50`
+  - concurrency: `4n`
+  - result: `:valid? true`
+  - stats: 1313 operations, 637 ok, 535 fail, 141 info; ok fraction 0.48514852
+
+Maelstrom writes detailed histories under `store/lin-kv/`, which is intentionally gitignored.
+Do not commit run-specific result paths; keep only reproducible commands, parameters, and verdicts
+in this document.
+
 ## Notes
 
 - The adapter stores state under `SO3_MAELSTROM_DATA_DIR` or `./var/so3-maelstrom` by default.

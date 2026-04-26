@@ -1,5 +1,4 @@
 @startuml
-!pragma layout smetana
 
 top to bottom direction
 skinparam packageStyle rectangle
@@ -13,13 +12,34 @@ package "crates/so3" {
     }
 }
 
+package "crates/so3-maelstrom" {
+    class Runtime <<adapter>> {
+        +run()
+        -execute_leader_command()
+        -handle_forward()
+        -handle_consensus()
+    }
+
+    class MaelstromService {
+        +prepare_command()
+        +response_from_result()
+    }
+}
+
 package "crates/core::node" {
     class Node {
         -config: NodeConfig
         -object_server: ObjectServer
         -rpc_server: RpcServer
-        -object_service: Arc<ObjectService>
-        +new(config: NodeConfig): Result<Node>
+        -object_service: ObjectService
+        +new(config): Result<Node>
+        +bind(): Result<BoundNode>
+        +run(cancellation_token): Result<()>
+    }
+
+    class BoundNode {
+        -object_listener: TcpListener
+        -rpc_listener: TcpListener
         +run(cancellation_token): Result<()>
     }
 
@@ -27,219 +47,37 @@ package "crates/core::node" {
         +node_id: Uuid
         +object_api_addr: SocketAddr
         +rpc_api_addr: SocketAddr
-        +object_request_timeout: Duration
         +metadata_dir: PathBuf
         +blob_dir: PathBuf
         +cluster: ClusterConfig
-        +from_env(): Result<NodeConfig>
-        +from_env_with(get_var): Result<NodeConfig>
         +validate(): Result<()>
     }
 
     class ClusterConfig {
         +peers: Vec<SocketAddr>
     }
-
-    class "fail_fast_join(...)" as FailFastJoin <<internal fn>>
-    class "flatten_join(...)" as FlattenJoin <<internal fn>>
 }
 
 package "crates/core::object_server" {
     class ObjectServer {
-        +new(): ObjectServer
         +run(listener, config, service, cancellation_token): Result<()>
     }
 
     class ObjectService {
-        -state_machine: Arc<LocalStateMachine>
-        +new(state_machine): ObjectService
+        -executor: ObjectCommandExecutor
         +read(key): Result<Option<StoredObject>>
         +write(key, value): Result<StoredObject>
         +cas(key, expected_version, value): Result<CasResult>
+        +execute_command(command): Result<ObjectResult>
     }
 
-    class ObjectApiState {
-        +service: Arc<ObjectService>
-        +request_timeout: Duration
-    }
-
-    class WriteQuery {
-        +expected_version: Option<i64>
-    }
-
-    class WriteResponse {
-        +key: String
-        +version: i64
-        +checksum: String
-        +content_length: u64
-    }
-
-    class ErrorResponse {
-        +error: String
-        +detail: String
-    }
-
+    class ObjectApiState
     class ApiError
-    class "object_controller(...)" as ObjectController <<router fn>>
-    class "handle_get(...)" as HandleGet <<handler fn>>
-    class "handle_put(...)" as HandlePut <<handler fn>>
-}
-
-package "crates/core::rpc_server" {
-    class RpcServer {
-        -handler: Arc<ConsensusTransportHandler>
-        +new(handler): RpcServer
-        +run(listener, cancellation_token): Result<()>
-    }
-
-    class ConsensusTransportService {
-        -handler: Arc<ConsensusTransportHandler>
-        +new(handler): ConsensusTransportService
-        +pre_accept(request): Result<Response>
-        +accept(request): Result<Response>
-        +commit(request): Result<Response>
-        +apply(request): Result<Response>
-        +recover(request): Result<Response>
-    }
-
-    interface ConsensusTransportHandler {
-        +pre_accept(request): Result<PreAcceptResponse>
-        +accept(request): Result<AcceptResponse>
-        +commit(request): Result<CommitResponse>
-        +apply(request): Result<ApplyResponse>
-        +recover(request): Result<RecoverResponse>
-    }
-
-    class RejectingConsensusTransport {
-        -node_id: Arc<str>
-        +new(node_id): RejectingConsensusTransport
-    }
-
-    interface ConsensusTransport <<generated proto service>>
-    class ConsensusTransportServer <<generated tonic server>>
-    class ConsensusTransportClient <<generated tonic client>>
-
-    class CommandId {
-        +origin_node_id: String
-        +sequence: u64
-    }
-
-    class EventPayload {
-        +command: bytes
-    }
-
-    class LogicalTimestamp {
-        +epoch: u64
-        +counter: u64
-        +node_id: String
-    }
-
-    class DependencySet {
-        +commands: repeated CommandId
-    }
-
-    class Ballot {
-        +round: u64
-        +node_id: String
-    }
-
-    class ApplyHashes {
-        +transaction_hash: bytes
-        +execution_hash: bytes
-    }
-
-    class LastApplied {
-        +commands: repeated CommandId
-    }
-
-    enum State {
-        STATE_UNDEFINED
-        STATE_PRE_ACCEPTED
-        STATE_ACCEPTED
-        STATE_COMMITTED
-        STATE_APPLIED
-    }
-}
-
-package "crates/core::consensus" {
-    class LocalStateMachine {
-        -repository: Arc<ObjectRepository>
-        +new(repository): LocalStateMachine
-        +execute(command: ObjectCommand): Result<ObjectResult>
-    }
-}
-
-package "crates/core::storage" {
-    interface BlobRepository {
-        +store(value): Result<BlobMetadata>
-        +load(blob_id): Result<Vec<u8>>
-    }
-
-    interface ObjectMetadataRepository {
-        +read(key): Result<Option<ObjectRecord>>
-        +write(record): Result<()>
-    }
-
-    interface ObjectRepository {
-        +read(key): Result<Option<StoredObject>>
-        +write(key, value): Result<StoredObject>
-        +cas(key, expected_version, value): Result<CasWriteOutcome>
-    }
-
-    class PersistentObjectRepository {
-        -metadata_repository: Arc<ObjectMetadataRepository>
-        -blob_repository: Arc<BlobRepository>
-        -write_lock: Mutex<()>
-        +new(metadata_dir, blob_dir): Result<PersistentObjectRepository>
-        -write_next_version(key, version, value): Result<StoredObject>
-    }
-
-    class SqliteObjectMetadataRepository {
-        -pool: SqlitePool
-        +new(metadata_dir): Result<SqliteObjectMetadataRepository>
-        -init_schema(): Result<()>
-        -migrate_to_v1(): Result<()>
-        -row_to_record(row): Result<ObjectRecord>
-    }
-
-    class FileSystemBlobRepository {
-        -blob_dir: PathBuf
-        +new(blob_dir): Result<FileSystemBlobRepository>
-        -temp_path(blob_id): PathBuf
-        -committed_path(blob_id): PathBuf
-    }
-
-    class BlobMetadata {
-        +blob_id: String
-        +content_length: u64
-        +checksum: String
-    }
-
-    enum CasWriteOutcome {
-        Applied(StoredObject)
-        NotFound
-        Mismatch { current_version }
-    }
-
-    class "read_content_length(...)" as ReadContentLength <<internal fn>>
-    class "content_length_to_i64(...)" as ContentLengthToI64 <<internal fn>>
-    class "checksum_hex(...)" as ChecksumHex <<internal fn>>
 }
 
 package "crates/core::domain" {
-    class So3Error
-    class So3Result~T~
-
-    class ObjectKey {
-        +new(value): Result<ObjectKey>
-        +as_str(): &str
-    }
-
-    class ObjectVersion {
-        +initial(): ObjectVersion
-        +next(): ObjectVersion
-        +get(): i64
-    }
+    class ObjectKey
+    class ObjectVersion
 
     class ObjectRecord {
         +key: ObjectKey
@@ -255,173 +93,233 @@ package "crates/core::domain" {
     }
 
     enum ObjectCommand {
-        Read(ReadCommand)
-        Write(WriteCommand)
-        Cas(CasCommand)
-    }
-
-    class ReadCommand {
-        +key: ObjectKey
-    }
-
-    class WriteCommand {
-        +key: ObjectKey
-        +value: Vec<u8>
-    }
-
-    class CasCommand {
-        +key: ObjectKey
-        +expected_version: ObjectVersion
-        +value: Vec<u8>
+        Read
+        Write
+        Cas
     }
 
     enum ObjectResult {
-        Read(ReadResult)
-        Write(WriteResult)
-        Cas(CasResult)
-    }
-
-    class ReadResult {
-        +object: Option<StoredObject>
-    }
-
-    class WriteResult {
-        +object: StoredObject
+        Read
+        Write
+        Cas
     }
 
     enum CasResult {
-        Applied(StoredObject)
+        Applied
         NotFound
-        Mismatch { current_version }
+        Mismatch
     }
+
+    class So3Error
+}
+
+package "crates/core::consensus" {
+    interface ObjectCommandExecutor {
+        +execute_command(command): Result<ObjectResult>
+    }
+
+    class LocalStateMachine {
+        -repository: ObjectRepository
+        +execute(command): Result<ObjectResult>
+    }
+
+    class LocalConsensusObjectCommandExecutor {
+        -local_transport: ConsensusTransportHandler
+        -peer_transport: TonicConsensusPeerTransport
+        -next_sequence: AtomicU64
+        +execute_command(command): Result<ObjectResult>
+    }
+
+    class AccordCoordinator {
+        -local_transport: ConsensusTransportHandler
+        -peer_transport: ConsensusPeerTransport
+        -clock: HybridLogicalClock
+        +execute(command_id, command): Result<ObjectResult>
+        +recover(command_id, ballot): Result<RecoveryDecision>
+    }
+
+    interface ConsensusPeerTransport {
+        +pre_accept_peer()
+        +accept_peer()
+        +commit_peer()
+        +recover_peer()
+    }
+
+    class PersistentReplicatedCommandExecutor {
+        -state_machine: LocalStateMachine
+        -applied_command_store: AppliedCommandStore
+        +execute_replicated(command_id, command): Result<ObjectResult>
+    }
+
+    interface ReplicatedCommandExecutor {
+        +execute_replicated(command_id, command): Result<ObjectResult>
+    }
+
+    class SqliteConsensusJournal {
+        +record_pre_accepted()
+        +record_accepted()
+        +record_committed()
+        +record_applied()
+        +list_by_state()
+        +next_sequence_for_origin()
+    }
+
+    enum JournalState {
+        PreAccepted
+        Accepted
+        Committed
+        Applied
+    }
+
+    class HybridLogicalClock
+    class ConsensusCommandId
+}
+
+package "crates/core::rpc_server" {
+    class RpcServer {
+        -handler: ConsensusTransportHandler
+        +run(listener, cancellation_token): Result<()>
+    }
+
+    interface ConsensusTransportHandler {
+        +pre_accept()
+        +accept()
+        +commit()
+        +apply()
+        +recover()
+    }
+
+    class ApplyingConsensusTransport {
+        -executor: ReplicatedCommandExecutor
+        -journal: SqliteConsensusJournal
+        -clock: HybridLogicalClock
+    }
+
+    class TonicConsensusPeerTransport {
+        -peers: HashMap<String, ConsensusTransportClient>
+    }
+
+    class ConsensusTransportService <<tonic service>>
+    class ConsensusTransportClient <<generated client>>
+    class ConsensusTransportServer <<generated server>>
+}
+
+package "crates/core::storage" {
+    class PersistentStorage {
+        +metadata_repository: SqliteObjectMetadataRepository
+        +object_repository: SqliteFsPersistentObjectRepository
+        +consensus_journal: SqliteConsensusJournal
+        +open(metadata_dir, blob_dir): Result<PersistentStorage>
+    }
+
+    interface ObjectRepository {
+        +read(key): Result<Option<StoredObject>>
+        +write(key, value): Result<StoredObject>
+        +cas(key, expected_version, value): Result<CasWriteOutcome>
+    }
+
+    class PersistentObjectRepository {
+        -metadata_repository: ObjectMetadataRepository
+        -blob_repository: BlobRepository
+        -write_lock: Mutex
+    }
+
+    interface ObjectMetadataRepository
+    interface AppliedCommandStore
+    class SqliteObjectMetadataRepository
+    interface BlobRepository
+    class FileSystemBlobRepository
 }
 
 Main --> NodeConfig : loads
-Main --> Node : creates/runs
-
+Main --> Node : starts
 Node *-- NodeConfig
 Node *-- ObjectServer
 Node *-- RpcServer
-Node --> ObjectService
-Node ..> PersistentObjectRepository : constructs local backend
-Node ..> RejectingConsensusTransport : constructs current rpc handler
-Node ..> FailFastJoin : orchestrates shutdown
-FailFastJoin ..> FlattenJoin
-
+Node *-- ObjectService
+Node ..> PersistentStorage : opens
+Node ..> ApplyingConsensusTransport : local RPC handler
+Node ..> TonicConsensusPeerTransport : peer clients
 NodeConfig o-- ClusterConfig
 
-ObjectServer --> ObjectController
+ObjectServer --> ObjectApiState
 ObjectServer --> ObjectService
-ObjectService --> LocalStateMachine
-ObjectController --> ObjectApiState
-ObjectController ..> HandleGet
-ObjectController ..> HandlePut
-ObjectApiState --> ObjectService
-HandlePut ..> WriteQuery
-HandlePut ..> WriteResponse
-HandlePut ..> ApiError
+ObjectService --> ObjectCommandExecutor
 ObjectService ..> ObjectCommand
 ObjectService ..> ObjectResult
-ObjectService ..> CasResult
-ApiError ..> ErrorResponse
-ApiError ..> So3Error
+
+LocalConsensusObjectCommandExecutor ..|> ObjectCommandExecutor
+LocalConsensusObjectCommandExecutor --> AccordCoordinator
+LocalConsensusObjectCommandExecutor --> TonicConsensusPeerTransport
+AccordCoordinator --> ConsensusTransportHandler : local phases
+AccordCoordinator --> ConsensusPeerTransport : peer phases
+TonicConsensusPeerTransport ..|> ConsensusPeerTransport
+TonicConsensusPeerTransport --> ConsensusTransportClient
 
 RpcServer --> ConsensusTransportServer
-ConsensusTransportServer ..|> ConsensusTransport
-ConsensusTransportService ..|> ConsensusTransport
-RpcServer --> ConsensusTransportService
-RpcServer --> ConsensusTransportHandler
+ConsensusTransportServer --> ConsensusTransportService
 ConsensusTransportService --> ConsensusTransportHandler
-ConsensusTransportHandler <|.. RejectingConsensusTransport
-ConsensusTransportClient ..> ConsensusTransport
-ConsensusTransport ..> CommandId
-ConsensusTransport ..> EventPayload
-ConsensusTransport ..> LogicalTimestamp
-ConsensusTransport ..> DependencySet
-ConsensusTransport ..> Ballot
-ConsensusTransport ..> ApplyHashes
-ConsensusTransport ..> LastApplied
-ConsensusTransport ..> State
+ApplyingConsensusTransport ..|> ConsensusTransportHandler
+ApplyingConsensusTransport --> SqliteConsensusJournal
+ApplyingConsensusTransport --> ReplicatedCommandExecutor
 
+PersistentReplicatedCommandExecutor ..|> ReplicatedCommandExecutor
+PersistentReplicatedCommandExecutor --> LocalStateMachine
+PersistentReplicatedCommandExecutor --> AppliedCommandStore
+LocalStateMachine ..|> ObjectCommandExecutor
 LocalStateMachine --> ObjectRepository
-LocalStateMachine ..> ObjectCommand
-LocalStateMachine ..> ObjectResult
-LocalStateMachine ..> CasWriteOutcome
 
-ObjectRepository <|.. PersistentObjectRepository
-ObjectMetadataRepository <|.. SqliteObjectMetadataRepository
-BlobRepository <|.. FileSystemBlobRepository
+PersistentStorage *-- SqliteObjectMetadataRepository
+PersistentStorage *-- PersistentObjectRepository
+PersistentStorage *-- SqliteConsensusJournal
+PersistentObjectRepository ..|> ObjectRepository
 PersistentObjectRepository --> ObjectMetadataRepository
 PersistentObjectRepository --> BlobRepository
-PersistentObjectRepository ..> BlobMetadata
-SqliteObjectMetadataRepository ..> ReadContentLength
-SqliteObjectMetadataRepository ..> ContentLengthToI64
-FileSystemBlobRepository ..> ChecksumHex
-SqliteObjectMetadataRepository ..> So3Error
-FileSystemBlobRepository ..> So3Error
-So3Result ..> So3Error
+SqliteObjectMetadataRepository ..|> ObjectMetadataRepository
+SqliteObjectMetadataRepository ..|> AppliedCommandStore
+FileSystemBlobRepository ..|> BlobRepository
+SqliteConsensusJournal --> JournalState
 
-ObjectCommand --> ReadCommand
-ObjectCommand --> WriteCommand
-ObjectCommand --> CasCommand
-ObjectResult --> ReadResult
-ObjectResult --> WriteResult
-ObjectResult --> CasResult
-
+ObjectCommand --> ObjectKey
+ObjectCommand --> ObjectVersion
+ObjectResult --> StoredObject
+CasResult --> StoredObject
+StoredObject *-- ObjectRecord
 ObjectRecord --> ObjectKey
 ObjectRecord --> ObjectVersion
-StoredObject *-- ObjectRecord
-ReadCommand --> ObjectKey
-WriteCommand --> ObjectKey
-CasCommand --> ObjectKey
-CasCommand --> ObjectVersion
-CasResult --> StoredObject
-CasResult --> ObjectVersion
-WriteResult --> StoredObject
-ReadResult --> StoredObject
-CasWriteOutcome --> StoredObject
-CasWriteOutcome --> ObjectVersion
+ApiError --> So3Error
+
+Runtime --> MaelstromService
+Runtime --> AccordCoordinator : leader path
+Runtime --> ApplyingConsensusTransport : local consensus RPC
+Runtime ..> PersistentStorage : per Maelstrom node
+MaelstromService ..> ObjectCommand
+MaelstromService ..> ObjectResult
 
 note right of Node
-Current composition:
-- one local persistent backend
-- one public HTTP object API
-- one private gRPC RPC server
-- object API goes through ObjectService
-- rpc API goes through ConsensusTransportHandler
-- no separate consensus engine yet
+Production node composition:
+- HTTP object API
+- private tonic RPC API
+- local applying transport
+- tonic peer transport
+- durable replay before serving
 end note
 
-note right of PersistentObjectRepository
-Current durability model:
-- SQLite metadata and filesystem blobs are separate repositories
-- composition repository writes blob first, then metadata
-- metadata store tracks the current committed object version
-- blob store keeps immutable committed blob files
-- schema version is explicit via PRAGMA user_version
-- write/cas are serialized with write_lock
+note right of AccordCoordinator
+Current Accord prototype:
+- PreAccept / Accept / Commit / Recover
+- majority quorum for PreAccept and Accept
+- unanimous fast path skips Accept
+- commit broadcast is best effort
+- client success waits for local applied result
 end note
 
-note right of LocalStateMachine
-Current state machine scope:
-- deterministic command dispatch
-- delegates persistence through ObjectRepository
-- not yet backed by replicated Accord log/recovery state
-end note
-
-note right of RpcServer
-Current RPC state:
-- tonic transport is wired
-- handlers delegate into ConsensusTransportHandler
-- default node wiring uses RejectingConsensusTransport
-- pre_accept/accept/recover nack conservatively
-- commit/apply return FAILED_PRECONDITION
-end note
-
-note right of FailFastJoin
-If either server task finishes first,
-the root CancellationToken is cancelled
-and the peer task is awaited.
+note right of PersistentStorage
+Durability:
+- SQLite metadata and applied results
+- SQLite consensus journal
+- immutable filesystem blobs
+- blob is placed before metadata references it
 end note
 
 @enduml

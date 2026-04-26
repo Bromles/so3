@@ -1,0 +1,79 @@
+<mxfile host="drawio-plugin" modified="2026-04-26T17:38:39.678Z" agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36" version="22.1.22" etag="vRB7O5ZCVFCYG6vWeO66" type="embed">
+  <diagram id="so3-module-overview" name="so3 module overview">
+    <mxGraphModel dx="962" dy="1397" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1280" pageHeight="720" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="client" value="Client" style="shape=umlActor;verticalLabelPosition=bottom;verticalAlign=top;html=1;outlineConnect=0;fontSize=14" parent="1" vertex="1">
+          <mxGeometry x="734" y="-60" width="42" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="binary" value="so3 binary&lt;br&gt;config + bootstrap" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=14" parent="1" vertex="1">
+          <mxGeometry x="170" y="110" width="160" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="node" value="Node&lt;br&gt;lifecycle + wiring" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=14;fontStyle=1" parent="1" vertex="1">
+          <mxGeometry x="390" y="110" width="170" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="object_api" value="Object API&lt;br&gt;HTTP Read / Write / CAS" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=14" parent="1" vertex="1">
+          <mxGeometry x="660" y="92" width="190" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="rpc_server" value="RPC Server&lt;br&gt;private tonic API" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=14" parent="1" vertex="1">
+          <mxGeometry x="660" y="248" width="190" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="object_service" value="ObjectService&lt;br&gt;command mapping" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14" parent="1" vertex="1">
+          <mxGeometry x="930" y="92" width="190" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="coordinator" value="Accord Coordinator&lt;br&gt;client command path" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14;fontStyle=1" parent="1" vertex="1">
+          <mxGeometry x="930" y="248" width="190" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="applying" value="Applying Transport&lt;br&gt;replica phase handler" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14" parent="1" vertex="1">
+          <mxGeometry x="930" y="404" width="190" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="peer_transport" value="Peer Transport&lt;br&gt;tonic clients" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#f8cecc;strokeColor=#b85450;fontSize=14" parent="1" vertex="1">
+          <mxGeometry x="660" y="404" width="190" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="sqlite" value="SQLite&lt;br&gt;metadata + applied results&lt;br&gt;consensus journal" style="shape=cylinder3d;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;fillColor=#f5f5f5;strokeColor=#666666;fontSize=13" parent="1" vertex="1">
+          <mxGeometry x="670" y="550" width="170" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="blobs" value="Filesystem&lt;br&gt;immutable blobs" style="shape=folder;tabWidth=40;tabHeight=14;tabPosition=left;html=1;whiteSpace=wrap;fillColor=#f5f5f5;strokeColor=#666666;fontSize=13" parent="1" vertex="1">
+          <mxGeometry x="960" y="558" width="130" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="e_client_api" value="Read / Write / CAS" style="endArrow=block;html=1;rounded=0;strokeWidth=2" parent="1" source="client" target="object_api" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_binary_node" value="starts" style="endArrow=block;html=1;rounded=0" parent="1" source="binary" target="node" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_node_api" value="binds" style="endArrow=block;html=1;rounded=0" parent="1" source="node" target="object_api" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_node_rpc" value="binds" style="endArrow=block;html=1;rounded=0" parent="1" source="node" target="rpc_server" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_api_service" value="" style="endArrow=block;html=1;rounded=0" parent="1" source="object_api" target="object_service" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_service_coord" value="replicated command" style="endArrow=block;html=1;rounded=0;strokeWidth=2" parent="1" source="object_service" target="coordinator" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_coord_apply" value="local phases" style="endArrow=block;html=1;rounded=0;strokeWidth=2" parent="1" source="coordinator" target="applying" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_coord_peer" value="peer phases" style="endArrow=block;html=1;rounded=0" parent="1" source="coordinator" target="peer_transport" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_peer_rpc" value="tonic" style="endArrow=block;html=1;rounded=0" parent="1" source="peer_transport" target="rpc_server" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_rpc_apply" value="" style="endArrow=block;html=1;rounded=0" parent="1" source="rpc_server" target="applying" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_apply_sqlite" value="journal + metadata + results" style="endArrow=block;html=1;rounded=0" parent="1" source="applying" target="sqlite" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_apply_blobs" value="object bytes" style="endArrow=block;html=1;rounded=0" parent="1" source="applying" target="blobs" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

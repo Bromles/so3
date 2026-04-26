@@ -28,14 +28,15 @@ The codebase currently compiles and has working prototype paths for storage, nod
 - `proto/consensus.proto` describes the current Accord transport RPCs and should be treated as the seed of the intra-cluster protocol.
 - `storage` persists object metadata in SQLite, blob bytes on the filesystem, applied command results, and the consensus journal.
 - `consensus` has command IDs, HLC timestamps, durable journal state, replay of committed commands, a coordinator, and an applying transport.
-- `docs/classDiagram.puml` is an outdated rough sketch and must not be treated as a source of truth.
+- `docs/classDiagram.puml` is the current detailed structural sketch.
+- `docs/moduleDiagram.drawio` is the current compact editable module overview for presentations.
 
-When code and old diagram disagree, prefer:
+When code and diagrams disagree, prefer:
 
 1. The explicit project goal in this file.
 2. Working code and tests.
 3. Recent design notes written for the current prototype direction.
-4. The diagram only as a distant historical reference.
+4. Updated diagrams only after they are brought back in line with the code.
 
 ## Architectural Direction
 
@@ -310,18 +311,52 @@ High-priority remaining work before final prototype testing:
      original states; durable ballot and timestamp metadata is preserved.
 
 6. Run final Maelstrom verification matrix.
-   - Single-node smoke for adapter regressions.
-   - Three-node smoke at low rate.
-   - Longer three-node lin-kv run at higher rate/concurrency.
+   - Single-node smoke for adapter regressions. ✓
+   - Three-node smoke at low rate. ✓
+   - Longer three-node lin-kv run at higher rate/concurrency. ✓
    - A run with process restarts or partitions once the harness supports it.
-   - Preserve exact commands, rates, concurrency, node count, result paths, and whether histories are valid.
+   - Preserve exact commands, rates, concurrency, node count, and whether histories are valid.
+   - Do not commit run-specific Maelstrom result paths; `store/lin-kv/` is gitignored.
+
+## Remaining Prototype Readiness Work
+
+The core `Read`/`Write`/`CAS` path is now in reasonable prototype shape: durable local storage,
+Accord transport phases, recovery replay, dependency-aware apply, quorum behavior, retry behavior,
+and Maelstrom lin-kv smoke/stress runs are in place.
+
+Remaining work before calling the prototype ready:
+
+1. Add Maelstrom fault runs.
+   - Extend or configure the harness for process restarts and partitions.
+   - Verify that committed-but-not-applied commands recover safely after node restart.
+   - Record only reproducible commands, parameters, and validity verdicts in docs.
+
+2. Improve availability under load without weakening safety.
+   - Longer three-node lin-kv currently remains valid but can produce client `:net-timeout`
+     `info` operations at higher rate/concurrency.
+   - Any improvement must preserve the rule that clients do not receive success before the command
+     is durably committed and locally applied.
+
+3. Tighten Accord completeness.
+   - The coordinator has majority quorum, fast path, slow path accept, recovery retry, and
+     best-effort commit broadcast.
+   - It still is not a full Accord implementation with all production-grade recovery orchestration,
+     background anti-entropy, or optimized dependency pruning.
+
+4. Keep documentation current.
+   - `docs/classDiagram.puml` is the current detailed structural diagram.
+   - `docs/moduleDiagram.drawio` is the slide-sized editable architectural module diagram.
+   - `docs/maelstrom.md` records verification commands and verdicts without gitignored result paths.
 
 ## References
 
 Useful local references:
 
 - `crates/core/proto/consensus.proto` for current Accord transport sketch
+- `docs/moduleDiagram.drawio` for a compact editable architecture overview
+- `docs/classDiagram.puml` for the detailed current structural sketch
 
-Treat `docs/classDiagram.puml` as stale historical material only. It may help explain old naming or abandoned structure, but it must not drive architecture or implementation choices.
+Keep diagrams aligned with working code. When code and diagrams disagree, working code and tests win;
+update the diagrams as part of the same change when architecture or ownership boundaries move.
 
 External projects such as `synevi` or `s3pico` can be consulted for Accord ideas, but do not copy architecture blindly. This repository should stay smaller, more explicit, and directly optimized for a correct object-store prototype.
