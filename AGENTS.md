@@ -285,15 +285,29 @@ High-priority remaining work before final prototype testing:
    - Tests cover fast path, minority-failure tolerance, majority-failure rejection, and
      best-effort commit (peer commit failure does not fail the operation).
 
-4. Improve failure and retry behavior.
-   - Classify RPC timeouts, rejected ballots, storage errors, and caller-visible failures.
-   - Add bounded retries for transient peer failures where safe.
-   - Keep failed or uncertain client operations explicit rather than returning success before a durable decision.
+4. Improve failure and retry behavior. ✓
+   - `So3Error::PeerUnavailable` added for transient peer failures; distinguished from protocol
+     errors (`InvalidRequest`) and local storage errors (`Storage`/`Io`).
+   - `map_tonic_status` in the peer transport classifies `Unavailable`/`DeadlineExceeded` as
+     `PeerUnavailable`; all other codes remain `InvalidRequest`.
+   - `map_error` in the applying transport maps `PeerUnavailable` back to `Status::unavailable`
+     so the distinction survives round-trips.
+   - `LocalConsensusObjectCommandExecutor` retries the full Accord flow on `PeerUnavailable`
+     up to three times with exponential back-off. Each retry uses a fresh command ID so a
+     partially-propagated ID cannot be confused with the retry.
+   - Non-transient failures (ballot rejection, storage error, serialization) are returned
+     immediately; the caller never receives a success before a durable commit.
 
-5. Expand restart and recovery coverage.
-   - Add multi-node restart tests around committed-but-unapplied journal entries.
-   - Add tests for recovered accepted/pre-accepted commands with durable dependencies and ballots.
-   - Verify `next_sequence_for_origin` remains monotonic after restarts and partial recovery.
+5. Expand restart and recovery coverage. ✓
+   - `next_sequence_is_monotonic_after_restart_with_mixed_state_commands`: verifies that
+     `next_sequence_for_origin` is strictly greater than the highest durable sequence across
+     pre-accepted, accepted, and committed commands after a journal reopen.
+   - `replay_applies_cross_origin_committed_commands_in_dependency_order_after_restart`:
+     two origins with a cross-dependency; simulates restart and verifies both commands are
+     applied in dependency order and the objects are durably readable.
+   - `pre_accepted_and_accepted_commands_are_skipped_during_replay`: committed command whose
+     dependencies are only pre-accepted/accepted remains blocked; those commands stay in their
+     original states; durable ballot and timestamp metadata is preserved.
 
 6. Run final Maelstrom verification matrix.
    - Single-node smoke for adapter regressions.

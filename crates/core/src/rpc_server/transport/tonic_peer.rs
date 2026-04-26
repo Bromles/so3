@@ -149,11 +149,20 @@ fn endpoint_from_peer_id(peer_id: &str) -> So3Result<Endpoint> {
 }
 
 fn map_tonic_status(status: &tonic::Status) -> So3Error {
-    So3Error::InvalidRequest(format!(
-        "consensus peer returned {}: {}",
-        status.code(),
-        status.message()
-    ))
+    match status.code() {
+        tonic::Code::Unavailable | tonic::Code::DeadlineExceeded => {
+            So3Error::PeerUnavailable(format!(
+                "peer returned {}: {}",
+                status.code(),
+                status.message()
+            ))
+        }
+        _ => So3Error::InvalidRequest(format!(
+            "consensus peer returned {}: {}",
+            status.code(),
+            status.message()
+        )),
+    }
 }
 
 #[cfg(test)]

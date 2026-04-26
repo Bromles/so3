@@ -158,14 +158,17 @@ mod tests {
     use crate::consensus::executor::PersistentReplicatedCommandExecutor;
     use crate::consensus::journal::{JournalMetadata, JournalState, SqliteConsensusJournal};
     use crate::domain::{ObjectCommand, ObjectKey, ObjectResult, WriteCommand};
-    use crate::rpc_server::proto::{CommandId, DependencySet};
+    use crate::rpc_server::proto::{Ballot, CommandId, DependencySet, LogicalTimestamp};
     use crate::storage::metadata::sqlite::SqliteObjectMetadataRepository;
+    use crate::storage::object::repository::ObjectRepository;
     use crate::storage::registry::SqliteFsPersistentObjectRepository;
 
     const ALPHA_KEY: &str = "alpha";
+    const BETA_KEY: &str = "beta";
     const FIRST_VALUE: &[u8] = b"first";
     const SECOND_VALUE: &[u8] = b"second";
     const COMMAND_ORIGIN_NODE_ID: &str = "node-a";
+    const PEER_ORIGIN_NODE_ID: &str = "node-b";
     const COMMAND_SEQUENCE_ONE: u64 = 1;
     const COMMAND_SEQUENCE_TWO: u64 = 2;
 
@@ -360,6 +363,247 @@ mod tests {
             error
                 .to_string()
                 .contains("committed commands with unresolved dependencies")
+        );
+    }
+
+    #[tokio::test]
+    async fn next_sequence_is_monotonic_after_restart_with_mixed_state_commands() {
+        let temp_dir = TempDir::new().unwrap();
+        let journal_path = temp_dir.path().join("metadata");
+
+        // Populate the journal with commands from two origins in various states.
+        {
+            let journal = SqliteConsensusJournal::new(&journal_path).await.unwrap();
+            let pre_accepted_id =
+                ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
+            let accepted_id =
+                ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_TWO);
+            let peer_committed_id =
+                ConsensusCommandId::new(PEER_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
+            let command = ObjectCommand::Write(WriteCommand {
+                key: ObjectKey::new(ALPHA_KEY).unwrap(),
+                value: FIRST_VALUE.to_vec(),
+            });
+            let bytes = command.to_bytes().unwrap();
+
+            let _ = journal
+                .record_pre_accepted(&pre_accepted_id, &bytes)
+                .await
+                .unwrap();
+            let _ = journal
+                .record_accepted(&accepted_id, &bytes)
+                .await
+                .unwrap();
+            let _ = journal
+                .record_committed(&peer_committed_id, &bytes)
+                .await
+                .unwrap();
+        }
+
+        // Simulate restart: reopen the journal from the same path.
+        let reopened = SqliteConsensusJournal::new(&journal_path).await.unwrap();
+
+        let next_local = reopened
+            .next_sequence_for_origin(COMMAND_ORIGIN_NODE_ID)
+            .await
+            .unwrap();
+        let next_peer = reopened
+            .next_sequence_for_origin(PEER_ORIGIN_NODE_ID)
+            .await
+            .unwrap();
+
+        // next_sequence must be strictly greater than any seen sequence number.
+        assert_eq!(next_local, 3, "must advance past both local commands (seq 1, 2)");
+        assert_eq!(next_peer, 2, "must advance past the peer command (seq 1)");
+    }
+
+    #[tokio::test]
+    async fn replay_applies_cross_origin_committed_commands_in_dependency_order_after_restart() {
+        let temp_dir = TempDir::new().unwrap();
+        let journal_path = temp_dir.path().join("journal");
+        let metadata_path = temp_dir.path().join("metadata");
+        let blobs_path = temp_dir.path().join("blobs");
+
+        let local_id =
+            ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
+        let peer_id =
+            ConsensusCommandId::new(PEER_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
+
+        // Record committed commands: peer's command depends on local's.
+        {
+            let journal = SqliteConsensusJournal::new(&journal_path).await.unwrap();
+            let local_cmd = ObjectCommand::Write(WriteCommand {
+                key: ObjectKey::new(ALPHA_KEY).unwrap(),
+                value: FIRST_VALUE.to_vec(),
+            });
+            let peer_cmd = ObjectCommand::Write(WriteCommand {
+                key: ObjectKey::new(BETA_KEY).unwrap(),
+                value: SECOND_VALUE.to_vec(),
+            });
+            let _ = journal
+                .record_committed(&local_id, &local_cmd.to_bytes().unwrap())
+                .await
+                .unwrap();
+            let _ = journal
+                .record_committed_with_metadata(
+                    &peer_id,
+                    &peer_cmd.to_bytes().unwrap(),
+                    JournalMetadata {
+                        dependencies: DependencySet {
+                            commands: vec![CommandId {
+                                origin_node_id: COMMAND_ORIGIN_NODE_ID.to_owned(),
+                                sequence: COMMAND_SEQUENCE_ONE,
+                            }],
+                        },
+                        ..JournalMetadata::default()
+                    },
+                )
+                .await
+                .unwrap();
+        }
+
+        // Simulate node restart: new journal and executor instances on the same data.
+        let journal = SqliteConsensusJournal::new(&journal_path).await.unwrap();
+        let metadata_repo = SqliteObjectMetadataRepository::new(&metadata_path)
+            .await
+            .unwrap();
+        let object_repo =
+            SqliteFsPersistentObjectRepository::new(&metadata_path, &blobs_path)
+                .await
+                .unwrap();
+        let executor =
+            PersistentReplicatedCommandExecutor::new(object_repo.clone(), metadata_repo);
+
+        replay_committed_commands(&journal, &executor)
+            .await
+            .unwrap();
+
+        // Both commands must now be applied, peer after local.
+        assert_eq!(
+            journal.load(&local_id).await.unwrap().unwrap().state,
+            JournalState::Applied
+        );
+        let peer_entry = journal.load(&peer_id).await.unwrap().unwrap();
+        assert_eq!(peer_entry.state, JournalState::Applied);
+
+        // The objects written by each command must be durably readable.
+        let alpha = object_repo
+            .read(&ObjectKey::new(ALPHA_KEY).unwrap())
+            .await
+            .unwrap();
+        let beta = object_repo
+            .read(&ObjectKey::new(BETA_KEY).unwrap())
+            .await
+            .unwrap();
+        assert!(alpha.is_some(), "alpha must be readable after replay");
+        assert!(beta.is_some(), "beta must be readable after replay");
+    }
+
+    #[tokio::test]
+    async fn pre_accepted_and_accepted_commands_are_skipped_during_replay() {
+        let (journal, executor, _temp_dir) = test_recovery_components().await;
+
+        let pre_accepted_id =
+            ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
+        let accepted_id =
+            ConsensusCommandId::new(PEER_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
+        let committed_id =
+            ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_TWO);
+
+        let cmd = |key: &str, value: &[u8]| {
+            ObjectCommand::Write(WriteCommand {
+                key: ObjectKey::new(key).unwrap(),
+                value: value.to_vec(),
+            })
+            .to_bytes()
+            .unwrap()
+        };
+
+        let _ = journal
+            .record_pre_accepted_with_metadata(
+                &pre_accepted_id,
+                &cmd(ALPHA_KEY, FIRST_VALUE),
+                JournalMetadata {
+                    ballot: Some(Ballot {
+                        round: 2,
+                        node_id: COMMAND_ORIGIN_NODE_ID.to_owned(),
+                    }),
+                    timestamp: Some(LogicalTimestamp {
+                        epoch: 1,
+                        counter: 0,
+                        node_id: COMMAND_ORIGIN_NODE_ID.to_owned(),
+                    }),
+                    ..JournalMetadata::default()
+                },
+            )
+            .await
+            .unwrap();
+        let _ = journal
+            .record_accepted(
+                &accepted_id,
+                &cmd(BETA_KEY, SECOND_VALUE),
+            )
+            .await
+            .unwrap();
+        // Committed command depends on both pre-accepted and accepted commands.
+        let _ = journal
+            .record_committed_with_metadata(
+                &committed_id,
+                &cmd(ALPHA_KEY, SECOND_VALUE),
+                JournalMetadata {
+                    dependencies: DependencySet {
+                        commands: vec![
+                            CommandId {
+                                origin_node_id: COMMAND_ORIGIN_NODE_ID.to_owned(),
+                                sequence: COMMAND_SEQUENCE_ONE,
+                            },
+                            CommandId {
+                                origin_node_id: PEER_ORIGIN_NODE_ID.to_owned(),
+                                sequence: COMMAND_SEQUENCE_ONE,
+                            },
+                        ],
+                    },
+                    ..JournalMetadata::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let outcome = apply_committed_commands(&journal, &executor).await.unwrap();
+
+        // Committed command is blocked: its dependencies are not yet Applied.
+        assert_eq!(outcome.applied_count, 0);
+        assert_eq!(outcome.blocked.len(), 1);
+        assert_eq!(outcome.blocked[0].command_id, committed_id);
+        assert_eq!(outcome.blocked[0].wait_for.len(), 2);
+
+        // Pre-accepted and accepted commands must remain in their original states.
+        assert_eq!(
+            journal
+                .load(&pre_accepted_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            JournalState::PreAccepted
+        );
+        assert_eq!(
+            journal
+                .load(&accepted_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            JournalState::Accepted
+        );
+        // Durable ballot and timestamp on the pre-accepted entry must be preserved.
+        let pre_accepted_entry = journal.load(&pre_accepted_id).await.unwrap().unwrap();
+        assert_eq!(
+            pre_accepted_entry.metadata.ballot,
+            Some(Ballot {
+                round: 2,
+                node_id: COMMAND_ORIGIN_NODE_ID.to_owned(),
+            })
         );
     }
 

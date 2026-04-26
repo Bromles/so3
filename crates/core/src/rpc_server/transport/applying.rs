@@ -449,6 +449,7 @@ fn map_error(error: &So3Error) -> Status {
         So3Error::Storage(_) | So3Error::Io(_) | So3Error::RpcNotImplemented => {
             Status::internal(error.to_string())
         }
+        So3Error::PeerUnavailable(_) => Status::unavailable(error.to_string()),
     }
 }
 

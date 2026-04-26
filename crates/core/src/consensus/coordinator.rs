@@ -685,7 +685,10 @@ fn state_rank(state: State) -> u8 {
 }
 
 fn map_status(status: &Status) -> So3Error {
-    So3Error::InvalidRequest(status.to_string())
+    match status.code() {
+        tonic::Code::Internal => So3Error::Storage(status.message().to_owned()),
+        _ => So3Error::InvalidRequest(status.to_string()),
+    }
 }
 
 #[cfg(test)]

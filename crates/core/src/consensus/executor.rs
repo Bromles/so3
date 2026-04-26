@@ -1,19 +1,23 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use async_trait::async_trait;
+use tracing::warn;
 
 use crate::consensus::ConsensusCommandId;
 use crate::consensus::clock::HybridLogicalClock;
 use crate::consensus::coordinator::{AccordCoordinator, AccordCoordinatorConfig};
 use crate::consensus::state_machine::{LocalStateMachine, ObjectCommandExecutor};
-use crate::domain::error::So3Result;
+use crate::domain::error::{So3Error, So3Result};
 use crate::domain::{ObjectCommand, ObjectResult};
 use crate::rpc_server::transport::{ConsensusTransportHandler, TonicConsensusPeerTransport};
 use crate::storage::applied_command::repository::AppliedCommandStore;
 use crate::storage::object::repository::ObjectRepository;
 
 const INITIAL_COMMAND_SEQUENCE: u64 = 1;
+const MAX_TRANSIENT_RETRIES: usize = 3;
+const RETRY_BASE_DELAY_MS: u64 = 20;
 
 #[async_trait]
 pub trait ReplicatedCommandExecutor: Send + Sync {
@@ -130,20 +134,41 @@ where
     H: ConsensusTransportHandler + Clone + Send + Sync + 'static,
 {
     async fn execute_command(&self, command: ObjectCommand) -> So3Result<ObjectResult> {
-        let command_id = self.next_command_id();
         let config = AccordCoordinatorConfig {
             node_id: self.node_id.clone(),
             peer_ids: self.peer_ids.clone(),
         };
-        let mut peer_transport = self.peer_transport.clone();
-        let mut coordinator = AccordCoordinator::with_clock(
-            self.clock.clone(),
-            config,
-            &self.local_transport,
-            &mut peer_transport,
-        );
 
-        coordinator.execute(&command_id, command).await
+        let mut attempts: usize = 0;
+        loop {
+            // Each attempt gets a fresh command ID so that a previously-issued ID that may
+            // have partially propagated is not confused with the retry.
+            let command_id = self.next_command_id();
+            let mut peer_transport = self.peer_transport.clone();
+            let mut coordinator = AccordCoordinator::with_clock(
+                self.clock.clone(),
+                config.clone(),
+                &self.local_transport,
+                &mut peer_transport,
+            );
+
+            match coordinator.execute(&command_id, command.clone()).await {
+                Ok(result) => return Ok(result),
+                Err(So3Error::PeerUnavailable(ref msg)) if attempts < MAX_TRANSIENT_RETRIES => {
+                    attempts += 1;
+                    let delay = Duration::from_millis(RETRY_BASE_DELAY_MS * (1u64 << attempts));
+                    warn!(
+                        attempt = attempts,
+                        max = MAX_TRANSIENT_RETRIES,
+                        delay_ms = delay.as_millis(),
+                        reason = msg.as_str(),
+                        "transient peer failure; retrying command"
+                    );
+                    tokio::time::sleep(delay).await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
     }
 }
 

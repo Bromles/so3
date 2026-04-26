@@ -329,7 +329,10 @@ fn map_error(in_reply_to: u64, error: &So3Error) -> ResponseBody {
         | So3Error::Serialization(_) => {
             error_response(in_reply_to, MALFORMED_REQUEST_CODE, error.to_string())
         }
-        So3Error::Storage(_) | So3Error::Io(_) | So3Error::RpcNotImplemented => {
+        So3Error::Storage(_)
+        | So3Error::Io(_)
+        | So3Error::RpcNotImplemented
+        | So3Error::PeerUnavailable(_) => {
             error_response(in_reply_to, CRASH_CODE, error.to_string())
         }
     }

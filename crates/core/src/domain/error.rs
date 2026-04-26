@@ -34,6 +34,9 @@ pub enum So3Error {
     Serialization(String),
     #[error("rpc server is not implemented yet")]
     RpcNotImplemented,
+    /// Transient failure contacting a consensus peer; safe to retry the operation.
+    #[error("peer unavailable: {0}")]
+    PeerUnavailable(String),
 }
 
 impl So3Error {
