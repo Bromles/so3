@@ -52,6 +52,10 @@ pub struct AccordCoordinator<'a, L, P> {
 
 const INITIAL_BALLOT_ROUND: u64 = 0;
 const MAX_BALLOT_RECOVERY_RETRIES: usize = 3;
+/// How many times to retry the local commit when deps are still in-flight.
+/// Each retry re-sends commits to peers, which processes any queued dep-commit messages
+/// through the caller's message loop before the next local attempt.
+const MAX_LOCAL_COMMIT_RETRIES: usize = 10;
 
 impl<'a, L, P> AccordCoordinator<'a, L, P>
 where
@@ -428,6 +432,8 @@ where
 
         // Commit is stable once Accept reached quorum; broadcast to peers best-effort.
         // Peers that miss this message will learn the decision via recovery.
+        // Each commit_peer call goes through the caller's message loop, allowing any
+        // in-flight dep-commit messages to be dispatched before we attempt to apply locally.
         for peer_id in &self.config.peer_ids {
             if let Err(e) = self
                 .peer_transport
@@ -442,13 +448,45 @@ where
             }
         }
 
-        let response = self
-            .local_transport
-            .commit(request)
-            .await
-            .map_err(|status| map_status(&status))?;
+        // Local commit is non-blocking: it records the decision and applies if deps are ready.
+        // If deps are still in-flight (empty result), retry after re-broadcasting to peers so
+        // the caller's message loop can process any pending dep-commit messages between attempts.
+        for attempt in 0..=MAX_LOCAL_COMMIT_RETRIES {
+            let response = self
+                .local_transport
+                .commit(request.clone())
+                .await
+                .map_err(|status| map_status(&status))?;
 
-        Ok(response.result)
+            if !response.result.is_empty() {
+                return Ok(response.result);
+            }
+
+            if attempt < MAX_LOCAL_COMMIT_RETRIES {
+                // Re-broadcast to peers: each peer_transport call processes the caller's pending
+                // messages (e.g. dep commits from other coordinators) before returning.
+                for peer_id in &self.config.peer_ids.clone() {
+                    if let Err(e) = self
+                        .peer_transport
+                        .commit_peer(peer_id, request.clone())
+                        .await
+                    {
+                        warn!(
+                            peer_id,
+                            error = %e,
+                            "commit retry broadcast to peer failed"
+                        );
+                    }
+                }
+            }
+        }
+
+        Err(So3Error::PeerUnavailable(format!(
+            "command {}:{} committed but not applied after {} retries",
+            command_id.origin_node_id(),
+            command_id.sequence(),
+            MAX_LOCAL_COMMIT_RETRIES,
+        )))
     }
 }
 

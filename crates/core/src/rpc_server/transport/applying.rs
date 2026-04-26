@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use tonic::Status;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::consensus::ConsensusCommandId;
 use crate::consensus::clock::HybridLogicalClock;
@@ -174,35 +174,47 @@ where
                 result: entry.result,
             });
         }
+
+        // Single best-effort apply pass. Dependency commits from concurrent coordinators may
+        // still be in-flight; the coordinator retries locally after processing those messages.
         let _ = apply_committed_commands(&self.journal, &self.executor)
             .await
             .map_err(|error| map_error(&error))?;
+
         let entry = self
             .journal
             .load(&command_id)
             .await
             .map_err(|error| map_error(&error))?
             .ok_or_else(|| Status::internal("committed command missing after apply attempt"))?;
-        if entry.state != JournalState::Applied {
-            let wait_for =
-                wait_for_unapplied_dependencies(&self.journal, &entry.metadata.dependencies)
-                    .await
-                    .map_err(|error| map_error(&error))?;
-            return Err(Status::failed_precondition(format!(
-                "committed command is waiting for unapplied dependencies: {wait_for:?}"
-            )));
+
+        if entry.state == JournalState::Applied {
+            info!(
+                node_id = %self.node_id,
+                command_origin = command_id.origin_node_id(),
+                "applied committed command after resolving dependency chain"
+            );
+            return Ok(CommitResponse {
+                result: entry.result,
+            });
         }
 
-        info!(
+        let wait_for = wait_for_unapplied_dependencies(
+            &self.journal,
+            &entry.metadata.dependencies,
+            entry.metadata.timestamp.as_ref(),
+        )
+        .await
+        .map_err(|error| map_error(&error))?;
+        warn!(
             node_id = %self.node_id,
             command_origin = command_id.origin_node_id(),
-            local_state = journal_state_to_proto(entry.state).as_str_name(),
-            "executed committed command and recorded applied state in consensus journal"
+            ?wait_for,
+            "committed command deps not yet resolved; coordinator will retry"
         );
-
-        Ok(CommitResponse {
-            result: entry.result,
-        })
+        // Return empty result — the coordinator will re-issue the commit (idempotent) after
+        // processing any in-flight dep commits, which naturally flows through its message loop.
+        Ok(CommitResponse { result: Vec::new() })
     }
 
     async fn apply(&self, request: ApplyRequest) -> Result<ApplyResponse, Status> {
@@ -290,7 +302,7 @@ where
             },
         );
         let wait_for = self
-            .wait_for_unapplied_dependencies(&dependencies)
+            .wait_for_unapplied_dependencies(&dependencies, Some(&response_timestamp))
             .await
             .map_err(|error| map_error(&error))?;
 
@@ -361,8 +373,9 @@ where
     async fn wait_for_unapplied_dependencies(
         &self,
         dependencies: &DependencySet,
+        current_timestamp: Option<&LogicalTimestamp>,
     ) -> crate::domain::error::So3Result<Vec<crate::rpc_server::proto::CommandId>> {
-        wait_for_unapplied_dependencies(&self.journal, dependencies).await
+        wait_for_unapplied_dependencies(&self.journal, dependencies, current_timestamp).await
     }
 }
 
@@ -396,6 +409,9 @@ fn append_dependency_if_conflicting(
     entry: &JournalEntry,
 ) -> crate::domain::error::So3Result<()> {
     if entry.command_id == *command_id {
+        return Ok(());
+    }
+    if entry.command_id.origin_node_id() == command_id.origin_node_id() {
         return Ok(());
     }
 
@@ -526,6 +542,13 @@ mod tests {
         }
     }
 
+    fn peer_command_id(sequence: u64) -> CommandId {
+        CommandId {
+            origin_node_id: "node-b".to_owned(),
+            sequence,
+        }
+    }
+
     fn ballot(round: u64, node_id: &str) -> Ballot {
         Ballot {
             round,
@@ -609,7 +632,47 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pre_accept_reports_unapplied_conflicting_commands_as_dependencies() {
+    async fn pre_accept_reports_cross_origin_unapplied_conflicts_as_dependencies() {
+        let (transport, _temp_dir) = test_transport().await;
+        let first = ObjectCommand::Write(WriteCommand {
+            key: ObjectKey::new(ALPHA_KEY).unwrap(),
+            value: FIRST_VALUE.to_vec(),
+        });
+        let second = ObjectCommand::Write(WriteCommand {
+            key: ObjectKey::new(ALPHA_KEY).unwrap(),
+            value: b"second".to_vec(),
+        });
+
+        let _ = transport
+            .pre_accept(PreAcceptRequest {
+                command_id: Some(peer_command_id(COMMAND_SEQUENCE_ONE)),
+                event: Some(EventPayload {
+                    command: first.to_bytes().unwrap(),
+                }),
+                ..PreAcceptRequest::default()
+            })
+            .await
+            .unwrap();
+        let response = transport
+            .pre_accept(PreAcceptRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_TWO)),
+                event: Some(EventPayload {
+                    command: second.to_bytes().unwrap(),
+                }),
+                ..PreAcceptRequest::default()
+            })
+            .await
+            .unwrap();
+
+        let dependencies = response.dependencies.unwrap();
+        assert_eq!(
+            dependencies.commands,
+            vec![peer_command_id(COMMAND_SEQUENCE_ONE)]
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_accept_ignores_same_origin_unapplied_conflicts() {
         let (transport, _temp_dir) = test_transport().await;
         let first = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
@@ -641,11 +704,7 @@ mod tests {
             .await
             .unwrap();
 
-        let dependencies = response.dependencies.unwrap();
-        assert_eq!(
-            dependencies.commands,
-            vec![command_id(COMMAND_SEQUENCE_ONE)]
-        );
+        assert!(response.dependencies.unwrap().commands.is_empty());
     }
 
     #[tokio::test]
@@ -914,7 +973,8 @@ mod tests {
             value: b"second".to_vec(),
         });
 
-        let error = transport
+        // Commit with unresolved dep returns OK (empty result) — non-blocking.
+        let pending = transport
             .commit(CommitRequest {
                 command_id: Some(command_id(COMMAND_SEQUENCE_TWO)),
                 dependencies: Some(DependencySet {
@@ -926,7 +986,7 @@ mod tests {
                 ..CommitRequest::default()
             })
             .await
-            .unwrap_err();
+            .unwrap();
         let blocked = transport
             .recover(RecoverRequest {
                 command_id: Some(command_id(COMMAND_SEQUENCE_TWO)),
@@ -935,7 +995,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(error.code(), Code::FailedPrecondition);
+        assert!(pending.result.is_empty(), "result should be empty when dep is unresolved");
         assert_eq!(blocked.local_state, State::Committed as i32);
         assert_eq!(blocked.wait_for, vec![command_id(COMMAND_SEQUENCE_ONE)]);
 

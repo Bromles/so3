@@ -1,9 +1,10 @@
 use crate::consensus::ConsensusCommandId;
+use crate::consensus::clock::timestamp_is_after;
 use crate::consensus::executor::ReplicatedCommandExecutor;
 use crate::consensus::journal::{JournalMetadata, JournalState, SqliteConsensusJournal};
 use crate::domain::ObjectCommand;
 use crate::domain::error::{So3Error, So3Result};
-use crate::rpc_server::proto::DependencySet;
+use crate::rpc_server::proto::{DependencySet, LogicalTimestamp};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct BlockedCommittedCommand {
@@ -42,8 +43,12 @@ where
         let mut blocked = Vec::new();
 
         for entry in committed {
-            let wait_for =
-                wait_for_unapplied_dependencies(journal, &entry.metadata.dependencies).await?;
+            let wait_for = wait_for_unapplied_dependencies(
+                journal,
+                &entry.metadata.dependencies,
+                entry.metadata.timestamp.as_ref(),
+            )
+            .await?;
             if !wait_for.is_empty() {
                 blocked.push(BlockedCommittedCommand {
                     command_id: entry.command_id,
@@ -110,21 +115,36 @@ where
 /// # Errors
 ///
 /// Returns an error when the journal cannot inspect durable dependency state.
+///
+/// When `current_timestamp` is provided, deps whose known timestamp is strictly after
+/// `current_timestamp` are excluded: in Accord, a command only waits for dependencies
+/// whose committed timestamp is earlier than its own, breaking circular cross-node deadlocks.
 pub async fn wait_for_unapplied_dependencies(
     journal: &SqliteConsensusJournal,
     dependencies: &DependencySet,
+    current_timestamp: Option<&LogicalTimestamp>,
 ) -> So3Result<Vec<crate::rpc_server::proto::CommandId>> {
     let mut wait_for = Vec::new();
 
     for dependency in &dependencies.commands {
         let command_id = ConsensusCommandId::try_from(dependency)?;
-        let is_applied = journal
-            .load(&command_id)
-            .await?
-            .is_some_and(|entry| entry.state == JournalState::Applied);
-        if !is_applied {
-            wait_for.push(dependency.clone());
+        let entry = journal.load(&command_id).await?;
+
+        if entry.as_ref().is_some_and(|e| e.state == JournalState::Applied) {
+            continue;
         }
+
+        // If the dep's known timestamp is strictly after ours, the dep is not in our causal
+        // past and we do not block on it (it will wait for us instead).
+        if let Some(current_ts) = current_timestamp {
+            if let Some(dep_ts) = entry.as_ref().and_then(|e| e.metadata.timestamp.as_ref()) {
+                if timestamp_is_after(dep_ts, current_ts) {
+                    continue;
+                }
+            }
+        }
+
+        wait_for.push(dependency.clone());
     }
 
     Ok(wait_for)
