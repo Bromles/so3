@@ -41,6 +41,20 @@ This downloads the release tarball from `jepsen-io/maelstrom` GitHub releases an
 
 This uses a single node and low request volume to validate the adapter wiring.
 
+## Three-Node Smoke Run
+
+```powershell
+./scripts/maelstrom/smoke-3-node-lin-kv.ps1 -MaelstromJar .\.tools\maelstrom\maelstrom\lib\maelstrom.jar
+```
+
+```bash
+./scripts/maelstrom/smoke-3-node-lin-kv.sh
+```
+
+This uses three Maelstrom nodes with a low request rate. Client requests sent to followers are
+forwarded to the deterministic leader, and the leader drives the current Accord transport phases
+through Maelstrom messages before replying to the client.
+
 ## Lin-KV Run
 
 ```powershell
@@ -71,14 +85,18 @@ Default settings:
 - rate: `100`
 - concurrency: `2n`
 
+The three-node smoke scripts override these defaults with `NODE_COUNT=3`, `TIME_LIMIT=10`,
+`RATE=10`, and `CONCURRENCY=2n`.
+
 ## Notes
 
 - The adapter stores state under `SO3_MAELSTROM_DATA_DIR` or `./var/so3-maelstrom` by default.
 - The helper scripts create a fresh temporary `SO3_MAELSTROM_DATA_DIR` for each run unless you
   provide one explicitly.
 - Each Maelstrom node gets its own subdirectory keyed by `node_id`.
-- The current adapter is single-process local storage per node. It is useful for early protocol and
-  semantics validation before real replication is wired into the Maelstrom path.
+- The current adapter persists each node independently and uses Maelstrom messages for forwarding
+  and consensus transport. It is useful for protocol and semantics validation before the normal
+  TCP/gRPC `so3` node path is used for Jepsen runs.
 - On Windows, Maelstrom needs permission to create symbolic links for `store/current`. If that
   fails, run the script from an elevated shell or enable Windows Developer Mode first.
 - On WSL, prefer building a Linux `so3-maelstrom` binary inside WSL. Running the Windows `.exe`
