@@ -15,6 +15,7 @@ use so3_core::consensus::coordinator::{
     AccordCoordinator, AccordCoordinatorConfig, ConsensusPeerTransport,
 };
 use so3_core::consensus::executor::PersistentReplicatedCommandExecutor;
+use so3_core::consensus::recovery::replay_committed_commands;
 use so3_core::consensus::state_machine::LocalStateMachine;
 use so3_core::domain::error::{So3Error, So3Result};
 use so3_core::object_server::service::ObjectService;
@@ -78,7 +79,7 @@ pub async fn run(storage_roots: StorageRoots) -> So3Result<()> {
         node_id: node_id.clone(),
         node_ids: node_ids.clone(),
         next_msg_id: msg_id.saturating_add(1),
-        next_command_sequence: 1,
+        next_command_sequence: components.next_command_sequence,
         forward_responses: HashMap::new(),
         consensus_responses: HashMap::new(),
         internal_errors: HashMap::new(),
@@ -104,6 +105,7 @@ struct Runtime {
 struct RuntimeComponents {
     service: MaelstromObjectService,
     local_transport: MaelstromLocalTransport,
+    next_command_sequence: u64,
 }
 
 impl Runtime {
@@ -596,6 +598,11 @@ async fn build_components(
         storage.object_repository.clone(),
         storage.metadata_repository.clone(),
     );
+    replay_committed_commands(&storage.consensus_journal, &executor).await?;
+    let next_command_sequence = storage
+        .consensus_journal
+        .next_sequence_for_origin(node_id)
+        .await?;
     let service = MaelstromService::new(ObjectService::new(LocalStateMachine::new(
         storage.object_repository,
     )));
@@ -605,6 +612,7 @@ async fn build_components(
     Ok(RuntimeComponents {
         service,
         local_transport,
+        next_command_sequence,
     })
 }
 
@@ -659,4 +667,69 @@ fn decode_proto<T: Default + ProstMessage>(payload: &[u8]) -> So3Result<T> {
 
 fn status_error(status: impl std::fmt::Display) -> So3Error {
     So3Error::InvalidRequest(status.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use tempfile::TempDir;
+
+    use super::{build_components, node_storage_dir};
+    use crate::config::StorageRoots;
+    use crate::protocol::{ClientRequest, ResponseBody};
+    use so3_core::consensus::ConsensusCommandId;
+    use so3_core::domain::{ObjectCommand, ObjectKey, WriteCommand};
+    use so3_core::storage::registry::PersistentStorage;
+
+    const NODE_ID: &str = "n0";
+    const KEY_ALPHA: &str = "alpha";
+    const COMMAND_SEQUENCE_SEVEN: u64 = 7;
+    const MESSAGE_ID: u64 = 1;
+
+    #[tokio::test]
+    async fn build_components_replays_committed_commands_and_recovers_next_sequence() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage_roots = StorageRoots {
+            metadata_dir: temp_dir.path().join("metadata"),
+            blob_dir: temp_dir.path().join("blobs"),
+        };
+        let storage = PersistentStorage::open(
+            node_storage_dir(&storage_roots.metadata_dir, NODE_ID),
+            node_storage_dir(&storage_roots.blob_dir, NODE_ID),
+        )
+        .await
+        .unwrap();
+        let command = ObjectCommand::Write(WriteCommand {
+            key: ObjectKey::new(serde_json::to_string(KEY_ALPHA).unwrap()).unwrap(),
+            value: serde_json::to_vec(&json!(42)).unwrap(),
+        });
+        storage
+            .consensus_journal
+            .record_committed(
+                &ConsensusCommandId::new(NODE_ID.to_owned(), COMMAND_SEQUENCE_SEVEN),
+                &command.to_bytes().unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let components = build_components(&storage_roots, NODE_ID).await.unwrap();
+
+        assert_eq!(components.next_command_sequence, COMMAND_SEQUENCE_SEVEN + 1);
+        let response = components
+            .service
+            .handle_client(
+                MESSAGE_ID,
+                ClientRequest::Read {
+                    key: json!(KEY_ALPHA),
+                },
+            )
+            .await;
+        assert_eq!(
+            response,
+            ResponseBody::ReadOk {
+                in_reply_to: MESSAGE_ID,
+                value: json!(42),
+            }
+        );
+    }
 }
