@@ -1,16 +1,16 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 
 use crate::consensus::ConsensusCommandId;
+use crate::consensus::clock::HybridLogicalClock;
 use crate::consensus::state_machine::{LocalStateMachine, ObjectCommandExecutor};
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::{ObjectCommand, ObjectResult};
 use crate::rpc_server::proto::{
     AcceptRequest, Ballot, CommitRequest, DependencySet, EventPayload, LastApplied,
-    LogicalTimestamp, PreAcceptRequest,
+    PreAcceptRequest,
 };
 use crate::rpc_server::transport::ConsensusTransportHandler;
 use crate::storage::applied_command::repository::AppliedCommandStore;
@@ -75,12 +75,13 @@ pub struct LocalConsensusObjectCommandExecutor<H: ConsensusTransportHandler> {
     node_id: String,
     local_transport: H,
     next_sequence: Arc<AtomicU64>,
+    clock: HybridLogicalClock,
 }
 
 impl<H: ConsensusTransportHandler> LocalConsensusObjectCommandExecutor<H> {
     #[must_use]
     pub fn new(node_id: String, local_transport: H) -> Self {
-        Self::with_initial_sequence(node_id, local_transport, durable_process_sequence_floor())
+        Self::with_initial_sequence(node_id, local_transport, INITIAL_COMMAND_SEQUENCE)
     }
 
     #[must_use]
@@ -90,6 +91,7 @@ impl<H: ConsensusTransportHandler> LocalConsensusObjectCommandExecutor<H> {
         initial_sequence: u64,
     ) -> Self {
         Self {
+            clock: HybridLogicalClock::new(node_id.clone()),
             node_id,
             local_transport,
             next_sequence: Arc::new(AtomicU64::new(initial_sequence)),
@@ -112,7 +114,7 @@ where
     async fn execute_command(&self, command: ObjectCommand) -> So3Result<ObjectResult> {
         let command_id = self.next_command_id();
         let command_bytes = command.to_bytes()?;
-        let timestamp_zero = logical_timestamp(&self.node_id, command_id.sequence());
+        let timestamp_zero = self.clock.tick().await;
         let command_id = command_id_proto(&command_id);
         let event = event_payload(&command_bytes);
         let dependencies = empty_dependencies();
@@ -175,17 +177,6 @@ where
     }
 }
 
-fn durable_process_sequence_floor() -> u64 {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_nanos();
-
-    u64::try_from(nanos)
-        .unwrap_or(u64::MAX)
-        .max(INITIAL_COMMAND_SEQUENCE)
-}
-
 fn command_id_proto(command_id: &ConsensusCommandId) -> crate::rpc_server::proto::CommandId {
     crate::rpc_server::proto::CommandId {
         origin_node_id: command_id.origin_node_id().to_owned(),
@@ -196,14 +187,6 @@ fn command_id_proto(command_id: &ConsensusCommandId) -> crate::rpc_server::proto
 fn event_payload(command: &[u8]) -> EventPayload {
     EventPayload {
         command: command.to_vec(),
-    }
-}
-
-fn logical_timestamp(node_id: &str, counter: u64) -> LogicalTimestamp {
-    LogicalTimestamp {
-        epoch: 0,
-        counter,
-        node_id: node_id.to_owned(),
     }
 }
 

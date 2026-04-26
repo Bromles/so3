@@ -37,6 +37,11 @@ const LOAD_COMMAND_SQL: &str = r"
     FROM command_journal
     WHERE origin_node_id = ? AND sequence = ?
 ";
+const NEXT_SEQUENCE_SQL: &str = r"
+    SELECT COALESCE(MAX(sequence), 0) + 1
+    FROM command_journal
+    WHERE origin_node_id = ?
+";
 const LIST_COMMANDS_BY_STATE_SQL: &str = r"
     SELECT origin_node_id, sequence, state, command, result
     FROM command_journal
@@ -150,6 +155,18 @@ impl SqliteConsensusJournal {
             .await?;
 
         rows.iter().map(row_to_entry).collect()
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error when the journal cannot read the durable command sequence floor.
+    pub async fn next_sequence_for_origin(&self, origin_node_id: &str) -> So3Result<u64> {
+        let sequence = query_scalar::<_, i64>(NEXT_SEQUENCE_SQL)
+            .bind(origin_node_id)
+            .fetch_one(&self.pool)
+            .await?;
+
+        i64_to_u64_sequence(sequence)
     }
 
     /// # Errors
@@ -456,6 +473,39 @@ mod tests {
         assert_eq!(accepted[0].command_id, accepted_id);
         assert_eq!(committed.len(), 1);
         assert_eq!(committed[0].command_id, committed_id);
+    }
+
+    #[tokio::test]
+    async fn next_sequence_for_origin_advances_from_durable_journal() {
+        let temp_dir = TempDir::new().unwrap();
+        let journal = SqliteConsensusJournal::new(temp_dir.path()).await.unwrap();
+        let first_id = ConsensusCommandId::new(ORIGIN_NODE_ID.to_owned(), 1);
+        let third_id = ConsensusCommandId::new(ORIGIN_NODE_ID.to_owned(), 3);
+        let other_id = ConsensusCommandId::new("node-b".to_owned(), 9);
+
+        let empty = journal
+            .next_sequence_for_origin(ORIGIN_NODE_ID)
+            .await
+            .unwrap();
+        let _ = journal
+            .record_committed(&first_id, COMMAND_BYTES)
+            .await
+            .unwrap();
+        let _ = journal
+            .record_committed(&third_id, COMMAND_BYTES)
+            .await
+            .unwrap();
+        let _ = journal
+            .record_committed(&other_id, COMMAND_BYTES)
+            .await
+            .unwrap();
+        let next = journal
+            .next_sequence_for_origin(ORIGIN_NODE_ID)
+            .await
+            .unwrap();
+
+        assert_eq!(empty, 1);
+        assert_eq!(next, 4);
     }
 
     #[tokio::test]

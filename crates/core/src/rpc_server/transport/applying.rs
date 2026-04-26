@@ -3,13 +3,15 @@ use tonic::Status;
 use tracing::{debug, info};
 
 use crate::consensus::ConsensusCommandId;
+use crate::consensus::clock::HybridLogicalClock;
 use crate::consensus::executor::ReplicatedCommandExecutor;
 use crate::consensus::journal::{JournalState, SqliteConsensusJournal};
 use crate::domain::ObjectCommand;
 use crate::domain::error::So3Error;
 use crate::rpc_server::proto::{
     AcceptRequest, AcceptResponse, ApplyRequest, ApplyResponse, CommitRequest, CommitResponse,
-    DependencySet, PreAcceptRequest, PreAcceptResponse, RecoverRequest, RecoverResponse, State,
+    DependencySet, LogicalTimestamp, PreAcceptRequest, PreAcceptResponse, RecoverRequest,
+    RecoverResponse, State,
 };
 use crate::rpc_server::transport::ConsensusTransportHandler;
 
@@ -21,15 +23,24 @@ pub struct ApplyingConsensusTransport<E: ReplicatedCommandExecutor> {
     node_id: String,
     executor: E,
     journal: SqliteConsensusJournal,
+    clock: HybridLogicalClock,
 }
 
 impl<E: ReplicatedCommandExecutor> ApplyingConsensusTransport<E> {
     #[must_use]
     pub fn new(node_id: String, executor: E, journal: SqliteConsensusJournal) -> Self {
         Self {
+            clock: HybridLogicalClock::new(node_id.clone()),
             node_id,
             executor,
             journal,
+        }
+    }
+
+    async fn observe_or_tick(&self, timestamp: Option<&LogicalTimestamp>) -> LogicalTimestamp {
+        match timestamp {
+            Some(timestamp) => self.clock.observe(timestamp).await,
+            None => self.clock.tick().await,
         }
     }
 }
@@ -42,6 +53,7 @@ where
     async fn pre_accept(&self, request: PreAcceptRequest) -> Result<PreAcceptResponse, Status> {
         let command_id = extract_command_id(request.command_id.as_ref())?;
         let command_bytes = extract_command_bytes(request.event.as_ref())?;
+        let timestamp = self.observe_or_tick(request.timestamp_zero.as_ref()).await;
         let entry = self
             .journal
             .record_pre_accepted(&command_id, command_bytes)
@@ -57,7 +69,7 @@ where
         );
 
         Ok(PreAcceptResponse {
-            timestamp: request.timestamp_zero,
+            timestamp: Some(timestamp),
             dependencies: Some(empty_dependencies()),
             nack: false,
         })
@@ -66,6 +78,14 @@ where
     async fn accept(&self, request: AcceptRequest) -> Result<AcceptResponse, Status> {
         let command_id = extract_command_id(request.command_id.as_ref())?;
         let command_bytes = extract_command_bytes(request.event.as_ref())?;
+        let _timestamp = self
+            .observe_or_tick(
+                request
+                    .timestamp
+                    .as_ref()
+                    .or(request.timestamp_zero.as_ref()),
+            )
+            .await;
         let entry = self
             .journal
             .record_accepted(&command_id, command_bytes)
@@ -89,6 +109,14 @@ where
     async fn commit(&self, request: CommitRequest) -> Result<CommitResponse, Status> {
         let command_id = extract_command_id(request.command_id.as_ref())?;
         let command_bytes = extract_command_bytes(request.event.as_ref())?;
+        let _timestamp = self
+            .observe_or_tick(
+                request
+                    .timestamp
+                    .as_ref()
+                    .or(request.timestamp_zero.as_ref()),
+            )
+            .await;
         let entry = self
             .journal
             .record_committed(&command_id, command_bytes)
@@ -158,13 +186,14 @@ where
     }
 
     async fn recover(&self, request: RecoverRequest) -> Result<RecoverResponse, Status> {
+        let timestamp = self.observe_or_tick(request.timestamp_zero.as_ref()).await;
         let Some(command_id) = request.command_id.as_ref() else {
             return Ok(RecoverResponse {
                 local_state: State::Undefined.into(),
                 wait_for: Vec::new(),
                 superseding: false,
                 dependencies: Some(empty_dependencies()),
-                timestamp: request.timestamp_zero,
+                timestamp: Some(timestamp),
                 nack: None,
             });
         };
@@ -191,7 +220,7 @@ where
             wait_for: Vec::new(),
             superseding: false,
             dependencies: Some(empty_dependencies()),
-            timestamp: request.timestamp_zero,
+            timestamp: Some(timestamp),
             nack: None,
         })
     }

@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use tonic::Status;
 
 use crate::consensus::ConsensusCommandId;
+use crate::consensus::clock::{HybridLogicalClock, timestamp_is_after};
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::{ObjectCommand, ObjectResult};
 use crate::rpc_server::proto::{
@@ -39,6 +40,7 @@ pub struct AccordCoordinator<'a, L, P> {
     config: AccordCoordinatorConfig,
     local_transport: &'a L,
     peer_transport: &'a mut P,
+    clock: HybridLogicalClock,
 }
 
 impl<'a, L, P> AccordCoordinator<'a, L, P>
@@ -53,6 +55,7 @@ where
         peer_transport: &'a mut P,
     ) -> Self {
         Self {
+            clock: HybridLogicalClock::new(config.node_id.clone()),
             config,
             local_transport,
             peer_transport,
@@ -69,13 +72,16 @@ where
         command: ObjectCommand,
     ) -> So3Result<ObjectResult> {
         let command_bytes = command.to_bytes()?;
-        let timestamp_zero = logical_timestamp(&self.config.node_id, command_id.sequence());
+        let timestamp_zero = self.clock.tick().await;
         let mut dependencies = empty_dependencies();
 
         let pre_accepted = self
             .pre_accept_all(command_id, &command_bytes, &timestamp_zero)
             .await?;
-        let timestamp = pre_accepted.timestamp.unwrap_or(timestamp_zero.clone());
+        let timestamp = self
+            .clock
+            .observe(&pre_accepted.timestamp.unwrap_or(timestamp_zero.clone()))
+            .await;
         merge_dependencies(&mut dependencies, Some(pre_accepted.dependencies));
 
         let accepted = self
@@ -263,14 +269,6 @@ fn event_payload(command: &[u8]) -> EventPayload {
     }
 }
 
-fn logical_timestamp(node_id: &str, counter: u64) -> LogicalTimestamp {
-    LogicalTimestamp {
-        epoch: 0,
-        counter,
-        node_id: node_id.to_owned(),
-    }
-}
-
 fn empty_dependencies() -> DependencySet {
     DependencySet {
         commands: Vec::new(),
@@ -305,11 +303,6 @@ fn max_timestamp(
         (None, candidate) => candidate,
         (current, None) => current,
     }
-}
-
-fn timestamp_is_after(left: &LogicalTimestamp, right: &LogicalTimestamp) -> bool {
-    (left.epoch, left.counter, left.node_id.as_str())
-        > (right.epoch, right.counter, right.node_id.as_str())
 }
 
 fn ballot(node_id: &str) -> Ballot {
@@ -358,7 +351,7 @@ mod tests {
         let mut peers = FakePeerTransport::with_pre_accepts([
             pre_accept_response(
                 LogicalTimestamp {
-                    epoch: 0,
+                    epoch: u64::MAX - 1,
                     counter: 9,
                     node_id: PEER_A.to_owned(),
                 },
@@ -366,7 +359,7 @@ mod tests {
             ),
             pre_accept_response(
                 LogicalTimestamp {
-                    epoch: 0,
+                    epoch: u64::MAX - 2,
                     counter: 3,
                     node_id: PEER_B.to_owned(),
                 },
@@ -397,12 +390,11 @@ mod tests {
         assert_eq!(peers.pre_accept_peer_ids, vec![PEER_A, PEER_B]);
         assert_eq!(peers.accept_peer_ids, vec![PEER_A, PEER_B]);
         assert_eq!(peers.commit_peer_ids, vec![PEER_A, PEER_B]);
-        assert!(
-            peers
-                .accept_timestamps
-                .iter()
-                .all(|timestamp| { timestamp.counter == 9 && timestamp.node_id == PEER_A })
-        );
+        assert!(peers.accept_timestamps.iter().all(|timestamp| {
+            timestamp.epoch == u64::MAX - 1
+                && timestamp.counter == 10
+                && timestamp.node_id == LOCAL_NODE_ID
+        }));
         assert!(peers.commit_dependencies.iter().all(|dependencies| {
             dependencies.commands.len() == 2
                 && dependencies

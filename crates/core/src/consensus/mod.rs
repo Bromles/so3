@@ -1,3 +1,4 @@
+pub mod clock;
 mod command_id;
 pub mod coordinator;
 pub mod executor;

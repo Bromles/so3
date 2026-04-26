@@ -79,15 +79,19 @@ impl Node {
             storage.metadata_repository.clone(),
         );
         replay_committed_commands(&storage.consensus_journal, &executor).await?;
-        let local_transport = ApplyingConsensusTransport::new(
-            node_id.to_string(),
-            executor,
-            storage.consensus_journal,
-        );
-        let object_service = ObjectService::new(LocalConsensusObjectCommandExecutor::new(
-            node_id.to_string(),
-            local_transport.clone(),
-        ));
+        let node_id = node_id.to_string();
+        let next_sequence = storage
+            .consensus_journal
+            .next_sequence_for_origin(&node_id)
+            .await?;
+        let local_transport =
+            ApplyingConsensusTransport::new(node_id.clone(), executor, storage.consensus_journal);
+        let object_service =
+            ObjectService::new(LocalConsensusObjectCommandExecutor::with_initial_sequence(
+                node_id,
+                local_transport.clone(),
+                next_sequence,
+            ));
 
         Ok(Self {
             config,
