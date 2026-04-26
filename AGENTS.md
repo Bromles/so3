@@ -265,21 +265,25 @@ If the answer is no, defer it.
 
 High-priority remaining work before final prototype testing:
 
-1. Complete Accord recovery orchestration.
-   - Add peer `Recover` calls to the coordinator/peer transport.
-   - Merge recovered state, timestamps, dependencies, `wait_for`, and `nack` responses.
+1. Complete Accord recovery orchestration. ✓
+   - Peer `Recover` calls wired into the coordinator/peer transport.
+   - Recovered state, timestamps, dependencies, `wait_for`, and `nack` responses merged.
    - Retry with a higher durable ballot when recovery or accept receives a stale-ballot rejection.
-   - Decide and document the minimal safe behavior when a command is found in `Committed` or `Applied` state on another replica.
+   - Committed/Applied state observed on a peer: coordinator re-broadcasts commit and skips Accept.
 
-2. Enforce dependency-aware apply behavior.
-   - Do not apply a committed command before its durable dependencies are applied or safely resolved.
-   - Use `RecoverResponse.wait_for` and journal state to drive dependency completion.
-   - Add tests for conflicting writes/CAS where dependency order matters.
+2. Enforce dependency-aware apply behavior. ✓
+   - Committed commands are not applied before their durable dependencies are applied.
+   - `apply_committed_commands` loops until no progress is made; blocked commands are reported.
+   - Tests cover conflicting writes where dependency order matters.
 
-3. Harden Accord quorum semantics.
-   - Replace the current all-replica happy path with explicit quorum logic suitable for the prototype.
-   - Define when fast path is allowed, when slow accept is required, and how dependency/timestamp disagreement is handled.
-   - Keep the implementation small, but avoid pretending all-replica success is equivalent to full Accord.
+3. Harden Accord quorum semantics. ✓
+   - `AccordCoordinator` uses majority quorum (`total / 2 + 1`) for PreAccept and Accept.
+   - RPC errors from a minority of peers are tolerated; a nack still triggers recovery immediately.
+   - Fast path: when all replicas respond with the same `timestamp_zero` (unanimous), the Accept
+     phase is skipped and the coordinator commits directly with `timestamp_zero`.
+   - Commit is broadcast best-effort to peers; peers that miss it learn via recovery.
+   - Tests cover fast path, minority-failure tolerance, majority-failure rejection, and
+     best-effort commit (peer commit failure does not fail the operation).
 
 4. Improve failure and retry behavior.
    - Classify RPC timeouts, rejected ballots, storage errors, and caller-visible failures.

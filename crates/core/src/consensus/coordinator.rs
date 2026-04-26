@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use tonic::Status;
+use tracing::warn;
 
 use crate::consensus::ConsensusCommandId;
 use crate::consensus::clock::{HybridLogicalClock, timestamp_is_after};
@@ -57,6 +58,14 @@ where
     L: ConsensusTransportHandler,
     P: ConsensusPeerTransport,
 {
+    fn quorum_size(&self) -> usize {
+        let total = 1 + self.config.peer_ids.len();
+        total / 2 + 1
+    }
+
+    fn total_replicas(&self) -> usize {
+        1 + self.config.peer_ids.len()
+    }
     #[must_use]
     pub fn new(
         config: AccordCoordinatorConfig,
@@ -97,36 +106,43 @@ where
     ) -> So3Result<ObjectResult> {
         let command_bytes = command.to_bytes()?;
         let timestamp_zero = self.clock.tick().await;
-        let mut dependencies = empty_dependencies();
 
         let pre_accepted = self
             .pre_accept_all(command_id, &command_bytes, &timestamp_zero)
             .await?;
-        let timestamp = self
-            .clock
-            .observe(&pre_accepted.timestamp.unwrap_or(timestamp_zero.clone()))
-            .await;
-        merge_dependencies(&mut dependencies, Some(pre_accepted.dependencies));
 
-        let accept_decision = self
-            .accept_with_retry(
-                command_id,
-                &command_bytes,
-                &timestamp_zero,
-                &timestamp,
-                &dependencies,
-            )
-            .await?;
-        let timestamp = accept_decision.timestamp;
-        let dependencies = accept_decision.dependencies;
+        // Fast path: all replicas agreed on timestamp_zero; Accept can be skipped.
+        // Slow path: at least one replica proposed a later timestamp; Accept is required to
+        // reach agreement on the final timestamp before committing.
+        let (final_timestamp, final_dependencies) = if pre_accepted.fast_path {
+            (timestamp_zero.clone(), pre_accepted.dependencies)
+        } else {
+            let timestamp = self
+                .clock
+                .observe(&pre_accepted.timestamp.unwrap_or(timestamp_zero.clone()))
+                .await;
+            let mut dependencies = empty_dependencies();
+            merge_dependencies(&mut dependencies, Some(pre_accepted.dependencies));
+
+            let accept_decision = self
+                .accept_with_retry(
+                    command_id,
+                    &command_bytes,
+                    &timestamp_zero,
+                    &timestamp,
+                    &dependencies,
+                )
+                .await?;
+            (accept_decision.timestamp, accept_decision.dependencies)
+        };
 
         let result = self
             .commit_all(
                 command_id,
                 &command_bytes,
                 &timestamp_zero,
-                &timestamp,
-                &dependencies,
+                &final_timestamp,
+                &final_dependencies,
             )
             .await?;
 
@@ -183,22 +199,70 @@ where
             }),
         };
 
+        let quorum = self.quorum_size();
+        let max_errors = self.total_replicas().saturating_sub(quorum);
+        let mut decision = PreAcceptDecision {
+            timestamp: Some(timestamp_zero.clone()),
+            dependencies: empty_dependencies(),
+            // Starts true; flipped if any replica proposes a different timestamp or is unreachable.
+            // Requires all replicas to have responded with timestamp_zero for unanimity.
+            fast_path: true,
+        };
+        let mut ack_count: usize = 0;
+        let mut error_count: usize = 0;
+
         let local_response = self
             .local_transport
             .pre_accept(request.clone())
             .await
             .map_err(|status| map_status(&status))?;
-        let mut decision = PreAcceptDecision {
-            timestamp: Some(timestamp_zero.clone()),
-            dependencies: empty_dependencies(),
-        };
+        if local_response.nack {
+            return Err(So3Error::InvalidRequest(format!(
+                "pre_accept rejected by local replica {}",
+                self.config.node_id
+            )));
+        }
+        if timestamp_advanced(&local_response.timestamp, timestamp_zero) {
+            decision.fast_path = false;
+        }
         apply_pre_accept_response(&mut decision, &self.config.node_id, local_response)?;
-        for peer_id in &self.config.peer_ids {
-            let response = self
+        ack_count += 1;
+
+        for peer_id in &self.config.peer_ids.clone() {
+            match self
                 .peer_transport
                 .pre_accept_peer(peer_id, request.clone())
-                .await?;
-            apply_pre_accept_response(&mut decision, peer_id, response)?;
+                .await
+            {
+                Ok(response) => {
+                    if response.nack {
+                        return Err(So3Error::InvalidRequest(format!(
+                            "pre_accept rejected by replica {peer_id}"
+                        )));
+                    }
+                    if timestamp_advanced(&response.timestamp, timestamp_zero) {
+                        decision.fast_path = false;
+                    }
+                    apply_pre_accept_response(&mut decision, peer_id, response)?;
+                    ack_count += 1;
+                }
+                Err(_) => {
+                    error_count += 1;
+                    if error_count > max_errors {
+                        return Err(So3Error::InvalidRequest(
+                            "pre_accept failed to reach quorum: too many peer failures".to_owned(),
+                        ));
+                    }
+                    // An unreachable peer cannot confirm unanimity for the fast path.
+                    decision.fast_path = false;
+                }
+            }
+        }
+
+        if ack_count < quorum {
+            return Err(So3Error::InvalidRequest(
+                "pre_accept failed to reach quorum".to_owned(),
+            ));
         }
 
         Ok(decision)
@@ -298,24 +362,49 @@ where
             }),
         };
 
+        let quorum = self.quorum_size();
+        let max_errors = self.total_replicas().saturating_sub(quorum);
+        let mut accepted_dependencies = empty_dependencies();
+        let mut ack_count: usize = 0;
+        let mut error_count: usize = 0;
+
         let local_response = self
             .local_transport
             .accept(request.clone())
             .await
             .map_err(|status| AcceptPhaseError::Other(map_status(&status)))?;
-        let mut accepted_dependencies = empty_dependencies();
         apply_accept_response(
             &mut accepted_dependencies,
             &self.config.node_id,
             local_response,
         )?;
+        ack_count += 1;
+
         for peer_id in &self.config.peer_ids {
-            let response = self
+            match self
                 .peer_transport
                 .accept_peer(peer_id, request.clone())
                 .await
-                .map_err(AcceptPhaseError::Other)?;
-            apply_accept_response(&mut accepted_dependencies, peer_id, response)?;
+            {
+                Ok(response) => {
+                    // A nack means a higher ballot has been seen; propagate immediately
+                    // rather than treating it as a soft failure — recovery is required.
+                    apply_accept_response(&mut accepted_dependencies, peer_id, response)?;
+                    ack_count += 1;
+                }
+                Err(error) => {
+                    error_count += 1;
+                    if error_count > max_errors {
+                        return Err(AcceptPhaseError::Other(error));
+                    }
+                }
+            }
+        }
+
+        if ack_count < quorum {
+            return Err(AcceptPhaseError::Other(So3Error::InvalidRequest(
+                "accept failed to reach quorum".to_owned(),
+            )));
         }
 
         Ok(accepted_dependencies)
@@ -337,11 +426,22 @@ where
             dependencies: Some(dependencies.clone()),
         };
 
+        // Commit is stable once Accept reached quorum; broadcast to peers best-effort.
+        // Peers that miss this message will learn the decision via recovery.
         for peer_id in &self.config.peer_ids {
-            self.peer_transport
+            if let Err(e) = self
+                .peer_transport
                 .commit_peer(peer_id, request.clone())
-                .await?;
+                .await
+            {
+                warn!(
+                    peer_id,
+                    error = %e,
+                    "commit broadcast to peer failed; peer will learn via recovery"
+                );
+            }
         }
+
         let response = self
             .local_transport
             .commit(request)
@@ -356,6 +456,9 @@ where
 struct PreAcceptDecision {
     timestamp: Option<LogicalTimestamp>,
     dependencies: DependencySet,
+    /// True when every replica that responded agreed on `timestamp_zero` with no conflicts,
+    /// allowing the Accept phase to be skipped (Accord fast path).
+    fast_path: bool,
 }
 
 struct AcceptDecision {
@@ -400,6 +503,15 @@ impl RecoveryDecision {
             highest_nack: None,
         }
     }
+}
+
+fn timestamp_advanced(
+    proposed: &Option<LogicalTimestamp>,
+    timestamp_zero: &LogicalTimestamp,
+) -> bool {
+    proposed
+        .as_ref()
+        .map_or(false, |ts| timestamp_is_after(ts, timestamp_zero))
 }
 
 fn apply_pre_accept_response(
@@ -589,6 +701,7 @@ mod tests {
         empty_dependencies,
     };
     use crate::consensus::ConsensusCommandId;
+    use crate::domain::error::So3Error;
     use crate::domain::{
         ObjectCommand, ObjectKey, ObjectResult, ReadCommand, ReadResult, WriteCommand,
     };
@@ -1060,6 +1173,8 @@ mod tests {
         recover_ballots: Mutex<Vec<Ballot>>,
         commit_timestamps: Mutex<Vec<LogicalTimestamp>>,
         commit_dependencies: Mutex<Vec<DependencySet>>,
+        /// When set, pre_accept returns this timestamp to force the slow path (Accept required).
+        pre_accept_timestamp: Option<LogicalTimestamp>,
     }
 
     impl FakeLocalTransport {
@@ -1074,6 +1189,7 @@ mod tests {
                 recover_ballots: Mutex::new(Vec::new()),
                 commit_timestamps: Mutex::new(Vec::new()),
                 commit_dependencies: Mutex::new(Vec::new()),
+                pre_accept_timestamp: None,
             }
         }
 
@@ -1092,6 +1208,12 @@ mod tests {
                 recover_ballots: Mutex::new(Vec::new()),
                 commit_timestamps: Mutex::new(Vec::new()),
                 commit_dependencies: Mutex::new(Vec::new()),
+                // Force slow path so the queued Accept/Recover responses are exercised.
+                pre_accept_timestamp: Some(LogicalTimestamp {
+                    epoch: u64::MAX,
+                    counter: 0,
+                    node_id: LOCAL_NODE_ID.to_owned(),
+                }),
             }
         }
 
@@ -1127,7 +1249,7 @@ mod tests {
             _request: PreAcceptRequest,
         ) -> Result<PreAcceptResponse, Status> {
             Ok(PreAcceptResponse {
-                timestamp: None,
+                timestamp: self.pre_accept_timestamp.clone(),
                 dependencies: Some(empty_dependencies()),
                 nack: false,
             })
@@ -1192,9 +1314,11 @@ mod tests {
         }
     }
 
+    type PeerResult<T> = crate::domain::error::So3Result<T>;
+
     struct FakePeerTransport {
-        pre_accepts: VecDeque<PreAcceptResponse>,
-        accepts: VecDeque<AcceptResponse>,
+        pre_accepts: VecDeque<PeerResult<PreAcceptResponse>>,
+        accepts: VecDeque<PeerResult<AcceptResponse>>,
         recoveries: VecDeque<RecoverResponse>,
         pre_accept_peer_ids: Vec<String>,
         accept_peer_ids: Vec<String>,
@@ -1203,6 +1327,7 @@ mod tests {
         accept_ballots: Vec<Ballot>,
         accept_timestamps: Vec<LogicalTimestamp>,
         commit_dependencies: Vec<DependencySet>,
+        commit_errors: VecDeque<So3Error>,
     }
 
     impl FakePeerTransport {
@@ -1218,36 +1343,37 @@ mod tests {
                 accept_ballots: Vec::new(),
                 accept_timestamps: Vec::new(),
                 commit_dependencies: Vec::new(),
+                commit_errors: VecDeque::new(),
             }
         }
 
         fn with_pre_accepts<const N: usize>(responses: [PreAcceptResponse; N]) -> Self {
             Self {
-                pre_accepts: VecDeque::from(responses),
-                accepts: VecDeque::new(),
-                recoveries: VecDeque::new(),
-                pre_accept_peer_ids: Vec::new(),
-                accept_peer_ids: Vec::new(),
-                commit_peer_ids: Vec::new(),
-                recover_peer_ids: Vec::new(),
-                accept_ballots: Vec::new(),
-                accept_timestamps: Vec::new(),
-                commit_dependencies: Vec::new(),
+                pre_accepts: VecDeque::from(responses.map(Ok)),
+                ..Self::new()
+            }
+        }
+
+        fn with_pre_accept_results<const N: usize>(
+            results: [PeerResult<PreAcceptResponse>; N],
+        ) -> Self {
+            Self {
+                pre_accepts: VecDeque::from(results),
+                ..Self::new()
             }
         }
 
         fn with_recoveries<const N: usize>(responses: [RecoverResponse; N]) -> Self {
             Self {
-                pre_accepts: VecDeque::new(),
-                accepts: VecDeque::new(),
                 recoveries: VecDeque::from(responses),
-                pre_accept_peer_ids: Vec::new(),
-                accept_peer_ids: Vec::new(),
-                commit_peer_ids: Vec::new(),
-                recover_peer_ids: Vec::new(),
-                accept_ballots: Vec::new(),
-                accept_timestamps: Vec::new(),
-                commit_dependencies: Vec::new(),
+                ..Self::new()
+            }
+        }
+
+        fn with_accept_results<const N: usize>(results: [PeerResult<AcceptResponse>; N]) -> Self {
+            Self {
+                accepts: VecDeque::from(results),
+                ..Self::new()
             }
         }
     }
@@ -1260,7 +1386,11 @@ mod tests {
             _request: PreAcceptRequest,
         ) -> crate::domain::error::So3Result<PreAcceptResponse> {
             self.pre_accept_peer_ids.push(peer_id.to_owned());
-            Ok(self.pre_accepts.pop_front().unwrap())
+            self.pre_accepts.pop_front().unwrap_or(Ok(PreAcceptResponse {
+                timestamp: None,
+                dependencies: Some(empty_dependencies()),
+                nack: false,
+            }))
         }
 
         async fn accept_peer(
@@ -1273,8 +1403,8 @@ mod tests {
                 self.accept_ballots.push(ballot);
             }
             self.accept_timestamps.push(request.timestamp.unwrap());
-            if let Some(response) = self.accepts.pop_front() {
-                return Ok(response);
+            if let Some(result) = self.accepts.pop_front() {
+                return result;
             }
             Ok(AcceptResponse {
                 dependencies: request.dependencies,
@@ -1288,6 +1418,9 @@ mod tests {
             request: CommitRequest,
         ) -> crate::domain::error::So3Result<CommitResponse> {
             self.commit_peer_ids.push(peer_id.to_owned());
+            if let Some(e) = self.commit_errors.pop_front() {
+                return Err(e);
+            }
             self.commit_dependencies.push(request.dependencies.unwrap());
             Ok(CommitResponse { result: Vec::new() })
         }
@@ -1300,6 +1433,220 @@ mod tests {
             self.recover_peer_ids.push(peer_id.to_owned());
             Ok(self.recoveries.pop_front().unwrap())
         }
+    }
+
+    #[tokio::test]
+    async fn execute_takes_fast_path_when_all_replicas_agree_on_timestamp_zero() {
+        let result = ObjectResult::Read(ReadResult { object: None });
+        let local = FakeLocalTransport::new(result.to_bytes().unwrap());
+        // Both peers respond without bumping the timestamp → unanimous agreement.
+        let mut peers = FakePeerTransport::with_pre_accepts([
+            PreAcceptResponse {
+                timestamp: None,
+                dependencies: Some(empty_dependencies()),
+                nack: false,
+            },
+            PreAcceptResponse {
+                timestamp: None,
+                dependencies: Some(empty_dependencies()),
+                nack: false,
+            },
+        ]);
+        let mut coordinator = AccordCoordinator::new(
+            AccordCoordinatorConfig {
+                node_id: LOCAL_NODE_ID.to_owned(),
+                peer_ids: vec![PEER_A.to_owned(), PEER_B.to_owned()],
+            },
+            &local,
+            &mut peers,
+        );
+
+        let actual = coordinator
+            .execute(
+                &ConsensusCommandId::new(LOCAL_NODE_ID.to_owned(), 20),
+                ObjectCommand::Read(ReadCommand {
+                    key: ObjectKey::new(KEY_ALPHA).unwrap(),
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(actual, result);
+        assert_eq!(peers.pre_accept_peer_ids, vec![PEER_A, PEER_B]);
+        // Fast path: Accept is skipped entirely.
+        assert!(peers.accept_peer_ids.is_empty(), "accept must not be called on fast path");
+        // Commit still broadcasts to all peers.
+        assert_eq!(peers.commit_peer_ids, vec![PEER_A, PEER_B]);
+    }
+
+    #[tokio::test]
+    async fn pre_accept_succeeds_when_minority_of_peers_are_unreachable() {
+        let result = ObjectResult::Read(ReadResult { object: None });
+        let local = FakeLocalTransport::new(result.to_bytes().unwrap());
+        // 3-node cluster (local + PEER_A + PEER_B). PEER_B is unreachable.
+        // Quorum = 2; local + PEER_A = 2 → quorum met.
+        let mut peers = FakePeerTransport::with_pre_accept_results([
+            Ok(PreAcceptResponse {
+                timestamp: None,
+                dependencies: Some(empty_dependencies()),
+                nack: false,
+            }),
+            Err(So3Error::InvalidRequest("peer unreachable".to_owned())),
+        ]);
+        let mut coordinator = AccordCoordinator::new(
+            AccordCoordinatorConfig {
+                node_id: LOCAL_NODE_ID.to_owned(),
+                peer_ids: vec![PEER_A.to_owned(), PEER_B.to_owned()],
+            },
+            &local,
+            &mut peers,
+        );
+
+        let actual = coordinator
+            .execute(
+                &ConsensusCommandId::new(LOCAL_NODE_ID.to_owned(), 21),
+                ObjectCommand::Read(ReadCommand {
+                    key: ObjectKey::new(KEY_ALPHA).unwrap(),
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(actual, result);
+        // Unreachable peer prevents unanimity → must go through Accept.
+        assert!(!peers.accept_peer_ids.is_empty(), "slow path required when peer unreachable");
+    }
+
+    #[tokio::test]
+    async fn pre_accept_fails_when_majority_of_peers_are_unreachable() {
+        let local = FakeLocalTransport::new(
+            ObjectResult::Read(ReadResult { object: None })
+                .to_bytes()
+                .unwrap(),
+        );
+        // 3-node cluster; both peers unreachable → quorum impossible.
+        let mut peers = FakePeerTransport::with_pre_accept_results([
+            Err(So3Error::InvalidRequest("peer unreachable".to_owned())),
+            Err(So3Error::InvalidRequest("peer unreachable".to_owned())),
+        ]);
+        let mut coordinator = AccordCoordinator::new(
+            AccordCoordinatorConfig {
+                node_id: LOCAL_NODE_ID.to_owned(),
+                peer_ids: vec![PEER_A.to_owned(), PEER_B.to_owned()],
+            },
+            &local,
+            &mut peers,
+        );
+
+        let error = coordinator
+            .execute(
+                &ConsensusCommandId::new(LOCAL_NODE_ID.to_owned(), 22),
+                ObjectCommand::Read(ReadCommand {
+                    key: ObjectKey::new(KEY_ALPHA).unwrap(),
+                }),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("quorum"), "expected quorum failure");
+        assert!(peers.accept_peer_ids.is_empty());
+        assert!(peers.commit_peer_ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn accept_succeeds_when_minority_of_peers_are_unreachable() {
+        let result = ObjectResult::Read(ReadResult { object: None });
+        // Force slow path; accept from PEER_A succeeds, PEER_B unreachable.
+        // local + PEER_A = 2 = quorum for 3-node cluster.
+        let local = FakeLocalTransport::new(result.to_bytes().unwrap());
+        let mut peers = FakePeerTransport {
+            pre_accepts: VecDeque::from([
+                Ok(PreAcceptResponse {
+                    timestamp: Some(LogicalTimestamp {
+                        epoch: u64::MAX - 1,
+                        counter: 1,
+                        node_id: PEER_A.to_owned(),
+                    }),
+                    dependencies: Some(empty_dependencies()),
+                    nack: false,
+                }),
+                Ok(PreAcceptResponse {
+                    timestamp: None,
+                    dependencies: Some(empty_dependencies()),
+                    nack: false,
+                }),
+            ]),
+            accepts: VecDeque::from([Err(So3Error::InvalidRequest(
+                "peer unreachable".to_owned(),
+            ))]),
+            ..FakePeerTransport::new()
+        };
+        let mut coordinator = AccordCoordinator::new(
+            AccordCoordinatorConfig {
+                node_id: LOCAL_NODE_ID.to_owned(),
+                peer_ids: vec![PEER_A.to_owned(), PEER_B.to_owned()],
+            },
+            &local,
+            &mut peers,
+        );
+
+        let actual = coordinator
+            .execute(
+                &ConsensusCommandId::new(LOCAL_NODE_ID.to_owned(), 23),
+                ObjectCommand::Read(ReadCommand {
+                    key: ObjectKey::new(KEY_ALPHA).unwrap(),
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(actual, result);
+    }
+
+    #[tokio::test]
+    async fn commit_succeeds_even_when_a_peer_commit_fails() {
+        let result = ObjectResult::Read(ReadResult { object: None });
+        let local = FakeLocalTransport::new(result.to_bytes().unwrap());
+        let mut peers = FakePeerTransport {
+            pre_accepts: VecDeque::from([
+                Ok(PreAcceptResponse {
+                    timestamp: None,
+                    dependencies: Some(empty_dependencies()),
+                    nack: false,
+                }),
+                Ok(PreAcceptResponse {
+                    timestamp: None,
+                    dependencies: Some(empty_dependencies()),
+                    nack: false,
+                }),
+            ]),
+            commit_errors: VecDeque::from([So3Error::InvalidRequest(
+                "peer unreachable".to_owned(),
+            )]),
+            ..FakePeerTransport::new()
+        };
+        let mut coordinator = AccordCoordinator::new(
+            AccordCoordinatorConfig {
+                node_id: LOCAL_NODE_ID.to_owned(),
+                peer_ids: vec![PEER_A.to_owned(), PEER_B.to_owned()],
+            },
+            &local,
+            &mut peers,
+        );
+
+        // Fast path: PEER_A commit fails but local commit still succeeds.
+        let actual = coordinator
+            .execute(
+                &ConsensusCommandId::new(LOCAL_NODE_ID.to_owned(), 24),
+                ObjectCommand::Read(ReadCommand {
+                    key: ObjectKey::new(KEY_ALPHA).unwrap(),
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(actual, result);
+        assert_eq!(peers.commit_peer_ids, vec![PEER_A, PEER_B]);
     }
 
     fn pre_accept_response(
