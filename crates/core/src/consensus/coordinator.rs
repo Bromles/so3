@@ -1332,8 +1332,8 @@ mod tests {
             unimplemented!("coordinator does not call apply directly")
         }
 
-        async fn recover(&self, _request: RecoverRequest) -> Result<RecoverResponse, Status> {
-            if let Some(ballot) = _request.ballot.clone() {
+        async fn recover(&self, request: RecoverRequest) -> Result<RecoverResponse, Status> {
+            if let Some(ballot) = request.ballot.clone() {
                 self.recover_ballots.lock().unwrap().push(ballot);
             }
             if let Some(response) = self.recovers.lock().unwrap().pop_front() {

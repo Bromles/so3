@@ -12,7 +12,7 @@ use tower_http::trace::TraceLayer;
 
 use crate::consensus::state_machine::ObjectCommandExecutor;
 use crate::domain::error::So3Error;
-use crate::domain::{CasResult, ObjectKey, StoredObject};
+use crate::domain::{CasResult, ObjectKey, ObjectVersion, StoredObject};
 use crate::object_server::api::{
     DEFAULT_ERROR_LABEL, ETAG_HEADER, ErrorResponse, LAST_MODIFIED_HEADER,
     OBJECT_METADATA_ROUTE_PATH, OBJECT_ROUTE_PATH, ObjectMetadataResponse, S3_OBJECT_ROUTE_PATH,
@@ -154,15 +154,12 @@ where
             Ok(Json(ObjectMetadataResponse::from(object)))
         }
         Some(expected_version) => {
-            match state
-                .service
-                .cas(key.clone(), expected_version.try_into()?, body.to_vec())
-                .await?
-            {
+            let expected = ObjectVersion::try_from(expected_version)?;
+            match state.service.cas(key.clone(), expected, body.to_vec()).await? {
                 CasResult::Applied(object) => Ok(Json(ObjectMetadataResponse::from(object))),
                 CasResult::NotFound => Err(ApiError::from(So3Error::not_found(&key))),
                 CasResult::Mismatch { current_version } => Err(ApiError::from(
-                    So3Error::cas_mismatch(&key, expected_version.try_into()?, current_version),
+                    So3Error::cas_mismatch(&key, expected, current_version),
                 )),
             }
         }
@@ -216,55 +213,49 @@ fn attach_metadata_headers(
     headers: &mut axum::http::HeaderMap,
     metadata: &ObjectMetadataResponse,
 ) -> Result<(), ApiError> {
-    headers.insert(
-        VERSION_HEADER,
-        HeaderValue::from_str(&metadata.version.to_string())
-            .map_err(|error| ApiError::from(So3Error::InvalidRequest(error.to_string())))?,
-    );
-    headers.insert(
-        ETAG_HEADER,
-        HeaderValue::from_str(&metadata.checksum)
-            .map_err(|error| ApiError::from(So3Error::InvalidRequest(error.to_string())))?,
-    );
-    headers.insert(
-        CONTENT_LENGTH,
-        HeaderValue::from_str(&metadata.content_length.to_string())
-            .map_err(|error| ApiError::from(So3Error::InvalidRequest(error.to_string())))?,
-    );
-    Ok(())
+    insert_str_header(headers, VERSION_HEADER, &metadata.version.to_string())?;
+    attach_common_object_headers(headers, metadata)
 }
 
 fn attach_s3_metadata_headers(
     headers: &mut axum::http::HeaderMap,
     metadata: &ObjectMetadataResponse,
 ) -> Result<(), ApiError> {
-    headers.insert(
-        S3_VERSION_ID_HEADER,
-        HeaderValue::from_str(&metadata.version.to_string())
-            .map_err(|error| ApiError::from(So3Error::InvalidRequest(error.to_string())))?,
-    );
-    headers.insert(
-        ETAG_HEADER,
-        HeaderValue::from_str(&quoted_etag(&metadata.checksum))
-            .map_err(|error| ApiError::from(So3Error::InvalidRequest(error.to_string())))?,
-    );
-    headers.insert(
-        CONTENT_LENGTH,
-        HeaderValue::from_str(&metadata.content_length.to_string())
-            .map_err(|error| ApiError::from(So3Error::InvalidRequest(error.to_string())))?,
-    );
-    headers.insert(
+    insert_str_header(headers, S3_VERSION_ID_HEADER, &metadata.version.to_string())?;
+    insert_str_header(
+        headers,
         S3_OBJECT_SIZE_HEADER,
-        HeaderValue::from_str(&metadata.content_length.to_string())
-            .map_err(|error| ApiError::from(So3Error::InvalidRequest(error.to_string())))?,
-    );
-    headers.insert(
-        S3_STORAGE_CLASS_HEADER,
-        HeaderValue::from_static("STANDARD"),
-    );
-    headers.insert(
+        &metadata.content_length.to_string(),
+    )?;
+    headers.insert(S3_STORAGE_CLASS_HEADER, HeaderValue::from_static("STANDARD"));
+    attach_common_object_headers(headers, metadata)
+}
+
+fn attach_common_object_headers(
+    headers: &mut axum::http::HeaderMap,
+    metadata: &ObjectMetadataResponse,
+) -> Result<(), ApiError> {
+    insert_str_header(headers, ETAG_HEADER, &quoted_etag(&metadata.checksum))?;
+    insert_str_header(
+        headers,
+        CONTENT_LENGTH.as_str(),
+        &metadata.content_length.to_string(),
+    )?;
+    insert_str_header(
+        headers,
         LAST_MODIFIED_HEADER,
-        HeaderValue::from_str(&http_last_modified(metadata.last_modified_unix_millis)?)
+        &http_last_modified(metadata.last_modified_unix_millis)?,
+    )
+}
+
+fn insert_str_header(
+    headers: &mut axum::http::HeaderMap,
+    name: &'static str,
+    value: &str,
+) -> Result<(), ApiError> {
+    headers.insert(
+        name,
+        HeaderValue::from_str(value)
             .map_err(|error| ApiError::from(So3Error::InvalidRequest(error.to_string())))?,
     );
     Ok(())

@@ -301,10 +301,13 @@ where
                 )
             },
         );
-        let wait_for = self
-            .wait_for_unapplied_dependencies(&dependencies, Some(&response_timestamp))
-            .await
-            .map_err(|error| map_error(&error))?;
+        let wait_for = wait_for_unapplied_dependencies(
+            &self.journal,
+            &dependencies,
+            Some(&response_timestamp),
+        )
+        .await
+        .map_err(|error| map_error(&error))?;
 
         debug!(
             node_id = %self.node_id,
@@ -370,13 +373,6 @@ where
         Ok(None)
     }
 
-    async fn wait_for_unapplied_dependencies(
-        &self,
-        dependencies: &DependencySet,
-        current_timestamp: Option<&LogicalTimestamp>,
-    ) -> crate::domain::error::So3Result<Vec<crate::rpc_server::proto::CommandId>> {
-        wait_for_unapplied_dependencies(&self.journal, dependencies, current_timestamp).await
-    }
 }
 
 fn extract_command_bytes(

@@ -1,0 +1,6 @@
+target/
+.git/
+.tools/
+.vscode/
+.idea/
+*.md
