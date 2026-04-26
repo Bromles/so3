@@ -12,19 +12,22 @@ The near-term product goal is narrow on purpose:
 - Avoid dependencies on external services.
 - Persist metadata in SQLite and object blobs on the local filesystem.
 
-This repo is still an early scaffold. Agents should optimize for clarifying and completing the intended architecture, not for preserving accidental placeholders.
+This repo is an early but functional prototype scaffold. Agents should optimize for clarifying and completing the intended architecture, not for preserving accidental placeholders.
 Full S3 API support is planned, but only in the distant future.
 
 ## Current Repository State
 
-The codebase currently compiles, but most of it is skeletal:
+The codebase currently compiles and has working prototype paths for storage, node bootstrap, object APIs, RPC transport, and Maelstrom smoke testing:
 
 - `crates/core` is the main library crate.
-- `crates/so3` is the binary crate and currently only prints `Hello, world!`.
-- `object_server` exists and starts an Axum server, but handlers are empty.
-- `rpc_server` exists as a module placeholder and is not implemented yet.
-- `node` exists as a partial builder/config shell.
-- `proto/consensus.proto` already describes Accord transport RPCs and should be treated as the seed of the intra-cluster protocol.
+- `crates/so3` is the binary crate for config loading, node bootstrap, and signal handling.
+- `crates/so3-maelstrom` is the Maelstrom adapter used for lin-kv verification.
+- `object_server` exposes the minimal object API and maps requests to object commands.
+- `rpc_server` exposes the intra-cluster Accord transport over tonic.
+- `node` wires storage, recovery, local/peer consensus transports, object API, and RPC API.
+- `proto/consensus.proto` describes the current Accord transport RPCs and should be treated as the seed of the intra-cluster protocol.
+- `storage` persists object metadata in SQLite, blob bytes on the filesystem, applied command results, and the consensus journal.
+- `consensus` has command IDs, HLC timestamps, durable journal state, replay of committed commands, a coordinator, and an applying transport.
 - `docs/classDiagram.puml` is an outdated rough sketch and must not be treated as a source of truth.
 
 When code and old diagram disagree, prefer:
@@ -151,6 +154,16 @@ Keep consensus isolated from HTTP and storage details:
 
 Accord-specific details may evolve, but transport boundaries should remain clean.
 
+Current Accord implementation status:
+
+- `PreAccept`, `Accept`, `Commit`, `Apply`, and `Recover` are wired through the local applying transport and tonic peer transport.
+- Command journal entries persist protocol state, serialized command/result bytes, `timestamp_zero`, selected timestamp, dependency set, and highest accepted ballot.
+- Pre-accept computes dependencies for unapplied local conflicts in the same object key.
+- Accept rejects stale ballots using durable ballot metadata.
+- Recover reports durable local state, timestamp, dependencies, `wait_for` for unapplied dependencies, and stale-ballot `nack`.
+- Commit currently applies immediately after recording committed state; dependency ordering is represented in metadata but is not yet fully enforced before apply.
+- The coordinator drives a basic all-replica path; it does not yet implement full Accord fast/slow quorum behavior, recovery orchestration, or retry with higher ballots.
+
 ## Error Handling
 
 Runtime code should not panic on normal failures.
@@ -177,11 +190,16 @@ Minimum expectations over time:
 
 Before finishing a change, run what is relevant:
 
-- `cargo check`
+- `cargo clippy --all-targets --all-features -- -W clippy::pedantic`
 - `cargo test`
 - targeted integration tests if added
+- relevant Maelstrom smoke or full lin-kv runs when consensus, node runtime, or Maelstrom behavior changes
 
-If Maelstrom is wired into the repo later, include the exact command used and the workload covered.
+When running Maelstrom, include the exact command used and the workload covered. Existing useful commands:
+
+- `bash scripts/maelstrom/smoke-lin-kv.sh`
+- `bash scripts/maelstrom/smoke-3-node-lin-kv.sh`
+- `bash scripts/maelstrom/run-lin-kv.sh`
 
 ## Implementation Guidance
 
@@ -245,19 +263,40 @@ If the answer is no, defer it.
 
 ## Known Gaps To Close
 
-High-priority missing pieces at the time of writing:
+High-priority remaining work before final prototype testing:
 
-- real node configuration and bootstrap flow
-- actual object API shape
-- actual RPC server implementation
-- persistent metadata schema
-- filesystem blob layout
-- command and result types for `Read`/`Write`/`CAS`
-- durable version/revision model
-- Accord engine integration with storage
-- recovery and restart semantics
-- tests beyond compilation
-- Maelstrom harness or adapter
+1. Complete Accord recovery orchestration.
+   - Add peer `Recover` calls to the coordinator/peer transport.
+   - Merge recovered state, timestamps, dependencies, `wait_for`, and `nack` responses.
+   - Retry with a higher durable ballot when recovery or accept receives a stale-ballot rejection.
+   - Decide and document the minimal safe behavior when a command is found in `Committed` or `Applied` state on another replica.
+
+2. Enforce dependency-aware apply behavior.
+   - Do not apply a committed command before its durable dependencies are applied or safely resolved.
+   - Use `RecoverResponse.wait_for` and journal state to drive dependency completion.
+   - Add tests for conflicting writes/CAS where dependency order matters.
+
+3. Harden Accord quorum semantics.
+   - Replace the current all-replica happy path with explicit quorum logic suitable for the prototype.
+   - Define when fast path is allowed, when slow accept is required, and how dependency/timestamp disagreement is handled.
+   - Keep the implementation small, but avoid pretending all-replica success is equivalent to full Accord.
+
+4. Improve failure and retry behavior.
+   - Classify RPC timeouts, rejected ballots, storage errors, and caller-visible failures.
+   - Add bounded retries for transient peer failures where safe.
+   - Keep failed or uncertain client operations explicit rather than returning success before a durable decision.
+
+5. Expand restart and recovery coverage.
+   - Add multi-node restart tests around committed-but-unapplied journal entries.
+   - Add tests for recovered accepted/pre-accepted commands with durable dependencies and ballots.
+   - Verify `next_sequence_for_origin` remains monotonic after restarts and partial recovery.
+
+6. Run final Maelstrom verification matrix.
+   - Single-node smoke for adapter regressions.
+   - Three-node smoke at low rate.
+   - Longer three-node lin-kv run at higher rate/concurrency.
+   - A run with process restarts or partitions once the harness supports it.
+   - Preserve exact commands, rates, concurrency, node count, result paths, and whether histories are valid.
 
 ## References
 
