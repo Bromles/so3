@@ -8,6 +8,7 @@ use crate::consensus::executor::ReplicatedCommandExecutor;
 use crate::consensus::journal::{
     JournalEntry, JournalMetadata, JournalState, SqliteConsensusJournal, ballot_is_after,
 };
+use crate::consensus::recovery::{apply_committed_commands, wait_for_unapplied_dependencies};
 use crate::domain::error::So3Error;
 use crate::domain::{ObjectCommand, ObjectKey};
 use crate::rpc_server::proto::{
@@ -173,20 +174,24 @@ where
                 result: entry.result,
             });
         }
-
-        let command =
-            ObjectCommand::from_bytes(command_bytes).map_err(|error| map_error(&error))?;
-        let result = self
-            .executor
-            .execute_replicated(&command_id, command)
+        let _ = apply_committed_commands(&self.journal, &self.executor)
             .await
             .map_err(|error| map_error(&error))?;
-        let result = result.to_bytes().map_err(|error| map_error(&error))?;
         let entry = self
             .journal
-            .record_applied(&command_id, command_bytes, &result)
+            .load(&command_id)
             .await
-            .map_err(|error| map_error(&error))?;
+            .map_err(|error| map_error(&error))?
+            .ok_or_else(|| Status::internal("committed command missing after apply attempt"))?;
+        if entry.state != JournalState::Applied {
+            let wait_for =
+                wait_for_unapplied_dependencies(&self.journal, &entry.metadata.dependencies)
+                    .await
+                    .map_err(|error| map_error(&error))?;
+            return Err(Status::failed_precondition(format!(
+                "committed command is waiting for unapplied dependencies: {wait_for:?}"
+            )));
+        }
 
         info!(
             node_id = %self.node_id,
@@ -357,21 +362,7 @@ where
         &self,
         dependencies: &DependencySet,
     ) -> crate::domain::error::So3Result<Vec<crate::rpc_server::proto::CommandId>> {
-        let mut wait_for = Vec::new();
-
-        for dependency in &dependencies.commands {
-            let command_id = ConsensusCommandId::try_from(dependency)?;
-            let is_applied = self
-                .journal
-                .load(&command_id)
-                .await?
-                .is_some_and(|entry| entry.state == JournalState::Applied);
-            if !is_applied {
-                wait_for.push(dependency.clone());
-            }
-        }
-
-        Ok(wait_for)
+        wait_for_unapplied_dependencies(&self.journal, dependencies).await
     }
 }
 
@@ -908,6 +899,93 @@ mod tests {
 
         assert_eq!(recovered.local_state, State::Applied as i32);
         assert_eq!(committed_result, applied_result);
+    }
+
+    #[tokio::test]
+    async fn commit_waits_for_unapplied_dependencies_before_applying_command() {
+        let (transport, _temp_dir) = test_transport().await;
+        let first = ObjectCommand::Write(WriteCommand {
+            key: ObjectKey::new(ALPHA_KEY).unwrap(),
+            value: FIRST_VALUE.to_vec(),
+        });
+        let second = ObjectCommand::Write(WriteCommand {
+            key: ObjectKey::new(ALPHA_KEY).unwrap(),
+            value: b"second".to_vec(),
+        });
+
+        let error = transport
+            .commit(CommitRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_TWO)),
+                dependencies: Some(DependencySet {
+                    commands: vec![command_id(COMMAND_SEQUENCE_ONE)],
+                }),
+                event: Some(EventPayload {
+                    command: second.to_bytes().unwrap(),
+                }),
+                ..CommitRequest::default()
+            })
+            .await
+            .unwrap_err();
+        let blocked = transport
+            .recover(RecoverRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_TWO)),
+                ..RecoverRequest::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(error.code(), Code::FailedPrecondition);
+        assert_eq!(blocked.local_state, State::Committed as i32);
+        assert_eq!(blocked.wait_for, vec![command_id(COMMAND_SEQUENCE_ONE)]);
+
+        let _ = transport
+            .commit(CommitRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
+                event: Some(EventPayload {
+                    command: first.to_bytes().unwrap(),
+                }),
+                ..CommitRequest::default()
+            })
+            .await
+            .unwrap();
+        let first_recovered = transport
+            .recover(RecoverRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
+                ..RecoverRequest::default()
+            })
+            .await
+            .unwrap();
+        let second_recovered = transport
+            .recover(RecoverRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_TWO)),
+                ..RecoverRequest::default()
+            })
+            .await
+            .unwrap();
+        let read = transport
+            .apply(ApplyRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_THREE)),
+                event: Some(EventPayload {
+                    command: ObjectCommand::Read(ReadCommand {
+                        key: ObjectKey::new(ALPHA_KEY).unwrap(),
+                    })
+                    .to_bytes()
+                    .unwrap(),
+                }),
+                ..ApplyRequest::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(first_recovered.local_state, State::Applied as i32);
+        assert_eq!(second_recovered.local_state, State::Applied as i32);
+        let result = ObjectResult::from_bytes(&read.result).unwrap();
+        let ObjectResult::Read(read) = result else {
+            panic!("expected read result");
+        };
+        let object = read.object.expect("expected stored object");
+        assert_eq!(object.record.version, ObjectVersion::try_from(2).unwrap());
+        assert_eq!(object.value, b"second".to_vec());
     }
 
     #[tokio::test]
