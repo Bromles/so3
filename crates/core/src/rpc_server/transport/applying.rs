@@ -5,7 +5,9 @@ use tracing::{debug, info};
 use crate::consensus::ConsensusCommandId;
 use crate::consensus::clock::HybridLogicalClock;
 use crate::consensus::executor::ReplicatedCommandExecutor;
-use crate::consensus::journal::{JournalEntry, JournalState, SqliteConsensusJournal};
+use crate::consensus::journal::{
+    JournalEntry, JournalMetadata, JournalState, SqliteConsensusJournal,
+};
 use crate::domain::error::So3Error;
 use crate::domain::{ObjectCommand, ObjectKey};
 use crate::rpc_server::proto::{
@@ -62,7 +64,15 @@ where
             .map_err(|error| map_error(&error))?;
         let entry = self
             .journal
-            .record_pre_accepted(&command_id, command_bytes)
+            .record_pre_accepted_with_metadata(
+                &command_id,
+                command_bytes,
+                JournalMetadata {
+                    timestamp_zero: request.timestamp_zero.clone(),
+                    timestamp: Some(timestamp.clone()),
+                    dependencies: dependencies.clone(),
+                },
+            )
             .await
             .map_err(|error| map_error(&error))?;
 
@@ -85,7 +95,7 @@ where
     async fn accept(&self, request: AcceptRequest) -> Result<AcceptResponse, Status> {
         let command_id = extract_command_id(request.command_id.as_ref())?;
         let command_bytes = extract_command_bytes(request.event.as_ref())?;
-        let _timestamp = self
+        let observed_timestamp = self
             .observe_or_tick(
                 request
                     .timestamp
@@ -93,9 +103,19 @@ where
                     .or(request.timestamp_zero.as_ref()),
             )
             .await;
+        let accepted_timestamp = request.timestamp.clone().unwrap_or(observed_timestamp);
+        let dependencies = request.dependencies.unwrap_or_else(empty_dependencies);
         let entry = self
             .journal
-            .record_accepted(&command_id, command_bytes)
+            .record_accepted_with_metadata(
+                &command_id,
+                command_bytes,
+                JournalMetadata {
+                    timestamp_zero: request.timestamp_zero.clone(),
+                    timestamp: Some(accepted_timestamp),
+                    dependencies: dependencies.clone(),
+                },
+            )
             .await
             .map_err(|error| map_error(&error))?;
 
@@ -103,12 +123,12 @@ where
             node_id = %self.node_id,
             command_origin = command_id.origin_node_id(),
             local_state = journal_state_to_proto(entry.state).as_str_name(),
-            dependency_count = request.dependencies.as_ref().map_or(0, |dependencies| dependencies.commands.len()),
+            dependency_count = dependencies.commands.len(),
             "recorded local accept state in consensus journal"
         );
 
         Ok(AcceptResponse {
-            dependencies: Some(request.dependencies.unwrap_or_else(empty_dependencies)),
+            dependencies: Some(dependencies),
             nack: false,
         })
     }
@@ -116,7 +136,7 @@ where
     async fn commit(&self, request: CommitRequest) -> Result<CommitResponse, Status> {
         let command_id = extract_command_id(request.command_id.as_ref())?;
         let command_bytes = extract_command_bytes(request.event.as_ref())?;
-        let _timestamp = self
+        let observed_timestamp = self
             .observe_or_tick(
                 request
                     .timestamp
@@ -124,9 +144,19 @@ where
                     .or(request.timestamp_zero.as_ref()),
             )
             .await;
+        let committed_timestamp = request.timestamp.clone().unwrap_or(observed_timestamp);
+        let dependencies = request.dependencies.unwrap_or_else(empty_dependencies);
         let entry = self
             .journal
-            .record_committed(&command_id, command_bytes)
+            .record_committed_with_metadata(
+                &command_id,
+                command_bytes,
+                JournalMetadata {
+                    timestamp_zero: request.timestamp_zero.clone(),
+                    timestamp: Some(committed_timestamp),
+                    dependencies,
+                },
+            )
             .await
             .map_err(|error| map_error(&error))?;
         if entry.state == JournalState::Applied {
@@ -184,8 +214,18 @@ where
             .await
             .map_err(|error| map_error(&error))?;
         let result = result.to_bytes().map_err(|error| map_error(&error))?;
-        self.journal
-            .record_applied(&command_id, command_bytes, &result)
+        let _ = self
+            .journal
+            .record_applied_with_metadata(
+                &command_id,
+                command_bytes,
+                &result,
+                JournalMetadata {
+                    timestamp_zero: request.timestamp_zero,
+                    timestamp: request.timestamp,
+                    dependencies: request.dependencies.unwrap_or_else(empty_dependencies),
+                },
+            )
             .await
             .map_err(|error| map_error(&error))?;
 
@@ -211,9 +251,19 @@ where
             .load(&command_id)
             .await
             .map_err(|error| map_error(&error))?;
-        let local_state = entry.map_or(State::Undefined, |entry| {
-            journal_state_to_proto(entry.state)
-        });
+        let (local_state, dependencies, response_timestamp) = entry.map_or(
+            (State::Undefined, empty_dependencies(), timestamp.clone()),
+            |entry| {
+                (
+                    journal_state_to_proto(entry.state),
+                    entry.metadata.dependencies,
+                    entry
+                        .metadata
+                        .timestamp
+                        .unwrap_or_else(|| timestamp.clone()),
+                )
+            },
+        );
 
         debug!(
             node_id = %self.node_id,
@@ -226,8 +276,8 @@ where
             local_state: local_state.into(),
             wait_for: Vec::new(),
             superseding: false,
-            dependencies: Some(empty_dependencies()),
-            timestamp: Some(timestamp),
+            dependencies: Some(dependencies),
+            timestamp: Some(response_timestamp),
             nack: None,
         })
     }
@@ -348,8 +398,8 @@ mod tests {
         ObjectCommand, ObjectKey, ObjectResult, ObjectVersion, ReadCommand, WriteCommand,
     };
     use crate::rpc_server::proto::{
-        AcceptRequest, ApplyRequest, CommandId, CommitRequest, EventPayload, PreAcceptRequest,
-        RecoverRequest, State,
+        AcceptRequest, ApplyRequest, CommandId, CommitRequest, DependencySet, EventPayload,
+        LogicalTimestamp, PreAcceptRequest, RecoverRequest, State,
     };
     use crate::rpc_server::transport::ConsensusTransportHandler;
     use crate::storage::registry::SqliteFsPersistentObjectRepository;
@@ -361,6 +411,8 @@ mod tests {
     const COMMAND_SEQUENCE_ONE: u64 = 1;
     const COMMAND_SEQUENCE_TWO: u64 = 2;
     const COMMAND_SEQUENCE_THREE: u64 = 3;
+    const TEST_TIMESTAMP_EPOCH: u64 = 17;
+    const TEST_TIMESTAMP_COUNTER: u64 = 23;
 
     async fn test_transport() -> (
         ApplyingConsensusTransport<
@@ -518,6 +570,53 @@ mod tests {
             dependencies.commands,
             vec![command_id(COMMAND_SEQUENCE_ONE)]
         );
+    }
+
+    #[tokio::test]
+    async fn recover_reports_durable_timestamp_and_dependencies() {
+        let (transport, _temp_dir) = test_transport().await;
+        let command = ObjectCommand::Write(WriteCommand {
+            key: ObjectKey::new(ALPHA_KEY).unwrap(),
+            value: FIRST_VALUE.to_vec(),
+        });
+        let timestamp_zero = LogicalTimestamp {
+            epoch: TEST_TIMESTAMP_EPOCH,
+            counter: TEST_TIMESTAMP_COUNTER,
+            node_id: COMMAND_ORIGIN_NODE_ID.to_owned(),
+        };
+        let timestamp = LogicalTimestamp {
+            epoch: TEST_TIMESTAMP_EPOCH,
+            counter: TEST_TIMESTAMP_COUNTER + 1,
+            node_id: COMMAND_ORIGIN_NODE_ID.to_owned(),
+        };
+        let dependencies = DependencySet {
+            commands: vec![command_id(COMMAND_SEQUENCE_TWO)],
+        };
+
+        let _ = transport
+            .accept(AcceptRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
+                event: Some(EventPayload {
+                    command: command.to_bytes().unwrap(),
+                }),
+                timestamp_zero: Some(timestamp_zero),
+                timestamp: Some(timestamp.clone()),
+                dependencies: Some(dependencies.clone()),
+                ..AcceptRequest::default()
+            })
+            .await
+            .unwrap();
+        let recovered = transport
+            .recover(RecoverRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
+                ..RecoverRequest::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(recovered.local_state, State::Accepted as i32);
+        assert_eq!(recovered.timestamp, Some(timestamp));
+        assert_eq!(recovered.dependencies, Some(dependencies));
     }
 
     #[tokio::test]

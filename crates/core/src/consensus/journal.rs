@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use prost::Message as ProstMessage;
 use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow, SqliteSynchronous,
 };
@@ -11,11 +12,12 @@ use tokio::sync::Mutex;
 
 use crate::consensus::ConsensusCommandId;
 use crate::domain::error::{So3Error, So3Result};
+use crate::rpc_server::proto::{DependencySet, LogicalTimestamp};
 
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SQLITE_MAX_CONNECTIONS: u32 = 1;
 const DATABASE_FILE_NAME: &str = "consensus.sqlite";
-const CURRENT_SCHEMA_VERSION: i64 = 1;
+const CURRENT_SCHEMA_VERSION: i64 = 2;
 const EMPTY_RESULT_BYTES: &[u8] = b"";
 const STATE_PRE_ACCEPTED: i64 = 1;
 const STATE_ACCEPTED: i64 = 2;
@@ -33,7 +35,8 @@ const COMMANDS_TABLE_SQL: &str = r"
     )
 ";
 const LOAD_COMMAND_SQL: &str = r"
-    SELECT origin_node_id, sequence, state, command, result
+    SELECT origin_node_id, sequence, state, command, result,
+           timestamp_zero, timestamp, dependencies
     FROM command_journal
     WHERE origin_node_id = ? AND sequence = ?
 ";
@@ -43,21 +46,36 @@ const NEXT_SEQUENCE_SQL: &str = r"
     WHERE origin_node_id = ?
 ";
 const LIST_COMMANDS_BY_STATE_SQL: &str = r"
-    SELECT origin_node_id, sequence, state, command, result
+    SELECT origin_node_id, sequence, state, command, result,
+           timestamp_zero, timestamp, dependencies
     FROM command_journal
     WHERE state = ?
     ORDER BY origin_node_id, sequence
 ";
 const INSERT_APPLIED_COMMAND_SQL: &str = r"
     INSERT INTO command_journal (
-        origin_node_id, sequence, state, command, result
+        origin_node_id, sequence, state, command, result,
+        timestamp_zero, timestamp, dependencies
     )
-    VALUES (?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ";
 const UPDATE_COMMAND_SQL: &str = r"
     UPDATE command_journal
-    SET state = ?, command = ?, result = ?
+    SET state = ?, command = ?, result = ?,
+        timestamp_zero = ?, timestamp = ?, dependencies = ?
     WHERE origin_node_id = ? AND sequence = ?
+";
+const ADD_TIMESTAMP_ZERO_SQL: &str = r"
+    ALTER TABLE command_journal
+    ADD COLUMN timestamp_zero BLOB NOT NULL DEFAULT X''
+";
+const ADD_TIMESTAMP_SQL: &str = r"
+    ALTER TABLE command_journal
+    ADD COLUMN timestamp BLOB NOT NULL DEFAULT X''
+";
+const ADD_DEPENDENCIES_SQL: &str = r"
+    ALTER TABLE command_journal
+    ADD COLUMN dependencies BLOB NOT NULL DEFAULT X''
 ";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,12 +86,20 @@ pub enum JournalState {
     Applied,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct JournalEntry {
     pub command_id: ConsensusCommandId,
     pub state: JournalState,
     pub command: Vec<u8>,
     pub result: Vec<u8>,
+    pub metadata: JournalMetadata,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct JournalMetadata {
+    pub timestamp_zero: Option<LogicalTimestamp>,
+    pub timestamp: Option<LogicalTimestamp>,
+    pub dependencies: DependencySet,
 }
 
 #[derive(Clone, Debug)]
@@ -116,7 +142,11 @@ impl SqliteConsensusJournal {
             .await?;
 
         match version {
-            0 => self.migrate_to_v1().await,
+            0 => {
+                self.migrate_to_v1().await?;
+                self.migrate_to_v2().await
+            }
+            1 => self.migrate_to_v2().await,
             CURRENT_SCHEMA_VERSION => Ok(()),
             unsupported => Err(So3Error::Storage(format!(
                 "unsupported consensus sqlite schema version: {unsupported}"
@@ -126,6 +156,14 @@ impl SqliteConsensusJournal {
 
     async fn migrate_to_v1(&self) -> So3Result<()> {
         query(COMMANDS_TABLE_SQL).execute(&self.pool).await?;
+        query("PRAGMA user_version = 1").execute(&self.pool).await?;
+        Ok(())
+    }
+
+    async fn migrate_to_v2(&self) -> So3Result<()> {
+        query(ADD_TIMESTAMP_ZERO_SQL).execute(&self.pool).await?;
+        query(ADD_TIMESTAMP_SQL).execute(&self.pool).await?;
+        query(ADD_DEPENDENCIES_SQL).execute(&self.pool).await?;
         query(&format!("PRAGMA user_version = {CURRENT_SCHEMA_VERSION}"))
             .execute(&self.pool)
             .await?;
@@ -177,11 +215,25 @@ impl SqliteConsensusJournal {
         command_id: &ConsensusCommandId,
         command: &[u8],
     ) -> So3Result<JournalEntry> {
+        self.record_pre_accepted_with_metadata(command_id, command, JournalMetadata::default())
+            .await
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error when the pre-accepted command cannot be durably recorded.
+    pub async fn record_pre_accepted_with_metadata(
+        &self,
+        command_id: &ConsensusCommandId,
+        command: &[u8],
+        metadata: JournalMetadata,
+    ) -> So3Result<JournalEntry> {
         self.advance(
             command_id,
             JournalState::PreAccepted,
             command,
             EMPTY_RESULT_BYTES,
+            &metadata,
         )
         .await
     }
@@ -194,11 +246,25 @@ impl SqliteConsensusJournal {
         command_id: &ConsensusCommandId,
         command: &[u8],
     ) -> So3Result<JournalEntry> {
+        self.record_accepted_with_metadata(command_id, command, JournalMetadata::default())
+            .await
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error when the accepted command cannot be durably recorded.
+    pub async fn record_accepted_with_metadata(
+        &self,
+        command_id: &ConsensusCommandId,
+        command: &[u8],
+        metadata: JournalMetadata,
+    ) -> So3Result<JournalEntry> {
         self.advance(
             command_id,
             JournalState::Accepted,
             command,
             EMPTY_RESULT_BYTES,
+            &metadata,
         )
         .await
     }
@@ -211,11 +277,25 @@ impl SqliteConsensusJournal {
         command_id: &ConsensusCommandId,
         command: &[u8],
     ) -> So3Result<JournalEntry> {
+        self.record_committed_with_metadata(command_id, command, JournalMetadata::default())
+            .await
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error when the committed command cannot be durably recorded.
+    pub async fn record_committed_with_metadata(
+        &self,
+        command_id: &ConsensusCommandId,
+        command: &[u8],
+        metadata: JournalMetadata,
+    ) -> So3Result<JournalEntry> {
         self.advance(
             command_id,
             JournalState::Committed,
             command,
             EMPTY_RESULT_BYTES,
+            &metadata,
         )
         .await
     }
@@ -229,8 +309,28 @@ impl SqliteConsensusJournal {
         command: &[u8],
         result: &[u8],
     ) -> So3Result<JournalEntry> {
-        self.advance(command_id, JournalState::Applied, command, result)
+        self.record_applied_with_metadata(command_id, command, result, JournalMetadata::default())
             .await
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error when the applied command cannot be durably recorded.
+    pub async fn record_applied_with_metadata(
+        &self,
+        command_id: &ConsensusCommandId,
+        command: &[u8],
+        result: &[u8],
+        metadata: JournalMetadata,
+    ) -> So3Result<JournalEntry> {
+        self.advance(
+            command_id,
+            JournalState::Applied,
+            command,
+            result,
+            &metadata,
+        )
+        .await
     }
 
     async fn advance(
@@ -239,15 +339,18 @@ impl SqliteConsensusJournal {
         next_state: JournalState,
         command: &[u8],
         result: &[u8],
+        metadata: &JournalMetadata,
     ) -> So3Result<JournalEntry> {
         let _guard = self.write_lock.lock().await;
         let Some(existing) = self.load(command_id).await? else {
-            self.insert(command_id, next_state, command, result).await?;
+            self.insert(command_id, next_state, command, result, metadata)
+                .await?;
             return Ok(JournalEntry {
                 command_id: command_id.clone(),
                 state: next_state,
                 command: command.to_vec(),
                 result: result.to_vec(),
+                metadata: metadata.clone(),
             });
         };
 
@@ -269,12 +372,15 @@ impl SqliteConsensusJournal {
             return Ok(existing);
         }
 
-        self.update(command_id, next_state, command, result).await?;
+        let metadata = merge_metadata(&existing.metadata, metadata);
+        self.update(command_id, next_state, command, result, &metadata)
+            .await?;
         Ok(JournalEntry {
             command_id: command_id.clone(),
             state: next_state,
             command: command.to_vec(),
             result: result.to_vec(),
+            metadata,
         })
     }
 
@@ -284,6 +390,7 @@ impl SqliteConsensusJournal {
         state: JournalState,
         command: &[u8],
         result: &[u8],
+        metadata: &JournalMetadata,
     ) -> So3Result<()> {
         query(INSERT_APPLIED_COMMAND_SQL)
             .bind(command_id.origin_node_id())
@@ -291,6 +398,9 @@ impl SqliteConsensusJournal {
             .bind(state.as_sql())
             .bind(command)
             .bind(result)
+            .bind(encode_optional_proto(metadata.timestamp_zero.as_ref()))
+            .bind(encode_optional_proto(metadata.timestamp.as_ref()))
+            .bind(metadata.dependencies.encode_to_vec())
             .execute(&self.pool)
             .await?;
 
@@ -303,11 +413,15 @@ impl SqliteConsensusJournal {
         state: JournalState,
         command: &[u8],
         result: &[u8],
+        metadata: &JournalMetadata,
     ) -> So3Result<()> {
         query(UPDATE_COMMAND_SQL)
             .bind(state.as_sql())
             .bind(command)
             .bind(result)
+            .bind(encode_optional_proto(metadata.timestamp_zero.as_ref()))
+            .bind(encode_optional_proto(metadata.timestamp.as_ref()))
+            .bind(metadata.dependencies.encode_to_vec())
             .bind(command_id.origin_node_id())
             .bind(sequence_to_i64(command_id.sequence())?)
             .execute(&self.pool)
@@ -337,7 +451,57 @@ fn row_to_entry(row: &SqliteRow) -> So3Result<JournalEntry> {
         state: parse_state(state)?,
         command: row.try_get("command")?,
         result: row.try_get("result")?,
+        metadata: JournalMetadata {
+            timestamp_zero: decode_optional_proto(&row.try_get::<Vec<u8>, _>("timestamp_zero")?)?,
+            timestamp: decode_optional_proto(&row.try_get::<Vec<u8>, _>("timestamp")?)?,
+            dependencies: decode_dependencies(&row.try_get::<Vec<u8>, _>("dependencies")?)?,
+        },
     })
+}
+
+fn merge_metadata(existing: &JournalMetadata, next: &JournalMetadata) -> JournalMetadata {
+    JournalMetadata {
+        timestamp_zero: next
+            .timestamp_zero
+            .clone()
+            .or_else(|| existing.timestamp_zero.clone()),
+        timestamp: next
+            .timestamp
+            .clone()
+            .or_else(|| existing.timestamp.clone()),
+        dependencies: if next.dependencies.commands.is_empty() {
+            existing.dependencies.clone()
+        } else {
+            next.dependencies.clone()
+        },
+    }
+}
+
+fn encode_optional_proto<T: ProstMessage>(value: Option<&T>) -> Vec<u8> {
+    value.map_or_else(Vec::new, ProstMessage::encode_to_vec)
+}
+
+fn decode_optional_proto<T>(bytes: &[u8]) -> So3Result<Option<T>>
+where
+    T: Default + ProstMessage,
+{
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+
+    T::decode(bytes)
+        .map(Some)
+        .map_err(|error| So3Error::Serialization(error.to_string()))
+}
+
+fn decode_dependencies(bytes: &[u8]) -> So3Result<DependencySet> {
+    if bytes.is_empty() {
+        return Ok(DependencySet {
+            commands: Vec::new(),
+        });
+    }
+
+    DependencySet::decode(bytes).map_err(|error| So3Error::Serialization(error.to_string()))
 }
 
 fn parse_state(state: i64) -> So3Result<JournalState> {
@@ -384,15 +548,18 @@ fn i64_to_u64_sequence(sequence: i64) -> So3Result<u64> {
 mod tests {
     use tempfile::TempDir;
 
-    use super::{JournalState, SqliteConsensusJournal};
+    use super::{JournalMetadata, JournalState, SqliteConsensusJournal};
     use crate::consensus::ConsensusCommandId;
     use crate::domain::error::So3Error;
+    use crate::rpc_server::proto::{CommandId, DependencySet, LogicalTimestamp};
 
     const ORIGIN_NODE_ID: &str = "node-a";
     const COMMAND_SEQUENCE: u64 = 3;
     const COMMAND_BYTES: &[u8] = b"command";
     const RESULT_BYTES: &[u8] = b"result";
     const UNKNOWN_SCHEMA_VERSION: i64 = 99;
+    const TIMESTAMP_EPOCH: u64 = 11;
+    const TIMESTAMP_COUNTER: u64 = 12;
 
     fn command_id() -> ConsensusCommandId {
         ConsensusCommandId::new(ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE)
@@ -430,6 +597,46 @@ mod tests {
         let entry = reopened.load(&command_id()).await.unwrap().unwrap();
 
         assert_eq!(entry.result, RESULT_BYTES.to_vec());
+    }
+
+    #[tokio::test]
+    async fn record_metadata_survives_reopen_and_later_state_transitions() {
+        let temp_dir = TempDir::new().unwrap();
+        let journal = SqliteConsensusJournal::new(temp_dir.path()).await.unwrap();
+        let metadata = JournalMetadata {
+            timestamp_zero: Some(LogicalTimestamp {
+                epoch: TIMESTAMP_EPOCH,
+                counter: TIMESTAMP_COUNTER,
+                node_id: ORIGIN_NODE_ID.to_owned(),
+            }),
+            timestamp: Some(LogicalTimestamp {
+                epoch: TIMESTAMP_EPOCH,
+                counter: TIMESTAMP_COUNTER + 1,
+                node_id: ORIGIN_NODE_ID.to_owned(),
+            }),
+            dependencies: DependencySet {
+                commands: vec![CommandId {
+                    origin_node_id: "node-b".to_owned(),
+                    sequence: 2,
+                }],
+            },
+        };
+
+        let _ = journal
+            .record_pre_accepted_with_metadata(&command_id(), COMMAND_BYTES, metadata.clone())
+            .await
+            .unwrap();
+        let _ = journal
+            .record_committed(&command_id(), COMMAND_BYTES)
+            .await
+            .unwrap();
+        drop(journal);
+
+        let reopened = SqliteConsensusJournal::new(temp_dir.path()).await.unwrap();
+        let entry = reopened.load(&command_id()).await.unwrap().unwrap();
+
+        assert_eq!(entry.state, JournalState::Committed);
+        assert_eq!(entry.metadata, metadata);
     }
 
     #[tokio::test]
