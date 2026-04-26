@@ -1,18 +1,21 @@
 # ────────────────────────────────────────────
 # Stage 1 – builder
+#
+# rust:alpine uses musl libc by default, so the resulting binary is
+# fully statically linked — no runtime libc dependency.
 # ────────────────────────────────────────────
-FROM rust:1-slim-bookworm AS builder
+FROM rust:1-alpine AS builder
 
-# protobuf-compiler is required by tonic-prost-build (crates/core/build.rs)
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends protobuf-compiler \
-    && rm -rf /var/lib/apt/lists/*
+# build-base  – gcc + musl-dev + make, required to compile bundled C code
+#               (libsqlite3-sys, ring, etc.)
+# protobuf    – protoc binary required by tonic-prost-build (crates/core/build.rs)
+RUN apk add --no-cache build-base protobuf
 
 WORKDIR /build
 
-# Copy manifests, build scripts, and proto definitions first.
-# These layers are invalidated only when dependencies or the proto contract changes,
-# not on every source edit.
+# ── dependency caching layer ─────────────────────────────────────────────────
+# Copy manifests, build scripts, and proto definitions.
+# These layers are only invalidated when dependencies or the proto contract change.
 COPY Cargo.toml Cargo.lock ./
 COPY crates/core/Cargo.toml   crates/core/Cargo.toml
 COPY crates/core/build.rs     crates/core/build.rs
@@ -20,34 +23,40 @@ COPY crates/core/proto/       crates/core/proto/
 COPY crates/so3/Cargo.toml              crates/so3/Cargo.toml
 COPY crates/so3-maelstrom/Cargo.toml    crates/so3-maelstrom/Cargo.toml
 
-# Compile all external dependencies with placeholder sources so Docker can
-# cache them independently of application source changes.
-# The dummy build is expected to fail at link time (our crates are empty);
-# the important thing is that all transitive dependencies get compiled and
-# cached in target/ before the real source is copied in.
+# Compile all external dependencies using placeholder sources.
+# The build is expected to fail at link time (empty lib.rs); what matters is
+# that every transitive dependency is compiled and cached in target/ before the
+# real source lands in the next layer.
 RUN mkdir -p crates/core/src crates/so3/src crates/so3-maelstrom/src \
     && touch crates/core/src/lib.rs \
     && printf 'fn main() {}\n' > crates/so3/src/main.rs \
     && printf 'fn main() {}\n' > crates/so3-maelstrom/src/main.rs \
     && cargo build --release --bin so3 || true
 
-# Copy real application source (invalidates this layer and the one below on
-# source changes, but leaves the dependency layer above intact).
+# ── application build ─────────────────────────────────────────────────────────
+# Copying real source invalidates only this layer and the one below.
+# All cached dependency artifacts above remain intact.
 COPY crates/ crates/
-
 RUN cargo build --release --bin so3
 
 # ────────────────────────────────────────────
 # Stage 2 – runtime
+#
+# FROM scratch: zero base OS — image size equals the stripped binary.
+# Works because the binary is fully static (musl, bundled sqlite, rustls).
+# Docker still mounts /etc/resolv.conf and /etc/hosts at runtime, so DNS
+# resolution and networking work without any extra files.
 # ────────────────────────────────────────────
-FROM debian:bookworm-slim AS runtime
+FROM scratch AS runtime
 
 # The binary is already stripped (profile.release: strip = true).
-# glibc is the only runtime requirement; sqlite and tls (rustls) are bundled.
-COPY --from=builder /build/target/release/so3 /usr/local/bin/so3
+COPY --from=builder /build/target/release/so3 /so3
 
 # SO3_OBJECT_ADDR – S3-compatible HTTP API (default 127.0.0.1:3000)
 # SO3_RPC_ADDR    – internal gRPC consensus transport (default 127.0.0.1:4000)
 EXPOSE 3000 4000
 
-ENTRYPOINT ["/usr/local/bin/so3"]
+# Send SIGINT on `docker stop` so the tokio ctrl_c handler shuts down cleanly.
+STOPSIGNAL SIGINT
+
+ENTRYPOINT ["/so3"]

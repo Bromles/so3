@@ -1,8 +1,8 @@
 use crate::consensus::state_machine::ObjectCommandExecutor;
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::{
-    CasCommand, CasResult, ObjectCommand, ObjectKey, ObjectLastModified, ObjectResult,
-    ObjectVersion, ReadCommand, StoredObject, WriteCommand,
+    CasCommand, CasResult, DeleteCommand, ObjectCommand, ObjectKey, ObjectLastModified,
+    ObjectResult, ObjectVersion, ReadCommand, StoredObject, WriteCommand,
 };
 
 #[derive(Clone)]
@@ -46,6 +46,20 @@ impl<E: ObjectCommandExecutor> ObjectService<E> {
         {
             ObjectResult::Write(result) => Ok(result.object),
             result => unexpected_result("Write", &result),
+        }
+    }
+
+    /// # Errors
+    ///
+    /// Returns any error from the state machine while executing the deterministic `Delete` command.
+    pub async fn delete(&self, key: ObjectKey) -> So3Result<()> {
+        match self
+            .executor
+            .execute_command(ObjectCommand::Delete(DeleteCommand { key }))
+            .await?
+        {
+            ObjectResult::Delete(_) => Ok(()),
+            result => unexpected_result("Delete", &result),
         }
     }
 

@@ -41,7 +41,10 @@ where
         .route(OBJECT_METADATA_ROUTE_PATH, get(handle_get_metadata))
         .route(
             S3_OBJECT_ROUTE_PATH,
-            get(handle_s3_get).head(handle_s3_head).put(handle_s3_put),
+            get(handle_s3_get)
+                .head(handle_s3_head)
+                .put(handle_s3_put)
+                .delete(handle_s3_delete),
         )
         .with_state(state)
         .layer((
@@ -136,6 +139,18 @@ where
     attach_s3_metadata_headers(response.headers_mut(), &metadata)?;
 
     Ok(response)
+}
+
+async fn handle_s3_delete<E>(
+    State(state): State<ObjectApiState<E>>,
+    Path((bucket, key)): Path<(String, String)>,
+) -> Result<Response, ApiError>
+where
+    E: ObjectCommandExecutor + Clone + Send + Sync + 'static,
+{
+    let key = ObjectKey::new(s3_object_key(&bucket, &key)?)?;
+    state.service.delete(key).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 async fn handle_put<E>(
@@ -683,6 +698,54 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(&get_body[..], HELLO_VALUE.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn s3_delete_returns_no_content_for_existing_object() {
+        let (app, _temp_dir) = test_app().await;
+
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::put(S3_OBJECT_PATH)
+                    .body(Body::from(HELLO_VALUE))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let delete_response = app
+            .clone()
+            .oneshot(
+                Request::delete(S3_OBJECT_PATH)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(delete_response.status(), StatusCode::NO_CONTENT);
+
+        let get_response = app
+            .oneshot(Request::get(S3_OBJECT_PATH).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(get_response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn s3_delete_returns_no_content_for_missing_object() {
+        let (app, _temp_dir) = test_app().await;
+
+        let response = app
+            .oneshot(
+                Request::delete(S3_OBJECT_PATH)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]

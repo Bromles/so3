@@ -67,6 +67,10 @@ const INSERT_APPLIED_RESULT_SQL: &str = r"
     INSERT OR IGNORE INTO applied_commands (origin_node_id, sequence, result)
     VALUES (?, ?, ?)
 ";
+const DELETE_OBJECT_SQL: &str = r"
+    DELETE FROM objects
+    WHERE key = ?
+";
 
 #[derive(Clone)]
 pub struct SqliteObjectMetadataRepository {
@@ -206,6 +210,15 @@ impl ObjectMetadataRepository for SqliteObjectMetadataRepository {
             .bind(content_length_to_i64(record.content_length)?)
             .bind(&record.checksum)
             .bind(record.last_modified.unix_millis())
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    async fn delete(&self, key: &ObjectKey) -> So3Result<()> {
+        query(DELETE_OBJECT_SQL)
+            .bind(key.as_str())
             .execute(&self.pool)
             .await?;
 

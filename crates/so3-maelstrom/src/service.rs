@@ -189,6 +189,7 @@ where
                     current_version.get()
                 ),
             ),
+            ObjectResult::Delete(_) => unreachable!("Maelstrom lin-kv does not issue delete commands"),
         }
     }
 

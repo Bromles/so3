@@ -20,4 +20,9 @@ pub trait BlobRepository: Send + Sync {
     ///
     /// Returns an error when the committed blob is missing or cannot be read.
     async fn load(&self, blob_id: &str) -> So3Result<Vec<u8>>;
+
+    /// # Errors
+    ///
+    /// Returns an error when the committed blob cannot be removed from durable storage.
+    async fn delete(&self, blob_id: &str) -> So3Result<()>;
 }

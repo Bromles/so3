@@ -429,6 +429,7 @@ fn command_key(command: &ObjectCommand) -> &ObjectKey {
         ObjectCommand::Read(command) => &command.key,
         ObjectCommand::Write(command) => &command.key,
         ObjectCommand::Cas(command) => &command.key,
+        ObjectCommand::Delete(command) => &command.key,
     }
 }
 

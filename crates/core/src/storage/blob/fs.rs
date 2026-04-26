@@ -93,6 +93,14 @@ impl BlobRepository for FileSystemBlobRepository {
             .await
             .map_err(So3Error::from)
     }
+
+    async fn delete(&self, blob_id: &str) -> So3Result<()> {
+        match fs::remove_file(self.committed_path(blob_id)).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(So3Error::from(e)),
+        }
+    }
 }
 
 fn checksum_hex(value: &[u8]) -> String {

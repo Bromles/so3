@@ -9,6 +9,7 @@ pub enum ObjectCommand {
     Read(ReadCommand),
     Write(WriteCommand),
     Cas(CasCommand),
+    Delete(DeleteCommand),
 }
 
 impl ObjectCommand {
@@ -48,10 +49,16 @@ pub struct CasCommand {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteCommand {
+    pub key: ObjectKey,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ObjectResult {
     Read(ReadResult),
     Write(WriteResult),
     Cas(CasResult),
+    Delete(DeleteResult),
 }
 
 impl ObjectResult {
@@ -86,6 +93,9 @@ pub enum CasResult {
     NotFound,
     Mismatch { current_version: ObjectVersion },
 }
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteResult;
 
 #[cfg(test)]
 mod tests {

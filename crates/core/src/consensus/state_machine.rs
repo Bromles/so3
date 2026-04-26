@@ -1,7 +1,9 @@
 use async_trait::async_trait;
 
 use crate::domain::error::So3Result;
-use crate::domain::{CasResult, ObjectCommand, ObjectResult, ReadResult, WriteResult};
+use crate::domain::{
+    CasResult, DeleteResult, ObjectCommand, ObjectResult, ReadResult, WriteResult,
+};
 use crate::storage::object::repository::{CasWriteOutcome, ObjectRepository};
 
 #[async_trait]
@@ -72,6 +74,10 @@ where
                     Ok(ObjectResult::Cas(CasResult::Mismatch { current_version }))
                 }
             },
+            ObjectCommand::Delete(command) => {
+                self.repository.delete(&command.key).await?;
+                Ok(ObjectResult::Delete(DeleteResult))
+            }
         }
     }
 }
@@ -160,6 +166,11 @@ mod tests {
             );
             objects.insert(key.as_str().to_owned(), object.clone());
             Ok(CasWriteOutcome::Applied(object))
+        }
+
+        async fn delete(&self, key: &ObjectKey) -> So3Result<()> {
+            self.objects.lock().await.remove(key.as_str());
+            Ok(())
         }
     }
 

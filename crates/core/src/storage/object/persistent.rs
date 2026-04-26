@@ -121,6 +121,18 @@ where
             .await?;
         Ok(CasWriteOutcome::Applied(object))
     }
+
+    async fn delete(&self, key: &ObjectKey) -> So3Result<()> {
+        let _guard = self.write_lock.lock().await;
+        let Some(record) = self.metadata_repository.read(key).await? else {
+            return Ok(());
+        };
+        // Remove the metadata entry first so the key is invisible after any crash.
+        // The orphaned blob is harmless if the second step fails.
+        self.metadata_repository.delete(key).await?;
+        self.blob_repository.delete(&record.blob_id).await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

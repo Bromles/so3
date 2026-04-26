@@ -37,4 +37,9 @@ pub trait ObjectRepository: Send + Sync {
         value: Vec<u8>,
         last_modified: ObjectLastModified,
     ) -> So3Result<CasWriteOutcome>;
+
+    /// # Errors
+    ///
+    /// Returns an error when the repository cannot remove the object from durable storage.
+    async fn delete(&self, key: &ObjectKey) -> So3Result<()>;
 }
