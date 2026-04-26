@@ -251,6 +251,14 @@ impl SqliteConsensusJournal {
             });
         };
 
+        if existing.command != command {
+            return Err(So3Error::InvalidRequest(format!(
+                "conflicting command payload for consensus command {}:{}",
+                command_id.origin_node_id(),
+                command_id.sequence()
+            )));
+        }
+
         if existing.state.rank() > next_state.rank() {
             return Ok(existing);
         }
@@ -524,6 +532,24 @@ mod tests {
 
         assert_eq!(entry.state, JournalState::Applied);
         assert_eq!(entry.result, RESULT_BYTES.to_vec());
+    }
+
+    #[tokio::test]
+    async fn rejects_conflicting_payload_for_existing_command_id() {
+        let temp_dir = TempDir::new().unwrap();
+        let journal = SqliteConsensusJournal::new(temp_dir.path()).await.unwrap();
+
+        let _ = journal
+            .record_pre_accepted(&command_id(), COMMAND_BYTES)
+            .await
+            .unwrap();
+        let error = journal
+            .record_accepted(&command_id(), b"different-command")
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, So3Error::InvalidRequest(_)));
+        assert!(error.to_string().contains("conflicting command payload"));
     }
 
     #[tokio::test]
