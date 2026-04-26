@@ -43,10 +43,6 @@ pub enum RequestBody {
         client_msg_id: u64,
         request: ClientRequest,
     },
-    Replicate {
-        msg_id: u64,
-        request: ClientRequest,
-    },
     Consensus {
         msg_id: u64,
         rpc: ConsensusRpc,
@@ -55,9 +51,6 @@ pub enum RequestBody {
     ForwardOk {
         in_reply_to: u64,
         response: ResponseBody,
-    },
-    ReplicateOk {
-        in_reply_to: u64,
     },
     ConsensusOk {
         in_reply_to: u64,

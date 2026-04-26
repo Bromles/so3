@@ -54,14 +54,10 @@ where
                     .await
             }
             RequestBody::Forward { msg_id, .. }
-            | RequestBody::Replicate { msg_id, .. }
             | RequestBody::Consensus { msg_id, .. }
             | RequestBody::ForwardOk {
                 in_reply_to: msg_id,
                 ..
-            }
-            | RequestBody::ReplicateOk {
-                in_reply_to: msg_id,
             }
             | RequestBody::ConsensusOk {
                 in_reply_to: msg_id,
@@ -78,6 +74,7 @@ where
         }
     }
 
+    #[cfg(test)]
     pub async fn handle_client(&self, msg_id: u64, request: ClientRequest) -> ResponseBody {
         match request {
             ClientRequest::Read { key } => self.handle_read(msg_id, key).await,
@@ -186,6 +183,7 @@ where
         }
     }
 
+    #[cfg(test)]
     async fn handle_read(&self, msg_id: u64, key: Value) -> ResponseBody {
         let key = match object_key_from_json(&key) {
             Ok(key) => key,
@@ -209,6 +207,7 @@ where
         }
     }
 
+    #[cfg(test)]
     async fn handle_write(&self, msg_id: u64, key: Value, value: Value) -> ResponseBody {
         let key = match object_key_from_json(&key) {
             Ok(key) => key,
@@ -227,6 +226,7 @@ where
         }
     }
 
+    #[cfg(test)]
     async fn handle_cas(
         &self,
         msg_id: u64,

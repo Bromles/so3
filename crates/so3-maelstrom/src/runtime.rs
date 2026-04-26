@@ -168,9 +168,6 @@ impl Runtime {
                     self.handle_forward(&src, msg_id, client_msg_id, request)
                         .await
                 }
-                RequestBody::Replicate { msg_id, request } => {
-                    self.handle_replicate(&src, msg_id, request).await
-                }
                 RequestBody::Consensus {
                     msg_id,
                     rpc,
@@ -181,17 +178,6 @@ impl Runtime {
                     response,
                 } => {
                     self.forward_responses.insert(in_reply_to, response);
-                    Ok(())
-                }
-                RequestBody::ReplicateOk { in_reply_to } => {
-                    self.internal_errors.insert(
-                        in_reply_to,
-                        ResponseBody::Error {
-                            in_reply_to,
-                            code: CRASH_CODE,
-                            text: "legacy replicate response is not expected".to_owned(),
-                        },
-                    );
                     Ok(())
                 }
                 RequestBody::ConsensusOk {
@@ -287,51 +273,6 @@ impl Runtime {
             },
         })
         .await
-    }
-
-    async fn handle_replicate(
-        &mut self,
-        sender: &str,
-        msg_id: u64,
-        request: ClientRequest,
-    ) -> So3Result<()> {
-        let response = self.service.handle_client(msg_id, request).await;
-        match response {
-            ResponseBody::WriteOk { .. } | ResponseBody::CasOk { .. } => {
-                self.write_message(&Message {
-                    src: self.node_id.clone(),
-                    dest: sender.to_owned(),
-                    body: RequestBody::ReplicateOk {
-                        in_reply_to: msg_id,
-                    },
-                })
-                .await
-            }
-            ResponseBody::Error { code, text, .. } => {
-                self.write_message(&Message {
-                    src: self.node_id.clone(),
-                    dest: sender.to_owned(),
-                    body: RequestBody::Error {
-                        in_reply_to: msg_id,
-                        code,
-                        text,
-                    },
-                })
-                .await
-            }
-            _ => {
-                self.write_message(&Message {
-                    src: self.node_id.clone(),
-                    dest: sender.to_owned(),
-                    body: RequestBody::Error {
-                        in_reply_to: msg_id,
-                        code: CRASH_CODE,
-                        text: "replication request produced an unexpected response".to_owned(),
-                    },
-                })
-                .await
-            }
-        }
     }
 
     async fn handle_consensus(
