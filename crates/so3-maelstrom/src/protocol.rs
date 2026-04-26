@@ -69,6 +69,7 @@ pub enum ConsensusRpc {
     PreAccept,
     Accept,
     Commit,
+    Recover,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -9,7 +9,7 @@ use crate::domain::error::{So3Error, So3Result};
 use crate::rpc_server::proto::consensus_transport_client::ConsensusTransportClient;
 use crate::rpc_server::proto::{
     AcceptRequest, AcceptResponse, CommitRequest, CommitResponse, PreAcceptRequest,
-    PreAcceptResponse,
+    PreAcceptResponse, RecoverRequest, RecoverResponse,
 };
 
 const HTTP_SCHEME_PREFIX: &str = "http://";
@@ -83,6 +83,21 @@ impl TonicConsensusPeerTransport {
             .map(Response::into_inner)
             .map_err(|status| map_tonic_status(&status))
     }
+
+    /// # Errors
+    ///
+    /// Returns an error when the peer is unknown or rejects the recover request.
+    pub async fn recover(
+        &self,
+        peer_id: &str,
+        request: RecoverRequest,
+    ) -> So3Result<RecoverResponse> {
+        self.client_for(peer_id)?
+            .recover(Request::new(request))
+            .await
+            .map(Response::into_inner)
+            .map_err(|status| map_tonic_status(&status))
+    }
 }
 
 #[async_trait]
@@ -109,6 +124,14 @@ impl ConsensusPeerTransport for TonicConsensusPeerTransport {
         request: CommitRequest,
     ) -> So3Result<CommitResponse> {
         self.commit(peer_id, request).await
+    }
+
+    async fn recover_peer(
+        &mut self,
+        peer_id: &str,
+        request: RecoverRequest,
+    ) -> So3Result<RecoverResponse> {
+        self.recover(peer_id, request).await
     }
 }
 
@@ -146,7 +169,9 @@ mod tests {
     use crate::consensus::executor::PersistentReplicatedCommandExecutor;
     use crate::consensus::journal::SqliteConsensusJournal;
     use crate::domain::{ObjectCommand, ObjectKey, ObjectResult, WriteCommand};
-    use crate::rpc_server::proto::{CommandId, CommitRequest, EventPayload, PreAcceptRequest};
+    use crate::rpc_server::proto::{
+        Ballot, CommandId, CommitRequest, EventPayload, PreAcceptRequest, RecoverRequest, State,
+    };
     use crate::rpc_server::server::RpcServer;
     use crate::rpc_server::transport::{ApplyingConsensusTransport, RejectingConsensusTransport};
     use crate::storage::metadata::sqlite::SqliteObjectMetadataRepository;
@@ -235,6 +260,58 @@ mod tests {
             panic!("expected write result");
         };
         assert_eq!(write.object.value, FIRST_VALUE.to_vec());
+        cancellation_token.cancel();
+        server_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn recover_peer_roundtrips_to_rpc_server() {
+        let temp_dir = TempDir::new().unwrap();
+        let repository = SqliteFsPersistentObjectRepository::new(
+            temp_dir.path().join("metadata"),
+            temp_dir.path().join("blobs"),
+        )
+        .await
+        .unwrap();
+        let metadata_repository =
+            SqliteObjectMetadataRepository::new(temp_dir.path().join("metadata"))
+                .await
+                .unwrap();
+        let journal = SqliteConsensusJournal::new(temp_dir.path().join("consensus"))
+            .await
+            .unwrap();
+        let listener = TcpListener::bind(LOOPBACK_EPHEMERAL_ADDR).await.unwrap();
+        let peer_id = listener.local_addr().unwrap().to_string();
+        let cancellation_token = CancellationToken::new();
+        let shutdown_token = cancellation_token.clone();
+        let server_task = spawn(async move {
+            RpcServer::new(ApplyingConsensusTransport::new(
+                Uuid::nil().to_string(),
+                PersistentReplicatedCommandExecutor::new(repository, metadata_repository),
+                journal,
+            ))
+            .run(listener, shutdown_token)
+            .await
+        });
+        let mut transport = TonicConsensusPeerTransport::from_peer_ids([peer_id.clone()]).unwrap();
+
+        let response = transport
+            .recover_peer(
+                &peer_id,
+                RecoverRequest {
+                    command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
+                    ballot: Some(Ballot {
+                        round: 0,
+                        node_id: COMMAND_ORIGIN_NODE_ID.to_owned(),
+                    }),
+                    ..RecoverRequest::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.local_state, State::Undefined as i32);
+        assert!(response.wait_for.is_empty());
         cancellation_token.cancel();
         server_task.await.unwrap().unwrap();
     }

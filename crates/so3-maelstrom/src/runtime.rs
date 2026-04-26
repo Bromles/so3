@@ -21,7 +21,7 @@ use so3_core::domain::error::{So3Error, So3Result};
 use so3_core::object_server::service::ObjectService;
 use so3_core::rpc_server::proto::{
     AcceptRequest, AcceptResponse, CommitRequest, CommitResponse, PreAcceptRequest,
-    PreAcceptResponse,
+    PreAcceptResponse, RecoverRequest, RecoverResponse,
 };
 use so3_core::rpc_server::transport::{ApplyingConsensusTransport, ConsensusTransportHandler};
 use so3_core::storage::metadata::sqlite::SqliteObjectMetadataRepository;
@@ -319,6 +319,18 @@ impl Runtime {
                     Err(error) => Err(error),
                 }
             }
+            ConsensusRpc::Recover => {
+                let request = decode_proto::<RecoverRequest>(payload);
+                match request {
+                    Ok(request) => self
+                        .local_transport
+                        .recover(request)
+                        .await
+                        .map(|response| response.encode_to_vec())
+                        .map_err(status_error),
+                    Err(error) => Err(error),
+                }
+            }
         };
 
         match result {
@@ -502,6 +514,15 @@ impl ConsensusPeerTransport for Runtime {
     ) -> So3Result<CommitResponse> {
         let payload = send_consensus_rpc(self, peer_id, ConsensusRpc::Commit, request).await?;
         decode_proto::<CommitResponse>(&payload)
+    }
+
+    async fn recover_peer(
+        &mut self,
+        peer_id: &str,
+        request: RecoverRequest,
+    ) -> So3Result<RecoverResponse> {
+        let payload = send_consensus_rpc(self, peer_id, ConsensusRpc::Recover, request).await?;
+        decode_proto::<RecoverResponse>(&payload)
     }
 }
 

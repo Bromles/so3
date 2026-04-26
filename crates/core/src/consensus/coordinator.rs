@@ -8,6 +8,7 @@ use crate::domain::{ObjectCommand, ObjectResult};
 use crate::rpc_server::proto::{
     AcceptRequest, AcceptResponse, Ballot, CommitRequest, CommitResponse, DependencySet,
     EventPayload, LastApplied, LogicalTimestamp, PreAcceptRequest, PreAcceptResponse,
+    RecoverRequest, RecoverResponse, State,
 };
 use crate::rpc_server::transport::ConsensusTransportHandler;
 
@@ -28,6 +29,11 @@ pub trait ConsensusPeerTransport: Send {
         peer_id: &str,
         request: CommitRequest,
     ) -> So3Result<CommitResponse>;
+    async fn recover_peer(
+        &mut self,
+        peer_id: &str,
+        request: RecoverRequest,
+    ) -> So3Result<RecoverResponse>;
 }
 
 #[derive(Clone, Debug)]
@@ -121,6 +127,41 @@ where
             .await?;
 
         ObjectResult::from_bytes(&result)
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the recovery request is rejected locally or by any configured replica.
+    pub async fn recover(
+        &mut self,
+        command_id: &ConsensusCommandId,
+        ballot: Option<Ballot>,
+    ) -> So3Result<RecoveryDecision> {
+        let timestamp_zero = self.clock.tick().await;
+        let request = RecoverRequest {
+            command_id: Some(command_id_proto(command_id)),
+            ballot,
+            event: None,
+            timestamp_zero: Some(timestamp_zero.clone()),
+        };
+
+        let local_response = self
+            .local_transport
+            .recover(request.clone())
+            .await
+            .map_err(|status| map_status(&status))?;
+        let mut decision = RecoveryDecision::from_local_timestamp(timestamp_zero);
+        apply_recover_response(&mut decision, &self.config.node_id, local_response)?;
+
+        for peer_id in &self.config.peer_ids {
+            let response = self
+                .peer_transport
+                .recover_peer(peer_id, request.clone())
+                .await?;
+            apply_recover_response(&mut decision, peer_id, response)?;
+        }
+
+        Ok(decision)
     }
 
     async fn pre_accept_all(
@@ -238,6 +279,29 @@ struct PreAcceptDecision {
     dependencies: DependencySet,
 }
 
+#[derive(Debug, PartialEq)]
+pub struct RecoveryDecision {
+    pub local_state: State,
+    pub wait_for: Vec<crate::rpc_server::proto::CommandId>,
+    pub superseding: bool,
+    pub dependencies: DependencySet,
+    pub timestamp: Option<LogicalTimestamp>,
+    pub highest_nack: Option<Ballot>,
+}
+
+impl RecoveryDecision {
+    fn from_local_timestamp(timestamp: LogicalTimestamp) -> Self {
+        Self {
+            local_state: State::Undefined,
+            wait_for: Vec::new(),
+            superseding: false,
+            dependencies: empty_dependencies(),
+            timestamp: Some(timestamp),
+            highest_nack: None,
+        }
+    }
+}
+
 fn apply_pre_accept_response(
     decision: &mut PreAcceptDecision,
     node_id: &str,
@@ -267,6 +331,31 @@ fn apply_accept_response(
     }
 
     merge_dependencies(dependencies, response.dependencies);
+
+    Ok(())
+}
+
+fn apply_recover_response(
+    decision: &mut RecoveryDecision,
+    node_id: &str,
+    response: RecoverResponse,
+) -> So3Result<()> {
+    if response.superseding {
+        decision.superseding = true;
+    }
+
+    decision.local_state = max_state(
+        decision.local_state,
+        State::try_from(response.local_state).map_err(|_| {
+            So3Error::InvalidRequest(format!(
+                "recover returned unknown state from replica {node_id}"
+            ))
+        })?,
+    );
+    merge_command_ids(&mut decision.wait_for, response.wait_for);
+    merge_dependencies(&mut decision.dependencies, response.dependencies);
+    decision.timestamp = max_timestamp(decision.timestamp.take(), response.timestamp);
+    decision.highest_nack = max_ballot_option(decision.highest_nack.take(), response.nack);
 
     Ok(())
 }
@@ -305,6 +394,20 @@ fn merge_dependencies(target: &mut DependencySet, source: Option<DependencySet>)
     }
 }
 
+fn merge_command_ids(
+    target: &mut Vec<crate::rpc_server::proto::CommandId>,
+    source: Vec<crate::rpc_server::proto::CommandId>,
+) {
+    for command in source {
+        if !target.iter().any(|existing| {
+            existing.origin_node_id == command.origin_node_id
+                && existing.sequence == command.sequence
+        }) {
+            target.push(command);
+        }
+    }
+}
+
 fn max_timestamp(
     current: Option<LogicalTimestamp>,
     candidate: Option<LogicalTimestamp>,
@@ -327,6 +430,41 @@ fn ballot(node_id: &str) -> Ballot {
     }
 }
 
+fn max_ballot_option(current: Option<Ballot>, candidate: Option<Ballot>) -> Option<Ballot> {
+    match (current, candidate) {
+        (Some(current), Some(candidate)) => Some(if ballot_is_after(&candidate, &current) {
+            candidate
+        } else {
+            current
+        }),
+        (None, candidate) => candidate,
+        (current, None) => current,
+    }
+}
+
+fn ballot_is_after(candidate: &Ballot, current: &Ballot) -> bool {
+    candidate.round > current.round
+        || (candidate.round == current.round && candidate.node_id > current.node_id)
+}
+
+fn max_state(current: State, candidate: State) -> State {
+    if state_rank(candidate) > state_rank(current) {
+        candidate
+    } else {
+        current
+    }
+}
+
+fn state_rank(state: State) -> u8 {
+    match state {
+        State::Undefined => 0,
+        State::PreAccepted => 1,
+        State::Accepted => 2,
+        State::Committed => 3,
+        State::Applied => 4,
+    }
+}
+
 fn map_status(status: &Status) -> So3Error {
     So3Error::InvalidRequest(status.to_string())
 }
@@ -339,16 +477,17 @@ mod tests {
     use tonic::Status;
 
     use super::{
-        AccordCoordinator, AccordCoordinatorConfig, ConsensusPeerTransport, empty_dependencies,
+        AccordCoordinator, AccordCoordinatorConfig, ConsensusPeerTransport, RecoveryDecision,
+        empty_dependencies,
     };
     use crate::consensus::ConsensusCommandId;
     use crate::domain::{
         ObjectCommand, ObjectKey, ObjectResult, ReadCommand, ReadResult, WriteCommand,
     };
     use crate::rpc_server::proto::{
-        AcceptRequest, AcceptResponse, ApplyRequest, ApplyResponse, CommandId, CommitRequest,
-        CommitResponse, DependencySet, LogicalTimestamp, PreAcceptRequest, PreAcceptResponse,
-        RecoverRequest, RecoverResponse,
+        AcceptRequest, AcceptResponse, ApplyRequest, ApplyResponse, Ballot, CommandId,
+        CommitRequest, CommitResponse, DependencySet, LogicalTimestamp, PreAcceptRequest,
+        PreAcceptResponse, RecoverRequest, RecoverResponse, State,
     };
     use crate::rpc_server::transport::ConsensusTransportHandler;
 
@@ -461,6 +600,92 @@ mod tests {
         assert!(peers.commit_peer_ids.is_empty());
     }
 
+    #[tokio::test]
+    async fn recover_merges_peer_state_dependencies_waits_and_highest_nack() {
+        let local = FakeLocalTransport {
+            result: ObjectResult::Read(ReadResult { object: None })
+                .to_bytes()
+                .unwrap(),
+        };
+        let mut peers = FakePeerTransport::with_recoveries([
+            RecoverResponse {
+                local_state: State::Committed.into(),
+                wait_for: vec![dependency(PEER_A, 10)],
+                superseding: false,
+                dependencies: Some(DependencySet {
+                    commands: vec![dependency(PEER_A, 11)],
+                }),
+                timestamp: Some(LogicalTimestamp {
+                    epoch: u64::MAX - 1,
+                    counter: 1,
+                    node_id: PEER_A.to_owned(),
+                }),
+                nack: Some(Ballot {
+                    round: 1,
+                    node_id: PEER_A.to_owned(),
+                }),
+            },
+            RecoverResponse {
+                local_state: State::Applied.into(),
+                wait_for: vec![dependency(PEER_B, 12), dependency(PEER_A, 10)],
+                superseding: true,
+                dependencies: Some(DependencySet {
+                    commands: vec![dependency(PEER_B, 13)],
+                }),
+                timestamp: Some(LogicalTimestamp {
+                    epoch: u64::MAX,
+                    counter: 0,
+                    node_id: PEER_B.to_owned(),
+                }),
+                nack: Some(Ballot {
+                    round: 2,
+                    node_id: PEER_B.to_owned(),
+                }),
+            },
+        ]);
+        let mut coordinator = AccordCoordinator::new(
+            AccordCoordinatorConfig {
+                node_id: LOCAL_NODE_ID.to_owned(),
+                peer_ids: vec![PEER_A.to_owned(), PEER_B.to_owned()],
+            },
+            &local,
+            &mut peers,
+        );
+
+        let decision = coordinator
+            .recover(
+                &ConsensusCommandId::new(LOCAL_NODE_ID.to_owned(), 9),
+                Some(Ballot {
+                    round: 0,
+                    node_id: LOCAL_NODE_ID.to_owned(),
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            decision,
+            RecoveryDecision {
+                local_state: State::Applied,
+                wait_for: vec![dependency(PEER_A, 10), dependency(PEER_B, 12)],
+                superseding: true,
+                dependencies: DependencySet {
+                    commands: vec![dependency(PEER_A, 11), dependency(PEER_B, 13)],
+                },
+                timestamp: Some(LogicalTimestamp {
+                    epoch: u64::MAX,
+                    counter: 0,
+                    node_id: PEER_B.to_owned(),
+                }),
+                highest_nack: Some(Ballot {
+                    round: 2,
+                    node_id: PEER_B.to_owned(),
+                }),
+            }
+        );
+        assert_eq!(peers.recover_peer_ids, vec![PEER_A, PEER_B]);
+    }
+
     struct FakeLocalTransport {
         result: Vec<u8>,
     }
@@ -496,15 +721,24 @@ mod tests {
         }
 
         async fn recover(&self, _request: RecoverRequest) -> Result<RecoverResponse, Status> {
-            unimplemented!("coordinator does not call recover directly")
+            Ok(RecoverResponse {
+                local_state: State::Undefined.into(),
+                wait_for: Vec::new(),
+                superseding: false,
+                dependencies: Some(empty_dependencies()),
+                timestamp: None,
+                nack: None,
+            })
         }
     }
 
     struct FakePeerTransport {
         pre_accepts: VecDeque<PreAcceptResponse>,
+        recoveries: VecDeque<RecoverResponse>,
         pre_accept_peer_ids: Vec<String>,
         accept_peer_ids: Vec<String>,
         commit_peer_ids: Vec<String>,
+        recover_peer_ids: Vec<String>,
         accept_timestamps: Vec<LogicalTimestamp>,
         commit_dependencies: Vec<DependencySet>,
     }
@@ -513,9 +747,24 @@ mod tests {
         fn with_pre_accepts<const N: usize>(responses: [PreAcceptResponse; N]) -> Self {
             Self {
                 pre_accepts: VecDeque::from(responses),
+                recoveries: VecDeque::new(),
                 pre_accept_peer_ids: Vec::new(),
                 accept_peer_ids: Vec::new(),
                 commit_peer_ids: Vec::new(),
+                recover_peer_ids: Vec::new(),
+                accept_timestamps: Vec::new(),
+                commit_dependencies: Vec::new(),
+            }
+        }
+
+        fn with_recoveries<const N: usize>(responses: [RecoverResponse; N]) -> Self {
+            Self {
+                pre_accepts: VecDeque::new(),
+                recoveries: VecDeque::from(responses),
+                pre_accept_peer_ids: Vec::new(),
+                accept_peer_ids: Vec::new(),
+                commit_peer_ids: Vec::new(),
+                recover_peer_ids: Vec::new(),
                 accept_timestamps: Vec::new(),
                 commit_dependencies: Vec::new(),
             }
@@ -554,6 +803,15 @@ mod tests {
             self.commit_peer_ids.push(peer_id.to_owned());
             self.commit_dependencies.push(request.dependencies.unwrap());
             Ok(CommitResponse { result: Vec::new() })
+        }
+
+        async fn recover_peer(
+            &mut self,
+            peer_id: &str,
+            _request: RecoverRequest,
+        ) -> crate::domain::error::So3Result<RecoverResponse> {
+            self.recover_peer_ids.push(peer_id.to_owned());
+            Ok(self.recoveries.pop_front().unwrap())
         }
     }
 
