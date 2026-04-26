@@ -49,6 +49,9 @@ pub struct AccordCoordinator<'a, L, P> {
     clock: HybridLogicalClock,
 }
 
+const INITIAL_BALLOT_ROUND: u64 = 0;
+const MAX_BALLOT_RECOVERY_RETRIES: usize = 3;
+
 impl<'a, L, P> AccordCoordinator<'a, L, P>
 where
     L: ConsensusTransportHandler,
@@ -106,7 +109,7 @@ where
         merge_dependencies(&mut dependencies, Some(pre_accepted.dependencies));
 
         let accepted = self
-            .accept_all(
+            .accept_with_retry(
                 command_id,
                 &command_bytes,
                 &timestamp_zero,
@@ -200,7 +203,7 @@ where
         Ok(decision)
     }
 
-    async fn accept_all(
+    async fn accept_with_retry(
         &mut self,
         command_id: &ConsensusCommandId,
         command: &[u8],
@@ -208,9 +211,62 @@ where
         timestamp: &LogicalTimestamp,
         dependencies: &DependencySet,
     ) -> So3Result<DependencySet> {
+        let mut ballot = ballot(INITIAL_BALLOT_ROUND, &self.config.node_id);
+
+        for attempt in 0..=MAX_BALLOT_RECOVERY_RETRIES {
+            match self
+                .accept_all(
+                    command_id,
+                    command,
+                    timestamp_zero,
+                    timestamp,
+                    dependencies,
+                    &ballot,
+                )
+                .await
+            {
+                Ok(accepted) => return Ok(accepted),
+                Err(AcceptPhaseError::Rejected { replica_id }) => {
+                    let recovery = self.recover(command_id, Some(ballot.clone())).await?;
+                    if matches!(recovery.local_state, State::Committed | State::Applied) {
+                        return Err(So3Error::InvalidRequest(format!(
+                            "accept rejected by replica {replica_id}; recovery observed durable {:?} state and automatic takeover is not implemented",
+                            recovery.local_state
+                        )));
+                    }
+                    let Some(highest_nack) = recovery.highest_nack else {
+                        return Err(So3Error::InvalidRequest(format!(
+                            "accept rejected by replica {replica_id} without durable ballot information"
+                        )));
+                    };
+                    if attempt == MAX_BALLOT_RECOVERY_RETRIES {
+                        return Err(So3Error::InvalidRequest(format!(
+                            "accept retry budget exhausted after rejection from replica {replica_id}"
+                        )));
+                    }
+                    ballot = next_ballot_after(&highest_nack, &self.config.node_id);
+                }
+                Err(AcceptPhaseError::Other(error)) => return Err(error),
+            }
+        }
+
+        Err(So3Error::InvalidRequest(
+            "accept retry loop terminated unexpectedly".to_owned(),
+        ))
+    }
+
+    async fn accept_all(
+        &mut self,
+        command_id: &ConsensusCommandId,
+        command: &[u8],
+        timestamp_zero: &LogicalTimestamp,
+        timestamp: &LogicalTimestamp,
+        dependencies: &DependencySet,
+        ballot: &Ballot,
+    ) -> Result<DependencySet, AcceptPhaseError> {
         let request = AcceptRequest {
             command_id: Some(command_id_proto(command_id)),
-            ballot: Some(ballot(&self.config.node_id)),
+            ballot: Some(ballot.clone()),
             event: Some(event_payload(command)),
             timestamp_zero: Some(timestamp_zero.clone()),
             timestamp: Some(timestamp.clone()),
@@ -224,7 +280,7 @@ where
             .local_transport
             .accept(request.clone())
             .await
-            .map_err(|status| map_status(&status))?;
+            .map_err(|status| AcceptPhaseError::Other(map_status(&status)))?;
         let mut accepted_dependencies = empty_dependencies();
         apply_accept_response(
             &mut accepted_dependencies,
@@ -235,7 +291,8 @@ where
             let response = self
                 .peer_transport
                 .accept_peer(peer_id, request.clone())
-                .await?;
+                .await
+                .map_err(AcceptPhaseError::Other)?;
             apply_accept_response(&mut accepted_dependencies, peer_id, response)?;
         }
 
@@ -277,6 +334,22 @@ where
 struct PreAcceptDecision {
     timestamp: Option<LogicalTimestamp>,
     dependencies: DependencySet,
+}
+
+enum AcceptPhaseError {
+    Rejected { replica_id: String },
+    Other(So3Error),
+}
+
+impl From<AcceptPhaseError> for So3Error {
+    fn from(value: AcceptPhaseError) -> Self {
+        match value {
+            AcceptPhaseError::Rejected { replica_id } => {
+                So3Error::InvalidRequest(format!("accept rejected by replica {replica_id}"))
+            }
+            AcceptPhaseError::Other(error) => error,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -323,11 +396,11 @@ fn apply_accept_response(
     dependencies: &mut DependencySet,
     node_id: &str,
     response: AcceptResponse,
-) -> So3Result<()> {
+) -> Result<(), AcceptPhaseError> {
     if response.nack {
-        return Err(So3Error::InvalidRequest(format!(
-            "accept rejected by replica {node_id}"
-        )));
+        return Err(AcceptPhaseError::Rejected {
+            replica_id: node_id.to_owned(),
+        });
     }
 
     merge_dependencies(dependencies, response.dependencies);
@@ -423,9 +496,16 @@ fn max_timestamp(
     }
 }
 
-fn ballot(node_id: &str) -> Ballot {
+fn ballot(round: u64, node_id: &str) -> Ballot {
     Ballot {
-        round: 0,
+        round,
+        node_id: node_id.to_owned(),
+    }
+}
+
+fn next_ballot_after(current: &Ballot, node_id: &str) -> Ballot {
+    Ballot {
+        round: current.round.saturating_add(1),
         node_id: node_id.to_owned(),
     }
 }
@@ -472,6 +552,7 @@ fn map_status(status: &Status) -> So3Error {
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
+    use std::sync::Mutex;
 
     use async_trait::async_trait;
     use tonic::Status;
@@ -499,9 +580,7 @@ mod tests {
     #[tokio::test]
     async fn execute_drives_all_consensus_phases_through_core() {
         let result = ObjectResult::Read(ReadResult { object: None });
-        let local = FakeLocalTransport {
-            result: result.to_bytes().unwrap(),
-        };
+        let local = FakeLocalTransport::new(result.to_bytes().unwrap());
         let mut peers = FakePeerTransport::with_pre_accepts([
             pre_accept_response(
                 LogicalTimestamp {
@@ -564,11 +643,11 @@ mod tests {
 
     #[tokio::test]
     async fn execute_rejects_pre_accept_nack_before_accepting() {
-        let local = FakeLocalTransport {
-            result: ObjectResult::Read(ReadResult { object: None })
+        let local = FakeLocalTransport::new(
+            ObjectResult::Read(ReadResult { object: None })
                 .to_bytes()
                 .unwrap(),
-        };
+        );
         let mut peers = FakePeerTransport::with_pre_accepts([PreAcceptResponse {
             timestamp: None,
             dependencies: Some(empty_dependencies()),
@@ -602,11 +681,11 @@ mod tests {
 
     #[tokio::test]
     async fn recover_merges_peer_state_dependencies_waits_and_highest_nack() {
-        let local = FakeLocalTransport {
-            result: ObjectResult::Read(ReadResult { object: None })
+        let local = FakeLocalTransport::new(
+            ObjectResult::Read(ReadResult { object: None })
                 .to_bytes()
                 .unwrap(),
-        };
+        );
         let mut peers = FakePeerTransport::with_recoveries([
             RecoverResponse {
                 local_state: State::Committed.into(),
@@ -686,8 +765,166 @@ mod tests {
         assert_eq!(peers.recover_peer_ids, vec![PEER_A, PEER_B]);
     }
 
+    #[tokio::test]
+    async fn execute_retries_accept_with_higher_ballot_after_stale_rejection() {
+        let local = FakeLocalTransport::with_accept_and_recover(
+            ObjectResult::Read(ReadResult { object: None })
+                .to_bytes()
+                .unwrap(),
+            [
+                AcceptResponse {
+                    dependencies: Some(empty_dependencies()),
+                    nack: true,
+                },
+                AcceptResponse {
+                    dependencies: Some(empty_dependencies()),
+                    nack: false,
+                },
+            ],
+            [RecoverResponse {
+                local_state: State::Accepted.into(),
+                wait_for: Vec::new(),
+                superseding: false,
+                dependencies: Some(empty_dependencies()),
+                timestamp: None,
+                nack: Some(Ballot {
+                    round: 4,
+                    node_id: PEER_A.to_owned(),
+                }),
+            }],
+        );
+        let mut peers = FakePeerTransport::new();
+        let mut coordinator = AccordCoordinator::new(
+            AccordCoordinatorConfig {
+                node_id: LOCAL_NODE_ID.to_owned(),
+                peer_ids: Vec::new(),
+            },
+            &local,
+            &mut peers,
+        );
+
+        let actual = coordinator
+            .execute(
+                &ConsensusCommandId::new(LOCAL_NODE_ID.to_owned(), 10),
+                ObjectCommand::Read(ReadCommand {
+                    key: ObjectKey::new(KEY_ALPHA).unwrap(),
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(actual, ObjectResult::Read(ReadResult { object: None }));
+        assert_eq!(
+            local.accept_ballots(),
+            vec![
+                Ballot {
+                    round: 0,
+                    node_id: LOCAL_NODE_ID.to_owned(),
+                },
+                Ballot {
+                    round: 5,
+                    node_id: LOCAL_NODE_ID.to_owned(),
+                }
+            ]
+        );
+        assert_eq!(
+            local.recover_ballots(),
+            vec![Ballot {
+                round: 0,
+                node_id: LOCAL_NODE_ID.to_owned(),
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_fails_closed_when_recovery_observes_committed_state() {
+        let local = FakeLocalTransport::with_accept_and_recover(
+            ObjectResult::Read(ReadResult { object: None })
+                .to_bytes()
+                .unwrap(),
+            [AcceptResponse {
+                dependencies: Some(empty_dependencies()),
+                nack: true,
+            }],
+            [RecoverResponse {
+                local_state: State::Committed.into(),
+                wait_for: Vec::new(),
+                superseding: false,
+                dependencies: Some(empty_dependencies()),
+                timestamp: None,
+                nack: Some(Ballot {
+                    round: 2,
+                    node_id: PEER_A.to_owned(),
+                }),
+            }],
+        );
+        let mut peers = FakePeerTransport::new();
+        let mut coordinator = AccordCoordinator::new(
+            AccordCoordinatorConfig {
+                node_id: LOCAL_NODE_ID.to_owned(),
+                peer_ids: Vec::new(),
+            },
+            &local,
+            &mut peers,
+        );
+
+        let error = coordinator
+            .execute(
+                &ConsensusCommandId::new(LOCAL_NODE_ID.to_owned(), 11),
+                ObjectCommand::Read(ReadCommand {
+                    key: ObjectKey::new(KEY_ALPHA).unwrap(),
+                }),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("automatic takeover is not implemented")
+        );
+    }
+
     struct FakeLocalTransport {
         result: Vec<u8>,
+        accepts: Mutex<VecDeque<AcceptResponse>>,
+        recovers: Mutex<VecDeque<RecoverResponse>>,
+        accept_ballots: Mutex<Vec<Ballot>>,
+        recover_ballots: Mutex<Vec<Ballot>>,
+    }
+
+    impl FakeLocalTransport {
+        fn new(result: Vec<u8>) -> Self {
+            Self {
+                result,
+                accepts: Mutex::new(VecDeque::new()),
+                recovers: Mutex::new(VecDeque::new()),
+                accept_ballots: Mutex::new(Vec::new()),
+                recover_ballots: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn with_accept_and_recover<const A: usize, const R: usize>(
+            result: Vec<u8>,
+            accepts: [AcceptResponse; A],
+            recovers: [RecoverResponse; R],
+        ) -> Self {
+            Self {
+                result,
+                accepts: Mutex::new(VecDeque::from(accepts)),
+                recovers: Mutex::new(VecDeque::from(recovers)),
+                accept_ballots: Mutex::new(Vec::new()),
+                recover_ballots: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn accept_ballots(&self) -> Vec<Ballot> {
+            self.accept_ballots.lock().unwrap().clone()
+        }
+
+        fn recover_ballots(&self) -> Vec<Ballot> {
+            self.recover_ballots.lock().unwrap().clone()
+        }
     }
 
     #[async_trait]
@@ -704,6 +941,13 @@ mod tests {
         }
 
         async fn accept(&self, request: AcceptRequest) -> Result<AcceptResponse, Status> {
+            if let Some(ballot) = request.ballot.clone() {
+                self.accept_ballots.lock().unwrap().push(ballot);
+            }
+            if let Some(response) = self.accepts.lock().unwrap().pop_front() {
+                return Ok(response);
+            }
+
             Ok(AcceptResponse {
                 dependencies: request.dependencies,
                 nack: false,
@@ -721,6 +965,13 @@ mod tests {
         }
 
         async fn recover(&self, _request: RecoverRequest) -> Result<RecoverResponse, Status> {
+            if let Some(ballot) = _request.ballot.clone() {
+                self.recover_ballots.lock().unwrap().push(ballot);
+            }
+            if let Some(response) = self.recovers.lock().unwrap().pop_front() {
+                return Ok(response);
+            }
+
             Ok(RecoverResponse {
                 local_state: State::Undefined.into(),
                 wait_for: Vec::new(),
@@ -734,24 +985,43 @@ mod tests {
 
     struct FakePeerTransport {
         pre_accepts: VecDeque<PreAcceptResponse>,
+        accepts: VecDeque<AcceptResponse>,
         recoveries: VecDeque<RecoverResponse>,
         pre_accept_peer_ids: Vec<String>,
         accept_peer_ids: Vec<String>,
         commit_peer_ids: Vec<String>,
         recover_peer_ids: Vec<String>,
+        accept_ballots: Vec<Ballot>,
         accept_timestamps: Vec<LogicalTimestamp>,
         commit_dependencies: Vec<DependencySet>,
     }
 
     impl FakePeerTransport {
-        fn with_pre_accepts<const N: usize>(responses: [PreAcceptResponse; N]) -> Self {
+        fn new() -> Self {
             Self {
-                pre_accepts: VecDeque::from(responses),
+                pre_accepts: VecDeque::new(),
+                accepts: VecDeque::new(),
                 recoveries: VecDeque::new(),
                 pre_accept_peer_ids: Vec::new(),
                 accept_peer_ids: Vec::new(),
                 commit_peer_ids: Vec::new(),
                 recover_peer_ids: Vec::new(),
+                accept_ballots: Vec::new(),
+                accept_timestamps: Vec::new(),
+                commit_dependencies: Vec::new(),
+            }
+        }
+
+        fn with_pre_accepts<const N: usize>(responses: [PreAcceptResponse; N]) -> Self {
+            Self {
+                pre_accepts: VecDeque::from(responses),
+                accepts: VecDeque::new(),
+                recoveries: VecDeque::new(),
+                pre_accept_peer_ids: Vec::new(),
+                accept_peer_ids: Vec::new(),
+                commit_peer_ids: Vec::new(),
+                recover_peer_ids: Vec::new(),
+                accept_ballots: Vec::new(),
                 accept_timestamps: Vec::new(),
                 commit_dependencies: Vec::new(),
             }
@@ -760,11 +1030,13 @@ mod tests {
         fn with_recoveries<const N: usize>(responses: [RecoverResponse; N]) -> Self {
             Self {
                 pre_accepts: VecDeque::new(),
+                accepts: VecDeque::new(),
                 recoveries: VecDeque::from(responses),
                 pre_accept_peer_ids: Vec::new(),
                 accept_peer_ids: Vec::new(),
                 commit_peer_ids: Vec::new(),
                 recover_peer_ids: Vec::new(),
+                accept_ballots: Vec::new(),
                 accept_timestamps: Vec::new(),
                 commit_dependencies: Vec::new(),
             }
@@ -788,7 +1060,13 @@ mod tests {
             request: AcceptRequest,
         ) -> crate::domain::error::So3Result<AcceptResponse> {
             self.accept_peer_ids.push(peer_id.to_owned());
+            if let Some(ballot) = request.ballot.clone() {
+                self.accept_ballots.push(ballot);
+            }
             self.accept_timestamps.push(request.timestamp.unwrap());
+            if let Some(response) = self.accepts.pop_front() {
+                return Ok(response);
+            }
             Ok(AcceptResponse {
                 dependencies: request.dependencies,
                 nack: false,
