@@ -5,9 +5,9 @@ use tracing::{debug, info};
 use crate::consensus::ConsensusCommandId;
 use crate::consensus::clock::HybridLogicalClock;
 use crate::consensus::executor::ReplicatedCommandExecutor;
-use crate::consensus::journal::{JournalState, SqliteConsensusJournal};
-use crate::domain::ObjectCommand;
+use crate::consensus::journal::{JournalEntry, JournalState, SqliteConsensusJournal};
 use crate::domain::error::So3Error;
+use crate::domain::{ObjectCommand, ObjectKey};
 use crate::rpc_server::proto::{
     AcceptRequest, AcceptResponse, ApplyRequest, ApplyResponse, CommitRequest, CommitResponse,
     DependencySet, LogicalTimestamp, PreAcceptRequest, PreAcceptResponse, RecoverRequest,
@@ -53,7 +53,13 @@ where
     async fn pre_accept(&self, request: PreAcceptRequest) -> Result<PreAcceptResponse, Status> {
         let command_id = extract_command_id(request.command_id.as_ref())?;
         let command_bytes = extract_command_bytes(request.event.as_ref())?;
+        let command =
+            ObjectCommand::from_bytes(command_bytes).map_err(|error| map_error(&error))?;
         let timestamp = self.observe_or_tick(request.timestamp_zero.as_ref()).await;
+        let dependencies = self
+            .dependencies_for_unapplied_conflicts(&command_id, &command)
+            .await
+            .map_err(|error| map_error(&error))?;
         let entry = self
             .journal
             .record_pre_accepted(&command_id, command_bytes)
@@ -65,12 +71,13 @@ where
             command_origin = command_id.origin_node_id(),
             local_state = journal_state_to_proto(entry.state).as_str_name(),
             event_size = command_bytes.len(),
+            dependency_count = dependencies.commands.len(),
             "recorded local pre_accept state in consensus journal"
         );
 
         Ok(PreAcceptResponse {
             timestamp: Some(timestamp),
-            dependencies: Some(empty_dependencies()),
+            dependencies: Some(dependencies),
             nack: false,
         })
     }
@@ -226,6 +233,30 @@ where
     }
 }
 
+impl<E> ApplyingConsensusTransport<E>
+where
+    E: ReplicatedCommandExecutor + Clone + Send + Sync + 'static,
+{
+    async fn dependencies_for_unapplied_conflicts(
+        &self,
+        command_id: &ConsensusCommandId,
+        command: &ObjectCommand,
+    ) -> crate::domain::error::So3Result<DependencySet> {
+        let mut dependencies = empty_dependencies();
+        for state in [
+            JournalState::PreAccepted,
+            JournalState::Accepted,
+            JournalState::Committed,
+        ] {
+            for entry in self.journal.list_by_state(state).await? {
+                append_dependency_if_conflicting(&mut dependencies, command_id, command, &entry)?;
+            }
+        }
+
+        Ok(dependencies)
+    }
+}
+
 fn extract_command_bytes(
     event: Option<&crate::rpc_server::proto::EventPayload>,
 ) -> Result<&[u8], Status> {
@@ -246,6 +277,37 @@ fn extract_command_id(
 fn empty_dependencies() -> DependencySet {
     DependencySet {
         commands: Vec::new(),
+    }
+}
+
+fn append_dependency_if_conflicting(
+    dependencies: &mut DependencySet,
+    command_id: &ConsensusCommandId,
+    command: &ObjectCommand,
+    entry: &JournalEntry,
+) -> crate::domain::error::So3Result<()> {
+    if entry.command_id == *command_id {
+        return Ok(());
+    }
+
+    let existing_command = ObjectCommand::from_bytes(&entry.command)?;
+    if command_key(&existing_command) == command_key(command) {
+        dependencies
+            .commands
+            .push(crate::rpc_server::proto::CommandId {
+                origin_node_id: entry.command_id.origin_node_id().to_owned(),
+                sequence: entry.command_id.sequence(),
+            });
+    }
+
+    Ok(())
+}
+
+fn command_key(command: &ObjectCommand) -> &ObjectKey {
+    match command {
+        ObjectCommand::Read(command) => &command.key,
+        ObjectCommand::Write(command) => &command.key,
+        ObjectCommand::Cas(command) => &command.key,
     }
 }
 
@@ -293,10 +355,12 @@ mod tests {
     use crate::storage::registry::SqliteFsPersistentObjectRepository;
 
     const ALPHA_KEY: &str = "alpha";
+    const BETA_KEY: &str = "beta";
     const FIRST_VALUE: &[u8] = b"first";
     const COMMAND_ORIGIN_NODE_ID: &str = "node-a";
     const COMMAND_SEQUENCE_ONE: u64 = 1;
     const COMMAND_SEQUENCE_TWO: u64 = 2;
+    const COMMAND_SEQUENCE_THREE: u64 = 3;
 
     async fn test_transport() -> (
         ApplyingConsensusTransport<
@@ -414,6 +478,95 @@ mod tests {
 
         assert_eq!(pre_accepted.local_state, State::PreAccepted as i32);
         assert_eq!(accepted.local_state, State::Accepted as i32);
+    }
+
+    #[tokio::test]
+    async fn pre_accept_reports_unapplied_conflicting_commands_as_dependencies() {
+        let (transport, _temp_dir) = test_transport().await;
+        let first = ObjectCommand::Write(WriteCommand {
+            key: ObjectKey::new(ALPHA_KEY).unwrap(),
+            value: FIRST_VALUE.to_vec(),
+        });
+        let second = ObjectCommand::Write(WriteCommand {
+            key: ObjectKey::new(ALPHA_KEY).unwrap(),
+            value: b"second".to_vec(),
+        });
+
+        let _ = transport
+            .pre_accept(PreAcceptRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
+                event: Some(EventPayload {
+                    command: first.to_bytes().unwrap(),
+                }),
+                ..PreAcceptRequest::default()
+            })
+            .await
+            .unwrap();
+        let response = transport
+            .pre_accept(PreAcceptRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_TWO)),
+                event: Some(EventPayload {
+                    command: second.to_bytes().unwrap(),
+                }),
+                ..PreAcceptRequest::default()
+            })
+            .await
+            .unwrap();
+
+        let dependencies = response.dependencies.unwrap();
+        assert_eq!(
+            dependencies.commands,
+            vec![command_id(COMMAND_SEQUENCE_ONE)]
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_accept_ignores_applied_and_non_conflicting_commands() {
+        let (transport, _temp_dir) = test_transport().await;
+        let applied = ObjectCommand::Write(WriteCommand {
+            key: ObjectKey::new(ALPHA_KEY).unwrap(),
+            value: FIRST_VALUE.to_vec(),
+        });
+        let other_key = ObjectCommand::Write(WriteCommand {
+            key: ObjectKey::new(BETA_KEY).unwrap(),
+            value: FIRST_VALUE.to_vec(),
+        });
+        let current = ObjectCommand::Read(ReadCommand {
+            key: ObjectKey::new(ALPHA_KEY).unwrap(),
+        });
+
+        let _ = transport
+            .apply(ApplyRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_ONE)),
+                event: Some(EventPayload {
+                    command: applied.to_bytes().unwrap(),
+                }),
+                ..ApplyRequest::default()
+            })
+            .await
+            .unwrap();
+        let _ = transport
+            .pre_accept(PreAcceptRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_TWO)),
+                event: Some(EventPayload {
+                    command: other_key.to_bytes().unwrap(),
+                }),
+                ..PreAcceptRequest::default()
+            })
+            .await
+            .unwrap();
+        let response = transport
+            .pre_accept(PreAcceptRequest {
+                command_id: Some(command_id(COMMAND_SEQUENCE_THREE)),
+                event: Some(EventPayload {
+                    command: current.to_bytes().unwrap(),
+                }),
+                ..PreAcceptRequest::default()
+            })
+            .await
+            .unwrap();
+
+        assert!(response.dependencies.unwrap().commands.is_empty());
     }
 
     #[tokio::test]
