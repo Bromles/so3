@@ -135,6 +135,9 @@ These invariants are more important than feature speed:
 - State machine apply logic must be deterministic.
 - Recovery must prefer safety over fast startup.
 - Code must not be unsafe and should work on macOS, Windows and Linux
+- Writing object metadata to SQLite and recording the applied command result must be a single
+  atomic operation. A given command_id must never be re-executed by the state machine after its
+  metadata write has committed.
 
 If an implementation choice makes these harder to reason about, reject it.
 
@@ -150,6 +153,13 @@ Expected direction:
 - Metadata should only reference a blob after the blob is durably placed.
 - Deletion or garbage collection can be deferred; leaking unreachable blobs temporarily is preferable to corrupting committed data.
 - Schema migrations must be explicit and versioned.
+- Data persisted in SQLite must contain
+  only object record metadata (key, version, blob_id, content_length, checksum, last_modified, etc).
+  Never store object value bytes in any SQLite table. When a cache hit requires returning the
+  object value, re-read the bytes from the blob store using the cached blob_id.
+- Writing the object record to the `objects` table and inserting the applied command result into
+  `applied_commands` must be an atomic operation.
+  These two writes are never permitted to be observed independently.
 
 Do not introduce:
 
@@ -385,6 +395,30 @@ Remaining work before calling the prototype ready:
    - `docs/classDiagram.puml` is the current detailed structural diagram.
    - `docs/moduleDiagram.drawio` is the slide-sized editable architectural module diagram.
    - `docs/maelstrom.md` records verification commands and verdicts without gitignored result paths.
+
+6. Remove object value bytes from SQLite result caches.
+   - `WriteResult`, `CasResult::Applied`, and `ReadResult` currently embed `StoredObject`, which
+     contains `value: Vec<u8>`. This causes full object bytes to be written into both
+     `applied_commands.result` (objects.sqlite) and `command_journal.result` (consensus.sqlite),
+     defeating the purpose of storing blobs on the filesystem.
+   - Introduce a metadata-only cached result type (record fields only, no `value`). On a cache
+     hit, re-read the blob bytes from the filesystem using the stored `blob_id` before returning
+     the response. For `ReadResult` this re-read is the full response value; for `WriteResult` and
+     `CasResult::Applied` the coordinator does not need the bytes at all.
+   - After this change, no SQLite column may hold object value bytes under any code path.
+
+7. Fix the atomicity gap between state machine apply and the applied command record.
+   - Currently `state_machine.execute_command()` writes the object record to the `objects` table,
+     then `applied_command_store.save_result()` writes to `applied_commands` in a separate
+     statement. A crash between these two writes leaves the object visible in `objects` but absent
+     from `applied_commands`. The next Apply call re-executes the state machine and writes a second
+     version of the same object for the same command_id.
+   - Wrap the `objects` upsert and the `applied_commands` insert in a single SQLite transaction
+     within `SqliteObjectMetadataRepository`. The two tables are already in the same `objects.sqlite`
+     file, so no cross-database coordination is required.
+   - After this change, a crash can only leave the blob file orphaned on disk (harmless) or both
+     SQLite rows committed together. The state machine is never re-executed for a command_id whose
+     metadata write has already committed.
 
 ## References
 
