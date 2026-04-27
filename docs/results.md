@@ -78,8 +78,10 @@ All runs use the release binary (`target/release/so3-maelstrom`), date 2026-04-2
 | ok-fraction | 0.564    |
 | **:valid?** | **true** |
 
-Follower nodes forward client requests to the deterministic leader (n0). The leader drives Accord
-consensus phases (PreAccept → Commit → Apply) over Maelstrom messages before replying.
+In the Maelstrom adapter, client requests arriving at non-coordinator nodes are forwarded to `n0`,
+which runs the Accord consensus phases (PreAccept → Commit → Apply) over Maelstrom messages before
+replying. This forwarding is an artifact of the adapter's simplified stdin/stdout transport — in
+the production `so3` binary any node acts as coordinator for its own requests.
 
 #### Scenario 3 — Fault tolerance: 3 nodes, network partitions
 
@@ -165,7 +167,7 @@ so3 is a **replicated** system — every node stores a full copy of all data. Ad
 **not** increase write throughput or total storage capacity. Write scaling would require key-space
 sharding, which is not implemented in the current PoC.
 
-Reads can in principle be served locally from any node without consensus, so read throughput *can*
+Reads can in principle be served locally from any node without consensus, so read throughput _can_
 scale with the number of nodes (each node serves its own read traffic independently). The current
 implementation reads from the local SQLite store without a consensus round trip.
 
@@ -173,21 +175,21 @@ implementation reads from the local SQLite store without a consensus round trip.
 
 Two configurations were benchmarked for comparison:
 
-| Configuration | Nodes | Endpoint |
-| ------------- | ----- | -------- |
-| Single node   | 1     | `127.0.0.1:3000` (standalone) |
-| 3-node cluster | 3    | `127.0.0.1:3001` (one node in cluster) |
+| Configuration  | Nodes | Endpoint                               |
+| -------------- | ----- | -------------------------------------- |
+| Single node    | 1     | `127.0.0.1:3000` (standalone)          |
+| 3-node cluster | 3     | `127.0.0.1:3001` (one node in cluster) |
 
 Common parameters for both:
 
-| Parameter   | Value                        |
-| ----------- | ---------------------------- |
-| VUs         | 10                           |
-| Duration    | 30 s per run                 |
-| Runs        | 30                           |
-| Object size | 64 bytes                     |
-| Binary      | `target/release/so3`         |
-| Date        | 2026-04-27                   |
+| Parameter   | Value                |
+| ----------- | -------------------- |
+| VUs         | 10                   |
+| Duration    | 30 s per run         |
+| Runs        | 30                   |
+| Object size | 64 bytes             |
+| Binary      | `target/release/so3` |
+| Date        | 2026-04-27           |
 
 ### Throughput comparison (across 30 runs)
 
@@ -309,30 +311,30 @@ consensus coordinators across cores.
 
 #### GET (cluster)
 
-| Statistic | mean   | σ_cross | CV    | min    | max    |
-| --------- | ------ | ------- | ----- | ------ | ------ |
-| median    | 278.70 | 41.50   | 14.9% | 189.00 | 391.00 |
-| avg       | 360.17 | 36.16   | 10.0% | 293.13 | 463.62 |
-| p90       | 741.08 | 69.38   | 9.4%  | 606.10 | 908.50 |
-| p95       | 885.30 | 80.65   | 9.1%  | 756.50 | 1101.55|
+| Statistic | mean   | σ_cross | CV    | min    | max     |
+| --------- | ------ | ------- | ----- | ------ | ------- |
+| median    | 278.70 | 41.50   | 14.9% | 189.00 | 391.00  |
+| avg       | 360.17 | 36.16   | 10.0% | 293.13 | 463.62  |
+| p90       | 741.08 | 69.38   | 9.4%  | 606.10 | 908.50  |
+| p95       | 885.30 | 80.65   | 9.1%  | 756.50 | 1101.55 |
 
 #### HEAD (cluster)
 
-| Statistic | mean   | σ_cross | CV    | min    | max    |
-| --------- | ------ | ------- | ----- | ------ | ------ |
-| median    | 300.70 | 42.54   | 14.1% | 222.00 | 381.00 |
-| avg       | 370.66 | 35.02   | 9.4%  | 314.49 | 486.76 |
-| p90       | 751.49 | 67.46   | 9.0%  | 655.10 | 891.60 |
-| p95       | 893.51 | 75.96   | 8.5%  | 793.75 | 1080.10|
+| Statistic | mean   | σ_cross | CV    | min    | max     |
+| --------- | ------ | ------- | ----- | ------ | ------- |
+| median    | 300.70 | 42.54   | 14.1% | 222.00 | 381.00  |
+| avg       | 370.66 | 35.02   | 9.4%  | 314.49 | 486.76  |
+| p90       | 751.49 | 67.46   | 9.0%  | 655.10 | 891.60  |
+| p95       | 893.51 | 75.96   | 8.5%  | 793.75 | 1080.10 |
 
 #### DELETE (cluster)
 
-| Statistic | mean   | σ_cross | CV    | min    | max    |
-| --------- | ------ | ------- | ----- | ------ | ------ |
-| median    | 353.08 | 44.13   | 12.5% | 273.00 | 445.00 |
-| avg       | 414.67 | 35.98   | 8.7%  | 354.26 | 561.83 |
-| p90       | 823.06 | 74.24   | 9.0%  | 676.90 | 968.00 |
-| p95       | 947.99 | 91.91   | 9.7%  | 796.50 | 1150.00|
+| Statistic | mean   | σ_cross | CV    | min    | max     |
+| --------- | ------ | ------- | ----- | ------ | ------- |
+| median    | 353.08 | 44.13   | 12.5% | 273.00 | 445.00  |
+| avg       | 414.67 | 35.98   | 8.7%  | 354.26 | 561.83  |
+| p90       | 823.06 | 74.24   | 9.0%  | 676.90 | 968.00  |
+| p95       | 947.99 | 91.91   | 9.7%  | 796.50 | 1150.00 |
 
 ### Single vs cluster latency comparison (median, ms)
 
@@ -374,7 +376,7 @@ status codes for all operations.
 **Scaling limitations:** so3 is a replication-based system with no key-space sharding. Adding
 nodes increases fault tolerance but does not increase write throughput — on the contrary, each
 additional replica adds one more consensus round trip per write. Write throughput scales inversely
-with cluster size. Read throughput *can* scale: each node serves reads locally without consensus,
+with cluster size. Read throughput _can_ scale: each node serves reads locally without consensus,
 so routing reads to different nodes in parallel would increase aggregate read capacity. Linear
 write scaling requires sharding, which is not implemented in the current PoC.
 

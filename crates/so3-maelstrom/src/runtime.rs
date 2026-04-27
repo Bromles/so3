@@ -65,17 +65,20 @@ impl SharedRuntime {
         self.next_command_sequence.fetch_add(1, Ordering::Relaxed)
     }
 
-    fn is_leader(&self) -> bool {
-        self.node_id == self.leader_id()
+    // In the Maelstrom adapter, n0 is the sole consensus coordinator — a simplification
+    // imposed by the stdin/stdout transport. In production so3, every node coordinates its
+    // own commands (no fixed coordinator).
+    fn is_coordinator(&self) -> bool {
+        self.node_id == self.coordinator_id()
     }
 
-    fn leader_id(&self) -> &str {
+    fn coordinator_id(&self) -> &str {
         self.node_ids
             .first()
             .map_or(self.node_id.as_str(), String::as_str)
     }
 
-    fn follower_ids(&self) -> Vec<String> {
+    fn peer_ids(&self) -> Vec<String> {
         self.node_ids
             .iter()
             .filter(|id| id.as_str() != self.node_id)
@@ -323,7 +326,7 @@ async fn handle_client_message(
     msg_id: u64,
     request: ClientRequest,
 ) -> So3Result<()> {
-    if shared.is_leader() {
+    if shared.is_coordinator() {
         let response = execute_leader_command(&shared, msg_id, request).await;
         shared.send_message(&Message {
             src: shared.node_id.clone(),
@@ -340,7 +343,7 @@ async fn handle_client_message(
             .insert(forward_msg_id, tx);
         shared.send_message(&Message {
             src: shared.node_id.clone(),
-            dest: shared.leader_id().to_owned(),
+            dest: shared.coordinator_id().to_owned(),
             body: RequestBody::Forward {
                 msg_id: forward_msg_id,
                 client_msg_id: msg_id,
@@ -365,7 +368,7 @@ async fn handle_forward(
     client_msg_id: u64,
     request: ClientRequest,
 ) -> So3Result<()> {
-    if !shared.is_leader() {
+    if !shared.is_coordinator() {
         return shared.send_message(&Message {
             src: shared.node_id.clone(),
             dest: sender,
@@ -468,7 +471,7 @@ async fn execute_leader_command(
         ConsensusCommandId::new(shared.node_id.clone(), shared.next_command_sequence());
     let config = AccordCoordinatorConfig {
         node_id: shared.node_id.clone(),
-        peer_ids: shared.follower_ids(),
+        peer_ids: shared.peer_ids(),
     };
     let local_transport = shared.local_transport.clone();
     let mut peer_transport = MaelstromPeerTransport {
