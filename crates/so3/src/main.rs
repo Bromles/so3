@@ -1,7 +1,9 @@
+#![warn(clippy::pedantic)]
+#![forbid(unsafe_code)]
+use signal::unix::signal;
 use std::process::exit;
-
 use tokio::signal::ctrl_c;
-use tokio::spawn;
+use tokio::{select, signal, spawn};
 use tokio_util::sync::CancellationToken;
 use tracing::error;
 use tracing_subscriber::fmt as tracing_fmt;
@@ -30,10 +32,38 @@ async fn run() -> So3Result<()> {
     let signal_token = cancellation_token.clone();
 
     spawn(async move {
-        if ctrl_c().await.is_ok() {
-            signal_token.cancel();
+        match shutdown_signal().await {
+            Ok(_) => {
+                signal_token.cancel();
+            }
+            Err(error) => {
+                error!(%error, "failed to register signal handler");
+            }
         }
     });
 
     node.run(cancellation_token).await
+}
+
+async fn shutdown_signal() -> So3Result<()> {
+    let ctrl_c = async {
+        signal::ctrl_c().await?;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal(signal::unix::SignalKind::terminate())?.recv().await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    select! {
+        _ = ctrl_c => {
+            Ok(())
+        },
+        _ = terminate => {
+            Ok(())
+        },
+    }
 }

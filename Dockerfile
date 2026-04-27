@@ -56,7 +56,4 @@ COPY --from=builder /build/target/release/so3 /so3
 # SO3_RPC_ADDR    – internal gRPC consensus transport (default 127.0.0.1:4000)
 EXPOSE 3000 4000
 
-# Send SIGINT on `docker stop` so the tokio ctrl_c handler shuts down cleanly.
-STOPSIGNAL SIGINT
-
 ENTRYPOINT ["/so3"]
