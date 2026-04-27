@@ -114,40 +114,20 @@ The general `run-lin-kv` scripts also pass through optional fault and checker pa
 
 ## Recent Verification
 
-Validated on 2026-04-26 after the dependency handling fixes:
+For full results including Knossos verdict details, k6 S3 benchmark numbers, and interpretation
+see **[docs/results.md](results.md)**.
 
-- `bash scripts/maelstrom/smoke-lin-kv.sh`
-  - workload: `lin-kv`
-  - nodes: `1`
-  - time limit: `10`
-  - rate: `20`
-  - concurrency: `2n`
-  - result: `:valid? true`
-- `bash scripts/maelstrom/smoke-3-node-lin-kv.sh`
-  - workload: `lin-kv`
-  - nodes: `3`
-  - time limit: `10`
-  - rate: `10`
-  - concurrency: `2n`
-  - result: `:valid? true`
-- `NODE_COUNT=3 TIME_LIMIT=30 RATE=50 CONCURRENCY=4n LOG_STDERR=1 bash scripts/maelstrom/run-lin-kv.sh`
-  - workload: `lin-kv`
-  - nodes: `3`
-  - time limit: `30`
-  - rate: `50`
-  - concurrency: `4n`
-  - result: `:valid? true`
-  - stats: 1313 operations, 637 ok, 535 fail, 141 info; ok fraction 0.48514852
-- `TIME_LIMIT=30 RATE=20 CONCURRENCY=2n bash scripts/maelstrom/fault-3-node-lin-kv.sh`
-  - workload: `lin-kv`
-  - nemesis: `partition`
-  - nemesis interval: `5`
-  - nodes: `3`
-  - time limit: `30`
-  - rate: `20`
-  - concurrency: `2n`
-  - result: `:valid? true`
-  - stats: 515 operations, 309 ok, 180 fail, 26 info; ok fraction 0.6
+Validated on 2026-04-27 with release binary (`target/release/so3-maelstrom`):
+
+| Scenario | Nodes | Rate | Concurrency | Nemesis | Result |
+|----------|-------|------|-------------|---------|--------|
+| smoke-lin-kv | 1 | 20 | 2n | — | `:valid? true` |
+| smoke-3-node-lin-kv | 3 | 10 | 2n | — | `:valid? true` |
+| fault-3-node-lin-kv (rate 20) | 3 | 20 | 2n | partition/5s | `:valid? true` |
+| fault-3-node-lin-kv (rate 50) | 3 | 50 | 4n | partition/5s | `:valid? true` |
+
+The RATE=50 CONCURRENCY=4n scenario previously caused a stack overflow in the old recursive
+dispatch runtime. The refactored `Arc<SharedRuntime>` + oneshot channel design eliminates this.
 
 Maelstrom writes detailed histories under `store/lin-kv/`, which is intentionally gitignored.
 Do not commit run-specific result paths; keep only reproducible commands, parameters, and verdicts

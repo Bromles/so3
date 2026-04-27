@@ -13,11 +13,22 @@ package "crates/so3" {
 }
 
 package "crates/so3-maelstrom" {
-    class Runtime <<adapter>> {
-        +run()
-        -execute_leader_command()
-        -handle_forward()
-        -handle_consensus()
+    class SharedRuntime <<Arc-shared state>> {
+        +node_id: String
+        +node_ids: Vec<String>
+        +service: MaelstromObjectService
+        +local_transport: MaelstromLocalTransport
+        +output: mpsc::UnboundedSender
+        +pending_consensus: Mutex<HashMap>
+        +pending_forwards: Mutex<HashMap>
+        +next_msg_id: AtomicU64
+        +next_command_sequence: AtomicU64
+        +send_message()
+    }
+
+    class MaelstromPeerTransport {
+        +shared: Arc<SharedRuntime>
+        -send_consensus_rpc()
     }
 
     class MaelstromService {
@@ -292,16 +303,18 @@ ObjectRecord --> ObjectVersion
 ObjectRecord --> ObjectLastModified
 ApiError --> So3Error
 
-Runtime --> MaelstromService
-Runtime --> AccordCoordinator : leader path
-Runtime --> ApplyingConsensusTransport : local consensus RPC
-Runtime ..> PersistentStorage : per Maelstrom node
+SharedRuntime --> MaelstromService
+SharedRuntime --> ApplyingConsensusTransport : local consensus RPC
+SharedRuntime ..> PersistentStorage : per Maelstrom node
+MaelstromPeerTransport --> SharedRuntime : Arc clone
+MaelstromPeerTransport ..|> ConsensusPeerTransport
+MaelstromPeerTransport ..> AccordCoordinator : passed as &mut peer_transport
 MaelstromService ..> ObjectCommand
 MaelstromService ..> ObjectResult
 
 note right of Node
 Production node composition:
-- HTTP object API
+- HTTP object API (S3-compatible)
 - private tonic RPC API
 - local applying transport
 - tonic peer transport
@@ -309,12 +322,22 @@ Production node composition:
 end note
 
 note right of AccordCoordinator
-Current Accord prototype:
-- PreAccept / Accept / Commit / Recover
+Accord consensus prototype:
+- PreAccept / Accept / Commit / Recover phases
 - majority quorum for PreAccept and Accept
-- unanimous fast path skips Accept
+- unanimous fast path skips Accept (timestamp_zero)
 - commit broadcast is best effort
 - client success waits for local applied result
+end note
+
+note right of SharedRuntime
+Maelstrom adapter runtime:
+- Arc<SharedRuntime> shared across tokio tasks
+- event loop routes ConsensusOk/ForwardOk via
+  oneshot channels (no recursion)
+- new client/consensus messages spawned as tasks
+- dedicated writer task owns stdout
+- multi-threaded tokio runtime (all CPU cores)
 end note
 
 note right of PersistentStorage

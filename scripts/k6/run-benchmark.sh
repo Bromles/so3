@@ -51,10 +51,9 @@ for i in $(seq 1 "$RUNS"); do
   k6 run \
     --quiet \
     --no-color \
-    --no-summary \
     --summary-export="$export_file" \
-    "${K6_EXTRA_ARGS[@]}" \
-    "$BENCHMARK_SCRIPT" 2>/dev/null
+    ${K6_EXTRA_ARGS[@]+"${K6_EXTRA_ARGS[@]}"} \
+    "$BENCHMARK_SCRIPT" >/dev/null 2>/dev/null
   echo "done"
 done
 
@@ -73,7 +72,7 @@ aggregate() {
   # Extract the stat from every run JSON, one value per line.
   local values
   values=$(jq -r --arg m "$metric_key" --arg s "$stat" \
-    '.metrics[$m].values[$s] // empty' \
+    '.metrics[$m][$s] // empty' \
     "${OUT_DIR}"/run_*.json 2>/dev/null)
 
   if [[ -z "$values" ]]; then

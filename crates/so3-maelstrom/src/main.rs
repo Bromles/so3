@@ -3,8 +3,6 @@ use std::process::exit;
 use tracing::error;
 use tracing_subscriber::fmt as tracing_fmt;
 
-use so3_core::domain::error::So3Result;
-
 mod config;
 mod protocol;
 mod runtime;
@@ -21,12 +19,8 @@ async fn main() {
         .compact()
         .init();
 
-    if let Err(error) = run().await {
+    if let Err(error) = runtime::run(config::load_storage_roots()).await {
         error!(%error, "maelstrom adapter exited with error");
         exit(PROCESS_EXIT_FAILURE);
     }
-}
-
-async fn run() -> So3Result<()> {
-    runtime::run(config::load_storage_roots()).await
 }
