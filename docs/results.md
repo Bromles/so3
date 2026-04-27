@@ -393,8 +393,6 @@ bash scripts/k6/run-benchmark.sh --runs 30
 SO3_ADDR=http://127.0.0.1:3001 bash scripts/k6/run-benchmark.sh --runs 30
 ```
 
-Raw JSON exports: single-node `/tmp/so3-bench-20260427-072208/`, cluster `/tmp/so3-bench-cluster-20260427-075341/`
-
 ---
 
 ## Architecture notes

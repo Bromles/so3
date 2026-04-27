@@ -78,6 +78,7 @@ package "crates/core::object_server" {
         -executor: ObjectCommandExecutor
         +read(key): Result<Option<StoredObject>>
         +write(key, value): Result<StoredObject>
+        +delete(key): Result<()>
         +cas(key, expected_version, value): Result<CasResult>
         +execute_command(command): Result<ObjectResult>
     }
@@ -109,12 +110,14 @@ package "crates/core::domain" {
         Read
         Write
         Cas
+        Delete
     }
 
     enum ObjectResult {
         Read
         Write
         Cas
+        Delete
     }
 
     enum CasResult {
@@ -212,6 +215,10 @@ package "crates/core::rpc_server" {
         -peers: HashMap<String, ConsensusTransportClient>
     }
 
+    class RejectingConsensusTransport {
+        -node_id: Uuid
+    }
+
     class ConsensusTransportService <<tonic service>>
     class ConsensusTransportClient <<generated client>>
     class ConsensusTransportServer <<generated server>>
@@ -273,6 +280,7 @@ RpcServer --> ConsensusTransportServer
 ConsensusTransportServer --> ConsensusTransportService
 ConsensusTransportService --> ConsensusTransportHandler
 ApplyingConsensusTransport ..|> ConsensusTransportHandler
+RejectingConsensusTransport ..|> ConsensusTransportHandler
 ApplyingConsensusTransport --> SqliteConsensusJournal
 ApplyingConsensusTransport --> ReplicatedCommandExecutor
 

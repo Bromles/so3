@@ -13,7 +13,7 @@
         <mxCell id="node" value="Node&lt;br&gt;lifecycle + wiring" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=14;fontStyle=1" parent="1" vertex="1">
           <mxGeometry x="390" y="110" width="170" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="object_api" value="Object API&lt;br&gt;HTTP Read / Write / CAS" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=14" parent="1" vertex="1">
+        <mxCell id="object_api" value="Object API&lt;br&gt;HTTP Read / Write / CAS / Delete" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=14" parent="1" vertex="1">
           <mxGeometry x="660" y="92" width="190" height="70" as="geometry" />
         </mxCell>
         <mxCell id="rpc_server" value="RPC Server&lt;br&gt;private tonic API" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=14" parent="1" vertex="1">
@@ -37,7 +37,7 @@
         <mxCell id="blobs" value="Filesystem&lt;br&gt;immutable blobs" style="shape=folder;tabWidth=40;tabHeight=14;tabPosition=left;html=1;whiteSpace=wrap;fillColor=#f5f5f5;strokeColor=#666666;fontSize=13" parent="1" vertex="1">
           <mxGeometry x="960" y="558" width="130" height="74" as="geometry" />
         </mxCell>
-        <mxCell id="e_client_api" value="Read / Write / CAS" style="endArrow=block;html=1;rounded=0;strokeWidth=2" parent="1" source="client" target="object_api" edge="1">
+        <mxCell id="e_client_api" value="Read / Write / CAS / Delete" style="endArrow=block;html=1;rounded=0;strokeWidth=2" parent="1" source="client" target="object_api" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="e_binary_node" value="starts" style="endArrow=block;html=1;rounded=0" parent="1" source="binary" target="node" edge="1">
