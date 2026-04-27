@@ -181,60 +181,114 @@ The benchmark checks:
 
 ### Latency statistics (30-run aggregate, all times in ms)
 
-σ is the **cross-run standard deviation** (between-run stability), computed as population std-dev
-of the per-run median/avg/p90/p95. CV (coefficient of variation) measures run-to-run noise as a
-percentage of the mean.
+Two levels of variability are reported:
+
+- **σ_cross** — cross-run standard deviation: population std-dev of the per-run statistic across
+  the 30 runs. Measures run-to-run stability (scheduling noise, SQLite checkpoint timing, etc.).
+- **σ_within** — within-run standard deviation: estimated from the IQR of each run using the
+  Gaussian IQR estimator σ ≈ IQR / 1.3490 (robust against outliers). The **mean** σ_within and
+  **variance** (σ_within²) across all 30 runs are reported. Measures tail latency spread inside a
+  single 30 s window.
+- **CV** — coefficient of variation = σ_cross / mean, measures run-to-run noise as a percentage.
 
 #### PUT
 
-| Statistic | mean   | σ      | CV    | min    | max     |
-| --------- | ------ | ------ | ----- | ------ | ------- |
-| median    | 424.88 | 44.54  | 10.5% | 341.50 | 546.00  |
-| avg       | 452.51 | 48.06  | 10.6% | 370.63 | 591.71  |
-| p90       | 733.53 | 102.53 | 14.0% | 559.80 | 995.60  |
-| p95       | 858.58 | 87.40  | 10.2% | 678.25 | 1026.60 |
+| Statistic | mean   | σ_cross | CV    | min    | max     |
+| --------- | ------ | ------- | ----- | ------ | ------- |
+| median    | 424.88 | 44.54   | 10.5% | 341.50 | 546.00  |
+| avg       | 452.51 | 48.06   | 10.6% | 370.63 | 591.71  |
+| p90       | 733.53 | 102.53  | 14.0% | 559.80 | 995.60  |
+| p95       | 858.58 | 87.40   | 10.2% | 678.25 | 1026.60 |
+
+| Within-run (mean over 30 runs) | σ_within | variance (ms²) |
+| ------------------------------ | -------- | -------------- |
+| mean σ_within                  | 183.6 ms | 35 238         |
+| min σ_within (best run)        | 123.2 ms | 15 188         |
+| max σ_within (worst run)       | 261.3 ms | 68 282         |
 
 #### GET
 
-| Statistic | mean   | σ     | CV    | min    | max    |
-| --------- | ------ | ----- | ----- | ------ | ------ |
-| median    | 287.27 | 36.48 | 12.7% | 223.00 | 354.50 |
-| avg       | 306.62 | 33.22 | 10.8% | 250.77 | 358.22 |
-| p90       | 523.24 | 39.35 | 7.5%  | 443.60 | 599.40 |
-| p95       | 596.79 | 51.79 | 8.7%  | 503.45 | 690.80 |
+| Statistic | mean   | σ_cross | CV    | min    | max    |
+| --------- | ------ | ------- | ----- | ------ | ------ |
+| median    | 287.27 | 36.48   | 12.7% | 223.00 | 354.50 |
+| avg       | 306.62 | 33.22   | 10.8% | 250.77 | 358.22 |
+| p90       | 523.24 | 39.35   | 7.5%  | 443.60 | 599.40 |
+| p95       | 596.79 | 51.79   | 8.7%  | 503.45 | 690.80 |
+
+| Within-run (mean over 30 runs) | σ_within | variance (ms²) |
+| ------------------------------ | -------- | -------------- |
+| mean σ_within                  | 168.6 ms | 28 784         |
+| min σ_within (best run)        | 133.4 ms | 17 805         |
+| max σ_within (worst run)       | 209.0 ms | 43 701         |
 
 #### HEAD
 
-| Statistic | mean   | σ     | CV    | min    | max    |
-| --------- | ------ | ----- | ----- | ------ | ------ |
-| median    | 285.52 | 33.25 | 11.6% | 215.00 | 346.00 |
-| avg       | 302.06 | 27.29 | 9.0%  | 250.53 | 345.52 |
-| p90       | 497.35 | 25.22 | 5.1%  | 431.20 | 553.20 |
-| p95       | 572.70 | 28.96 | 5.1%  | 523.00 | 642.50 |
+| Statistic | mean   | σ_cross | CV    | min    | max    |
+| --------- | ------ | ------- | ----- | ------ | ------ |
+| median    | 285.52 | 33.25   | 11.6% | 215.00 | 346.00 |
+| avg       | 302.06 | 27.29   | 9.0%  | 250.53 | 345.52 |
+| p90       | 497.35 | 25.22   | 5.1%  | 431.20 | 553.20 |
+| p95       | 572.70 | 28.96   | 5.1%  | 523.00 | 642.50 |
+
+| Within-run (mean over 30 runs) | σ_within | variance (ms²) |
+| ------------------------------ | -------- | -------------- |
+| mean σ_within                  | 150.7 ms | 22 957         |
+| min σ_within (best run)        | 117.1 ms | 13 718         |
+| max σ_within (worst run)       | 195.7 ms | 38 300         |
 
 #### DELETE
 
-| Statistic | mean   | σ     | CV    | min    | max    |
-| --------- | ------ | ----- | ----- | ------ | ------ |
-| median    | 299.72 | 35.05 | 11.7% | 235.00 | 365.00 |
-| avg       | 314.07 | 31.41 | 10.0% | 252.26 | 361.14 |
-| p90       | 508.50 | 32.96 | 6.5%  | 444.80 | 572.40 |
-| p95       | 568.78 | 38.64 | 6.8%  | 486.00 | 646.80 |
+| Statistic | mean   | σ_cross | CV    | min    | max    |
+| --------- | ------ | ------- | ----- | ------ | ------ |
+| median    | 299.72 | 35.05   | 11.7% | 235.00 | 365.00 |
+| avg       | 314.07 | 31.41   | 10.0% | 252.26 | 361.14 |
+| p90       | 508.50 | 32.96   | 6.5%  | 444.80 | 572.40 |
+| p95       | 568.78 | 38.64   | 6.8%  | 486.00 | 646.80 |
+
+| Within-run (mean over 30 runs) | σ_within | variance (ms²) |
+| ------------------------------ | -------- | -------------- |
+| mean σ_within                  | 144.5 ms | 21 109         |
+| min σ_within (best run)        | 105.3 ms | 11 081         |
+| max σ_within (worst run)       | 172.0 ms | 29 578         |
+
+### Resource consumption
+
+Measured during a k6 run (10 VUs, 30 s, 64-byte objects), sampled every second via `ps`.
+
+| Resource             | Idle     | Under load    | Peak     |
+| -------------------- | -------- | ------------- | -------- |
+| RSS (resident set)   | ~12.8 MB | ~12.8–13.1 MB | ~13.1 MB |
+| CPU (`%cpu`, 1 core) | ~0%      | mean ~70%     | ~99%     |
+
+**Memory** stays effectively flat because:
+
+- SQLite stores all persistent data on disk; the page cache is bounded by SQLite defaults.
+- Rust's ownership model avoids runtime GC pauses and heap fragmentation.
+- Immutable blobs are addressed by hash and never loaded into the server heap during
+  metadata-only operations (HEAD).
+
+**CPU** peaks near 100% of one core for PUT-heavy workloads, which is expected: each write
+serialises through the consensus pipeline (PreAccept → Commit → Apply → SQLite WAL fsync) on a
+single logical path. The multi-threaded tokio runtime distributes concurrent reads and independent
+consensus coordinators across cores.
 
 ### Interpretation
 
-**Latency context:** Each PUT goes through the full Accord consensus pipeline — PreAccept, optional
+**Latency context:** Each PUT traverses the full Accord consensus pipeline — PreAccept, optional
 Accept (slow path), Commit, and local Apply — before returning to the client. SQLite WAL commits
 are synchronous. On a single-node setup this means ~1–4 disk fsync operations per write with no
-network involved. The 425 ms median for PUT reflects this deliberate durability cost.
+network round trips. The 425 ms median for PUT reflects this deliberate durability cost.
 
 GET and HEAD are read-path operations and are ~30% faster than PUT (~287 ms vs ~425 ms median)
 because reads bypass the consensus coordinator and serve directly from the SQLite metadata store
 and filesystem blob.
 
-**Stability (CV 5–14%):** Coefficients of variation below 15% over 30 independent runs indicate
-stable benchmark behaviour. The higher CV for PUT p90 (14%) reflects occasional GC/SQLite
-checkpoint pauses.
+**Within-run variance (σ_within ~145–184 ms)** is dominated by SQLite WAL checkpoint events that
+periodically pause writers. This is normal SQLite behaviour and not specific to so3.
+
+**Cross-run stability (CV 5–14%):** Coefficients of variation below 15% over 30 independent runs
+indicate reproducible benchmark behaviour. The higher CV for PUT p90 (14%) reflects the less
+predictable tail of SQLite checkpoint pauses.
 
 **Zero errors across 30 runs** confirms S3 API correctness: read-after-write consistency, valid
 ETag/Last-Modified/X-Amz-Version-Id headers, and proper HTTP status codes for all operations.
