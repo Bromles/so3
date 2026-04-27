@@ -158,28 +158,52 @@ The benchmark checks:
   and `X-Amz-Version-Id` headers.
 - **Zero error rate:** `s3_errors` threshold is `rate < 1%`.
 
-### Test configuration
+### Scaling model
 
-| Parameter   | Value                                     |
-| ----------- | ----------------------------------------- |
-| VUs         | 10                                        |
-| Duration    | 30 s per run                              |
-| Runs        | 30                                        |
-| Object size | 64 bytes                                  |
-| Endpoint    | `http://127.0.0.1:3000` (single-node so3) |
-| Binary      | `target/release/so3`                      |
-| Date        | 2026-04-27                                |
+so3 is a **replicated** system — every node stores a full copy of all data. Adding nodes increases
+**fault tolerance** (the cluster can lose `floor((n-1)/2)` nodes and remain available), but does
+**not** increase write throughput or total storage capacity. Write scaling would require key-space
+sharding, which is not implemented in the current PoC.
 
-### Throughput (across 30 runs)
+Reads can in principle be served locally from any node without consensus, so read throughput *can*
+scale with the number of nodes (each node serves its own read traffic independently). The current
+implementation reads from the local SQLite store without a consensus round trip.
 
-| Metric                                         | mean    | min  | max  | σ      |
-| ---------------------------------------------- | ------- | ---- | ---- | ------ |
-| HTTP requests/s                                | 29.2    | 24.9 | 34.8 | 2.9    |
-| Iterations/s (full PUT→GET→HEAD→DELETE cycles) | 7.3     | 6.2  | 8.7  | 0.7    |
-| Avg iteration duration                         | 1375 ms | —    | —    | 130 ms |
-| Error rate                                     | 0%      | 0%   | 0%   | —      |
+### Test configurations
 
-### Latency statistics (30-run aggregate, all times in ms)
+Two configurations were benchmarked for comparison:
+
+| Configuration | Nodes | Endpoint |
+| ------------- | ----- | -------- |
+| Single node   | 1     | `127.0.0.1:3000` (standalone) |
+| 3-node cluster | 3    | `127.0.0.1:3001` (one node in cluster) |
+
+Common parameters for both:
+
+| Parameter   | Value                        |
+| ----------- | ---------------------------- |
+| VUs         | 10                           |
+| Duration    | 30 s per run                 |
+| Runs        | 30                           |
+| Object size | 64 bytes                     |
+| Binary      | `target/release/so3`         |
+| Date        | 2026-04-27                   |
+
+### Throughput comparison (across 30 runs)
+
+| Metric          | Single node | 3-node cluster | Δ    |
+| --------------- | ----------- | -------------- | ---- |
+| HTTP req/s mean | 29.2        | 21.3           | −27% |
+| HTTP req/s σ    | 2.9         | 1.3            |      |
+| Iterations/s    | 7.3         | 5.3            | −27% |
+| Error rate      | 0%          | 0%             | —    |
+
+Throughput drops ~27% in the cluster because each write now requires two extra consensus round
+trips (PreAccept to 2 peers + Commit to 2 peers) over loopback gRPC before the client response.
+Reads at the median are unaffected (local SQLite read, no consensus), but at higher percentiles
+queuing behind writes adds latency.
+
+### Single-node latency statistics (30-run aggregate, all times in ms)
 
 Two levels of variability are reported:
 
@@ -272,41 +296,102 @@ serialises through the consensus pipeline (PreAccept → Commit → Apply → SQ
 single logical path. The multi-threaded tokio runtime distributes concurrent reads and independent
 consensus coordinators across cores.
 
+### 3-node cluster latency statistics (30-run aggregate, all times in ms)
+
+#### PUT (cluster)
+
+| Statistic | mean    | σ_cross | CV    | min     | max     |
+| --------- | ------- | ------- | ----- | ------- | ------- |
+| median    | 649.32  | 70.14   | 10.8% | 538.00  | 924.50  |
+| avg       | 733.39  | 53.08   | 7.2%  | 654.11  | 926.47  |
+| p90       | 1305.54 | 175.05  | 13.4% | 1047.20 | 1723.60 |
+| p95       | 1869.13 | 137.36  | 7.3%  | 1632.55 | 2336.75 |
+
+#### GET (cluster)
+
+| Statistic | mean   | σ_cross | CV    | min    | max    |
+| --------- | ------ | ------- | ----- | ------ | ------ |
+| median    | 278.70 | 41.50   | 14.9% | 189.00 | 391.00 |
+| avg       | 360.17 | 36.16   | 10.0% | 293.13 | 463.62 |
+| p90       | 741.08 | 69.38   | 9.4%  | 606.10 | 908.50 |
+| p95       | 885.30 | 80.65   | 9.1%  | 756.50 | 1101.55|
+
+#### HEAD (cluster)
+
+| Statistic | mean   | σ_cross | CV    | min    | max    |
+| --------- | ------ | ------- | ----- | ------ | ------ |
+| median    | 300.70 | 42.54   | 14.1% | 222.00 | 381.00 |
+| avg       | 370.66 | 35.02   | 9.4%  | 314.49 | 486.76 |
+| p90       | 751.49 | 67.46   | 9.0%  | 655.10 | 891.60 |
+| p95       | 893.51 | 75.96   | 8.5%  | 793.75 | 1080.10|
+
+#### DELETE (cluster)
+
+| Statistic | mean   | σ_cross | CV    | min    | max    |
+| --------- | ------ | ------- | ----- | ------ | ------ |
+| median    | 353.08 | 44.13   | 12.5% | 273.00 | 445.00 |
+| avg       | 414.67 | 35.98   | 8.7%  | 354.26 | 561.83 |
+| p90       | 823.06 | 74.24   | 9.0%  | 676.90 | 968.00 |
+| p95       | 947.99 | 91.91   | 9.7%  | 796.50 | 1150.00|
+
+### Single vs cluster latency comparison (median, ms)
+
+| Operation | Single node | 3-node cluster | Overhead |
+| --------- | ----------- | -------------- | -------- |
+| PUT       | 424.9       | 649.3          | +53%     |
+| GET       | 287.3       | 278.7          | −3%      |
+| HEAD      | 285.5       | 300.7          | +5%      |
+| DELETE    | 299.7       | 353.1          | +18%     |
+
+PUT overhead (+53%) reflects two loopback gRPC consensus round trips added by the cluster.
+GET median is effectively unchanged (−3%): reads are served locally from SQLite without consensus.
+HEAD and DELETE show minor overhead from tokio executor contention under increased overall load.
+
 ### Interpretation
 
 **Latency context:** Each PUT traverses the full Accord consensus pipeline — PreAccept, optional
 Accept (slow path), Commit, and local Apply — before returning to the client. SQLite WAL commits
 are synchronous. On a single-node setup this means ~1–4 disk fsync operations per write with no
-network round trips. The 425 ms median for PUT reflects this deliberate durability cost.
+network round trips. The 425 ms median for PUT reflects this deliberate durability cost. In a
+3-node cluster the same pipeline adds 2 loopback gRPC round trips, raising the PUT median to
+649 ms.
 
-GET and HEAD are read-path operations and are ~30% faster than PUT (~287 ms vs ~425 ms median)
-because reads bypass the consensus coordinator and serve directly from the SQLite metadata store
-and filesystem blob.
+GET and HEAD are read-path operations and are ~30% faster than PUT on a single node (~287 ms vs
+~425 ms median) because reads bypass the consensus coordinator and serve directly from the SQLite
+metadata store and filesystem blob.
 
 **Within-run variance (σ_within ~145–184 ms)** is dominated by SQLite WAL checkpoint events that
 periodically pause writers. This is normal SQLite behaviour and not specific to so3.
 
-**Cross-run stability (CV 5–14%):** Coefficients of variation below 15% over 30 independent runs
+**Cross-run stability (CV 5–15%):** Coefficients of variation below 15% over 30 independent runs
 indicate reproducible benchmark behaviour. The higher CV for PUT p90 (14%) reflects the less
 predictable tail of SQLite checkpoint pauses.
 
-**Zero errors across 30 runs** confirms S3 API correctness: read-after-write consistency, valid
-ETag/Last-Modified/X-Amz-Version-Id headers, and proper HTTP status codes for all operations.
+**Zero errors across all 60 runs** (30 single-node + 30 cluster) confirms S3 API correctness:
+read-after-write consistency, valid ETag/Last-Modified/X-Amz-Version-Id headers, and proper HTTP
+status codes for all operations.
+
+**Scaling limitations:** so3 is a replication-based system with no key-space sharding. Adding
+nodes increases fault tolerance but does not increase write throughput — on the contrary, each
+additional replica adds one more consensus round trip per write. Write throughput scales inversely
+with cluster size. Read throughput *can* scale: each node serves reads locally without consensus,
+so routing reads to different nodes in parallel would increase aggregate read capacity. Linear
+write scaling requires sharding, which is not implemented in the current PoC.
 
 ### Re-running
 
 ```bash
-# Single run with live summary
+# Single node
 k6 run scripts/k6/s3-benchmark.js
 
-# 30-run aggregate
+# 30-run aggregate (single node)
 bash scripts/k6/run-benchmark.sh --runs 30
 
-# Custom VUs / duration
-bash scripts/k6/run-benchmark.sh --runs 30 VUS=20 DURATION=60s
+# 3-node cluster (start nodes first, then)
+SO3_ADDR=http://127.0.0.1:3001 bash scripts/k6/run-benchmark.sh --runs 30
 ```
 
-Raw JSON exports from the reference run: `/tmp/so3-bench-20260427-072208/run_*.json`
+Raw JSON exports: single-node `/tmp/so3-bench-20260427-072208/`, cluster `/tmp/so3-bench-cluster-20260427-075341/`
 
 ---
 
