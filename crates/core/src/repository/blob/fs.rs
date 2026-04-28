@@ -3,16 +3,17 @@ use std::fs::File as StdFile;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::domain::blob::{BlobMetadata, BlobPayload};
+use crate::domain::checksum::Sha256Digest;
+use crate::domain::error::{So3Error, So3Result};
+use crate::repository::blob::interface::BlobRepository;
 use async_trait::async_trait;
-use sha2::{Digest, Sha256};
+use sha2::Digest;
 use tokio::fs;
 use tokio::fs::File as TokioFile;
 use tokio::fs::ReadDir;
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
-
-use crate::domain::error::{So3Error, So3Result};
-use crate::storage::blob::repository::{BlobMetadata, BlobRepository};
 
 // On-disk blob layout.
 const TEMP_BLOBS_DIR_NAME: &str = "tmp";
@@ -47,9 +48,9 @@ impl FileSystemBlobRepository {
         self.blob_dir.join(COMMITTED_BLOBS_DIR_NAME)
     }
 
-    fn temp_path(&self, blob_id: &str) -> PathBuf {
+    fn temp_path(&self, name: &str) -> PathBuf {
         self.temp_dir()
-            .join(format!("{blob_id}.{TEMP_FILE_EXTENSION}"))
+            .join(format!("{name}.{TEMP_FILE_EXTENSION}"))
     }
 
     fn committed_path(&self, blob_id: &str) -> PathBuf {
@@ -68,28 +69,58 @@ impl FileSystemBlobRepository {
 
 #[async_trait]
 impl BlobRepository for FileSystemBlobRepository {
-    async fn store(&self, value: &[u8]) -> So3Result<BlobMetadata> {
-        let blob_id = format!("{}.{}", Uuid::new_v4(), BLOB_FILE_EXTENSION);
-        let temp_path = self.temp_path(&blob_id);
+    async fn store(&self, value: BlobPayload) -> So3Result<BlobMetadata> {
+        let checksum = Sha256Digest::digest_bytes(&value);
+        let blob_id = format!("{}.{BLOB_FILE_EXTENSION}", checksum.to_hex());
         let final_path = self.committed_path(&blob_id);
 
+        // Content-addressed: if the file already exists the bytes are identical, so we can
+        // return immediately without writing again.
+        if fs::try_exists(&final_path).await? {
+            return Ok(BlobMetadata {
+                blob_id: blob_id.into(),
+                content_length: value.len() as u64,
+                checksum_sha256: checksum,
+            });
+        }
+
+        // Write through a UUID-named temp file to avoid collisions when multiple tasks write
+        // the same content concurrently.
+        let temp_name = Uuid::new_v4().to_string();
+        let temp_path = self.temp_path(&temp_name);
         let mut file = TokioFile::create(&temp_path).await?;
-        file.write_all(value).await?;
+        file.write_all(&value).await?;
         file.sync_all().await?;
         drop(file);
 
-        fs::rename(&temp_path, &final_path).await?;
-        sync_directory(self.committed_dir()).await?;
+        // Atomic rename into the committed directory.  If a concurrent writer already placed
+        // the file while we were writing, that is fine — just discard our temp copy.
+        match fs::rename(&temp_path, &final_path).await {
+            Ok(()) => {
+                sync_directory(self.committed_dir()).await?;
+            }
+            Err(_) if fs::try_exists(&final_path).await.unwrap_or(false) => {
+                let _ = fs::remove_file(&temp_path).await;
+            }
+            Err(e) => return Err(So3Error::from(e)),
+        }
 
         Ok(BlobMetadata {
-            blob_id,
+            blob_id: blob_id.into(),
             content_length: value.len() as u64,
-            checksum: checksum_hex(value),
+            checksum_sha256: checksum,
         })
     }
 
-    async fn load(&self, blob_id: &str) -> So3Result<Vec<u8>> {
+    async fn load(&self, blob_id: &str) -> So3Result<BlobPayload> {
         fs::read(self.committed_path(blob_id))
+            .await
+            .map(BlobPayload::from)
+            .map_err(So3Error::from)
+    }
+
+    async fn exists(&self, blob_id: &str) -> So3Result<bool> {
+        fs::try_exists(self.committed_path(blob_id))
             .await
             .map_err(So3Error::from)
     }
@@ -101,15 +132,6 @@ impl BlobRepository for FileSystemBlobRepository {
             Err(e) => Err(So3Error::from(e)),
         }
     }
-}
-
-fn checksum_hex(value: &[u8]) -> String {
-    let digest = Sha256::digest(value);
-    let mut checksum = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        let _ = FmtWrite::write_fmt(&mut checksum, format_args!("{byte:02x}"));
-    }
-    checksum
 }
 
 async fn next_dir_entry(entries: &mut ReadDir) -> So3Result<Option<fs::DirEntry>> {
@@ -145,13 +167,13 @@ fn open_directory_for_sync(path: &Path) -> io::Result<StdFile> {
 
 #[cfg(test)]
 mod tests {
+    use super::{FileSystemBlobRepository, COMMITTED_BLOBS_DIR_NAME, TEMP_BLOBS_DIR_NAME};
+    use crate::domain::blob::BlobPayload;
+    use crate::repository::blob::interface::BlobRepository;
     use tempfile::TempDir;
     use tokio::fs;
 
-    use super::{COMMITTED_BLOBS_DIR_NAME, FileSystemBlobRepository, TEMP_BLOBS_DIR_NAME};
-    use crate::storage::blob::repository::BlobRepository;
-
-    const TEST_PAYLOAD: &[u8] = b"blob-data";
+    const TEST_PAYLOAD: BlobPayload = b"blob-data".into();
     const STALE_TEMP_BLOB_NAME: &str = "stale.blob.tmp";
 
     #[tokio::test]
@@ -162,16 +184,49 @@ mod tests {
             .unwrap();
 
         let metadata = repository.store(TEST_PAYLOAD).await.unwrap();
-        let loaded = repository.load(&metadata.blob_id).await.unwrap();
+        let loaded = repository.load(metadata.blob_id).await.unwrap();
 
         assert_eq!(metadata.content_length, TEST_PAYLOAD.len() as u64);
         assert_eq!(loaded, TEST_PAYLOAD.to_vec());
+        // blob_id is now sha256(content).blob — just verify the file exists on disk.
         assert!(
             temp_dir
                 .path()
                 .join(COMMITTED_BLOBS_DIR_NAME)
-                .join(&metadata.blob_id)
+                .join(metadata.blob_id.as_str())
                 .exists()
+        );
+        assert!(
+            std::path::Path::new(metadata.blob_id.as_ref())
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("blob"))
+        );
+    }
+
+    #[tokio::test]
+    async fn store_is_idempotent_for_same_content() {
+        let temp_dir = TempDir::new().unwrap();
+        let repository = FileSystemBlobRepository::new(temp_dir.path())
+            .await
+            .unwrap();
+
+        let first = repository.store(TEST_PAYLOAD).await.unwrap();
+        let second = repository.store(TEST_PAYLOAD).await.unwrap();
+
+        // Same content must yield identical blob_id and checksum.
+        assert_eq!(first.blob_id, second.blob_id);
+        assert_eq!(first.checksum_sha256, second.checksum_sha256);
+
+        // Exactly one file must exist in the committed directory.
+        let committed_dir = temp_dir.path().join(COMMITTED_BLOBS_DIR_NAME);
+        let mut entries = fs::read_dir(&committed_dir).await.unwrap();
+        let mut count = 0usize;
+        while entries.next_entry().await.unwrap().is_some() {
+            count += 1;
+        }
+        assert_eq!(
+            count, 1,
+            "duplicate blobs must not be written for identical content"
         );
     }
 

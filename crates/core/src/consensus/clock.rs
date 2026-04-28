@@ -96,7 +96,7 @@ fn physical_millis_now() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{HybridLogicalClock, HybridLogicalClockState, timestamp_is_after};
+    use super::{timestamp_is_after, HybridLogicalClock, HybridLogicalClockState};
     use crate::rpc_server::proto::LogicalTimestamp;
 
     const NODE_A: &str = "n0";

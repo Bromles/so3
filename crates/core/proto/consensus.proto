@@ -6,6 +6,7 @@ service ConsensusTransport {
   rpc Accept(AcceptRequest) returns (AcceptResponse) {}
   rpc Apply(ApplyRequest) returns (ApplyResponse) {}
   rpc Commit(CommitRequest) returns (CommitResponse) {}
+  rpc FetchBlob(FetchBlobRequest) returns (FetchBlobResponse) {}
   rpc PreAccept(PreAcceptRequest) returns (PreAcceptResponse) {}
   rpc Recover(RecoverRequest) returns (RecoverResponse) {}
 }
@@ -71,6 +72,14 @@ message CommitResponse {
 
 message EventPayload {
   bytes command = 1;
+}
+
+message FetchBlobRequest {
+  string blob_id = 1;
+}
+
+message FetchBlobResponse {
+  bytes data = 1;
 }
 
 message LastApplied {

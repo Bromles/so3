@@ -2,19 +2,20 @@ use async_trait::async_trait;
 use tonic::Status;
 use tracing::{debug, info, warn};
 
-use crate::consensus::ConsensusCommandId;
 use crate::consensus::clock::HybridLogicalClock;
 use crate::consensus::executor::ReplicatedCommandExecutor;
 use crate::consensus::journal::{
-    JournalEntry, JournalMetadata, JournalState, SqliteConsensusJournal, ballot_is_after,
+    ballot_is_after, JournalEntry, JournalMetadata, JournalState, SqliteConsensusJournal,
 };
 use crate::consensus::recovery::{apply_committed_commands, wait_for_unapplied_dependencies};
+use crate::consensus::ConsensusCommandId;
 use crate::domain::error::So3Error;
 use crate::domain::{ObjectCommand, ObjectKey};
+use crate::repository::blob::interface::BlobRepository;
 use crate::rpc_server::proto::{
     AcceptRequest, AcceptResponse, ApplyRequest, ApplyResponse, Ballot, CommitRequest,
-    CommitResponse, DependencySet, LogicalTimestamp, PreAcceptRequest, PreAcceptResponse,
-    RecoverRequest, RecoverResponse, State,
+    CommitResponse, DependencySet, FetchBlobRequest, FetchBlobResponse, LogicalTimestamp,
+    PreAcceptRequest, PreAcceptResponse, RecoverRequest, RecoverResponse, State,
 };
 use crate::rpc_server::transport::ConsensusTransportHandler;
 
@@ -22,21 +23,28 @@ const MISSING_EVENT_PAYLOAD_ERROR: &str = "missing apply event payload";
 const MISSING_COMMAND_ID_ERROR: &str = "missing consensus command_id";
 
 #[derive(Clone)]
-pub struct ApplyingConsensusTransport<E: ReplicatedCommandExecutor> {
+pub struct ApplyingConsensusTransport<E: ReplicatedCommandExecutor, B: BlobRepository> {
     node_id: String,
     executor: E,
     journal: SqliteConsensusJournal,
     clock: HybridLogicalClock,
+    blob_repository: B,
 }
 
-impl<E: ReplicatedCommandExecutor> ApplyingConsensusTransport<E> {
+impl<E: ReplicatedCommandExecutor, B: BlobRepository> ApplyingConsensusTransport<E, B> {
     #[must_use]
-    pub fn new(node_id: String, executor: E, journal: SqliteConsensusJournal) -> Self {
+    pub fn new(
+        node_id: String,
+        executor: E,
+        journal: SqliteConsensusJournal,
+        blob_repository: B,
+    ) -> Self {
         Self {
             clock: HybridLogicalClock::new(node_id.clone()),
             node_id,
             executor,
             journal,
+            blob_repository,
         }
     }
 
@@ -49,9 +57,10 @@ impl<E: ReplicatedCommandExecutor> ApplyingConsensusTransport<E> {
 }
 
 #[async_trait]
-impl<E> ConsensusTransportHandler for ApplyingConsensusTransport<E>
+impl<E, B> ConsensusTransportHandler for ApplyingConsensusTransport<E, B>
 where
     E: ReplicatedCommandExecutor + Clone + Send + Sync + 'static,
+    B: BlobRepository + Clone + Send + Sync + 'static,
 {
     async fn pre_accept(&self, request: PreAcceptRequest) -> Result<PreAcceptResponse, Status> {
         let command_id = extract_command_id(request.command_id.as_ref())?;
@@ -170,8 +179,9 @@ where
             .await
             .map_err(|error| map_error(&error))?;
         if entry.state == JournalState::Applied {
+            // Already applied; entry.result contains serialised ObjectResult bytes.
             return Ok(CommitResponse {
-                result: entry.result,
+                result: entry.result.clone(),
             });
         }
 
@@ -195,7 +205,7 @@ where
                 "applied committed command after resolving dependency chain"
             );
             return Ok(CommitResponse {
-                result: entry.result,
+                result: entry.result.clone(),
             });
         }
 
@@ -226,8 +236,9 @@ where
             .map_err(|error| map_error(&error))?
             .filter(|entry| entry.state == JournalState::Applied)
         {
+            // Already applied; entry.result contains serialised ObjectResult bytes.
             return Ok(ApplyResponse {
-                result: entry.result,
+                result: entry.result.clone(),
             });
         }
 
@@ -239,13 +250,13 @@ where
             .execute_replicated(&command_id, command)
             .await
             .map_err(|error| map_error(&error))?;
-        let result = result.to_bytes().map_err(|error| map_error(&error))?;
+        let result_bytes = result.to_bytes().map_err(|error| map_error(&error))?;
         let _ = self
             .journal
             .record_applied_with_metadata(
                 &command_id,
                 command_bytes,
-                &result,
+                &result_bytes,
                 JournalMetadata {
                     timestamp_zero: request.timestamp_zero,
                     timestamp: request.timestamp,
@@ -256,7 +267,9 @@ where
             .await
             .map_err(|error| map_error(&error))?;
 
-        Ok(ApplyResponse { result })
+        Ok(ApplyResponse {
+            result: result_bytes,
+        })
     }
 
     async fn recover(&self, request: RecoverRequest) -> Result<RecoverResponse, Status> {
@@ -325,11 +338,21 @@ where
             nack: None,
         })
     }
+
+    async fn fetch_blob(&self, request: FetchBlobRequest) -> Result<FetchBlobResponse, Status> {
+        let data = self
+            .blob_repository
+            .load(&request.blob_id)
+            .await
+            .map_err(|error| Status::not_found(error.to_string()))?;
+        Ok(FetchBlobResponse { data })
+    }
 }
 
-impl<E> ApplyingConsensusTransport<E>
+impl<E, B> ApplyingConsensusTransport<E, B>
 where
     E: ReplicatedCommandExecutor + Clone + Send + Sync + 'static,
+    B: BlobRepository + Clone + Send + Sync + 'static,
 {
     async fn dependencies_for_unapplied_conflicts(
         &self,
@@ -372,7 +395,6 @@ where
 
         Ok(None)
     }
-
 }
 
 fn extract_command_bytes(
@@ -476,14 +498,18 @@ mod tests {
     use crate::consensus::executor::PersistentReplicatedCommandExecutor;
     use crate::consensus::journal::SqliteConsensusJournal;
     use crate::domain::{
-        ObjectCommand, ObjectKey, ObjectResult, ObjectVersion, ReadCommand, WriteCommand,
+        BlobPayload, ObjectCommand, ObjectKey, ObjectResult, ObjectVersion, ReadCommand,
+        WriteCommand,
     };
+    use crate::repository::blob::fs::FileSystemBlobRepository;
+    use crate::repository::blob::interface::BlobRepository;
+    use crate::repository::metadata::sqlite::SqliteObjectMetadataRepository;
+    use crate::repository::registry::SqliteFsPersistentObjectRepository;
     use crate::rpc_server::proto::{
         AcceptRequest, ApplyRequest, Ballot, CommandId, CommitRequest, DependencySet, EventPayload,
         LogicalTimestamp, PreAcceptRequest, RecoverRequest, State,
     };
     use crate::rpc_server::transport::ConsensusTransportHandler;
-    use crate::storage::registry::SqliteFsPersistentObjectRepository;
 
     const ALPHA_KEY: &str = "alpha";
     const BETA_KEY: &str = "beta";
@@ -500,9 +526,11 @@ mod tests {
         ApplyingConsensusTransport<
             PersistentReplicatedCommandExecutor<
                 SqliteFsPersistentObjectRepository,
-                crate::storage::metadata::sqlite::SqliteObjectMetadataRepository,
+                SqliteObjectMetadataRepository,
             >,
+            FileSystemBlobRepository,
         >,
+        FileSystemBlobRepository,
         TempDir,
     ) {
         let temp_dir = TempDir::new().unwrap();
@@ -512,8 +540,9 @@ mod tests {
         )
         .await
         .unwrap();
+        let blob_repository = repository.blob_repository().clone();
         let metadata_repository =
-            crate::storage::metadata::sqlite::SqliteObjectMetadataRepository::new(
+            crate::repository::metadata::sqlite::SqliteObjectMetadataRepository::new(
                 temp_dir.path().join("metadata"),
             )
             .await
@@ -527,7 +556,9 @@ mod tests {
                 Uuid::nil().to_string(),
                 PersistentReplicatedCommandExecutor::new(repository, metadata_repository),
                 journal,
+                blob_repository.clone(),
             ),
+            blob_repository,
             temp_dir,
         )
     }
@@ -553,12 +584,20 @@ mod tests {
         }
     }
 
+    async fn stored_payload(
+        blob_repository: &FileSystemBlobRepository,
+        value: &[u8],
+    ) -> BlobPayload {
+        blob_repository.store(value).await.unwrap().into()
+    }
+
     #[tokio::test]
     async fn apply_executes_serialized_write_command() {
-        let (transport, _temp_dir) = test_transport().await;
+        let (transport, blob_repository, _temp_dir) = test_transport().await;
+        let payload = stored_payload(&blob_repository, FIRST_VALUE).await;
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
-            value: FIRST_VALUE.to_vec(),
+            metadata: payload,
             last_modified: test_last_modified(),
         });
 
@@ -578,16 +617,18 @@ mod tests {
             panic!("expected write result");
         };
 
-        assert_eq!(write.object.record.version, ObjectVersion::initial());
-        assert_eq!(write.object.value, FIRST_VALUE.to_vec());
+        // Blob bytes are no longer embedded in ObjectResult; verify record metadata only.
+        assert_eq!(write.record.version, ObjectVersion::initial());
+        assert_eq!(write.record.content_length, FIRST_VALUE.len() as u64);
     }
 
     #[tokio::test]
     async fn pre_accept_and_accept_are_reflected_in_recover_state() {
-        let (transport, _temp_dir) = test_transport().await;
+        let (transport, blob_repository, _temp_dir) = test_transport().await;
+        let payload = stored_payload(&blob_repository, FIRST_VALUE).await;
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
-            value: FIRST_VALUE.to_vec(),
+            metadata: payload,
             last_modified: test_last_modified(),
         });
 
@@ -632,15 +673,15 @@ mod tests {
 
     #[tokio::test]
     async fn pre_accept_reports_cross_origin_unapplied_conflicts_as_dependencies() {
-        let (transport, _temp_dir) = test_transport().await;
+        let (transport, blob_repository, _temp_dir) = test_transport().await;
         let first = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
-            value: FIRST_VALUE.to_vec(),
+            metadata: stored_payload(&blob_repository, FIRST_VALUE).await,
             last_modified: test_last_modified(),
         });
         let second = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
-            value: b"second".to_vec(),
+            metadata: stored_payload(&blob_repository, b"second").await,
             last_modified: test_last_modified(),
         });
 
@@ -674,15 +715,15 @@ mod tests {
 
     #[tokio::test]
     async fn pre_accept_ignores_same_origin_unapplied_conflicts() {
-        let (transport, _temp_dir) = test_transport().await;
+        let (transport, blob_repository, _temp_dir) = test_transport().await;
         let first = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
-            value: FIRST_VALUE.to_vec(),
+            metadata: stored_payload(&blob_repository, FIRST_VALUE).await,
             last_modified: test_last_modified(),
         });
         let second = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
-            value: b"second".to_vec(),
+            metadata: stored_payload(&blob_repository, b"second").await,
             last_modified: test_last_modified(),
         });
 
@@ -712,10 +753,11 @@ mod tests {
 
     #[tokio::test]
     async fn recover_reports_durable_timestamp_and_dependencies() {
-        let (transport, _temp_dir) = test_transport().await;
+        let (transport, blob_repository, _temp_dir) = test_transport().await;
+        let payload = stored_payload(&blob_repository, FIRST_VALUE).await;
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
-            value: FIRST_VALUE.to_vec(),
+            metadata: payload,
             last_modified: test_last_modified(),
         });
         let timestamp_zero = LogicalTimestamp {
@@ -760,15 +802,15 @@ mod tests {
 
     #[tokio::test]
     async fn recover_waits_for_durable_dependencies_that_are_not_applied_locally() {
-        let (transport, _temp_dir) = test_transport().await;
+        let (transport, blob_repository, _temp_dir) = test_transport().await;
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
-            value: FIRST_VALUE.to_vec(),
+            metadata: stored_payload(&blob_repository, FIRST_VALUE).await,
             last_modified: test_last_modified(),
         });
         let applied_dependency = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(BETA_KEY).unwrap(),
-            value: b"dependency".to_vec(),
+            metadata: stored_payload(&blob_repository, b"dependency").await,
             last_modified: test_last_modified(),
         });
         let dependencies = DependencySet {
@@ -812,10 +854,11 @@ mod tests {
 
     #[tokio::test]
     async fn accept_rejects_ballot_older_than_durable_accept_ballot() {
-        let (transport, _temp_dir) = test_transport().await;
+        let (transport, blob_repository, _temp_dir) = test_transport().await;
+        let payload = stored_payload(&blob_repository, FIRST_VALUE).await;
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
-            value: FIRST_VALUE.to_vec(),
+            metadata: payload,
             last_modified: test_last_modified(),
         });
 
@@ -847,10 +890,11 @@ mod tests {
 
     #[tokio::test]
     async fn recover_reports_nack_for_ballot_older_than_durable_accept_ballot() {
-        let (transport, _temp_dir) = test_transport().await;
+        let (transport, blob_repository, _temp_dir) = test_transport().await;
+        let payload = stored_payload(&blob_repository, FIRST_VALUE).await;
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
-            value: FIRST_VALUE.to_vec(),
+            metadata: payload,
             last_modified: test_last_modified(),
         });
 
@@ -879,15 +923,15 @@ mod tests {
 
     #[tokio::test]
     async fn pre_accept_ignores_applied_and_non_conflicting_commands() {
-        let (transport, _temp_dir) = test_transport().await;
+        let (transport, blob_repository, _temp_dir) = test_transport().await;
         let applied = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
-            value: FIRST_VALUE.to_vec(),
+            metadata: stored_payload(&blob_repository, FIRST_VALUE).await,
             last_modified: test_last_modified(),
         });
         let other_key = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(BETA_KEY).unwrap(),
-            value: FIRST_VALUE.to_vec(),
+            metadata: stored_payload(&blob_repository, FIRST_VALUE).await,
             last_modified: test_last_modified(),
         });
         let current = ObjectCommand::Read(ReadCommand {
@@ -930,10 +974,11 @@ mod tests {
 
     #[tokio::test]
     async fn commit_executes_command_and_reports_applied_state() {
-        let (transport, _temp_dir) = test_transport().await;
+        let (transport, blob_repository, _temp_dir) = test_transport().await;
+        let payload = stored_payload(&blob_repository, FIRST_VALUE).await;
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
-            value: FIRST_VALUE.to_vec(),
+            metadata: payload,
             last_modified: test_last_modified(),
         });
 
@@ -974,15 +1019,15 @@ mod tests {
 
     #[tokio::test]
     async fn commit_waits_for_unapplied_dependencies_before_applying_command() {
-        let (transport, _temp_dir) = test_transport().await;
+        let (transport, blob_repository, _temp_dir) = test_transport().await;
         let first = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
-            value: FIRST_VALUE.to_vec(),
+            metadata: stored_payload(&blob_repository, FIRST_VALUE).await,
             last_modified: test_last_modified(),
         });
         let second = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
-            value: b"second".to_vec(),
+            metadata: stored_payload(&blob_repository, b"second").await,
             last_modified: test_last_modified(),
         });
 
@@ -1060,17 +1105,18 @@ mod tests {
         let ObjectResult::Read(read) = result else {
             panic!("expected read result");
         };
-        let object = read.object.expect("expected stored object");
-        assert_eq!(object.record.version, ObjectVersion::try_from(2).unwrap());
-        assert_eq!(object.value, b"second".to_vec());
+        // After the two writes, the object is at version 2. Blob bytes are not in the result.
+        let record = read.record.expect("expected object record after writes");
+        assert_eq!(record.version, ObjectVersion::try_from(2).unwrap());
     }
 
     #[tokio::test]
     async fn apply_executes_command_that_was_only_pre_accepted() {
-        let (transport, _temp_dir) = test_transport().await;
+        let (transport, blob_repository, _temp_dir) = test_transport().await;
+        let payload = stored_payload(&blob_repository, FIRST_VALUE).await;
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
-            value: FIRST_VALUE.to_vec(),
+            metadata: payload,
             last_modified: test_last_modified(),
         });
 
@@ -1107,13 +1153,14 @@ mod tests {
             panic!("expected write result");
         };
 
-        assert_eq!(write.object.value, FIRST_VALUE.to_vec());
+        // Blob bytes are no longer embedded in ObjectResult; verify metadata only.
+        assert_eq!(write.record.content_length, FIRST_VALUE.len() as u64);
         assert_eq!(recovered.local_state, State::Applied as i32);
     }
 
     #[tokio::test]
     async fn apply_rejects_missing_event_payload() {
-        let (transport, _temp_dir) = test_transport().await;
+        let (transport, _blob_repository, _temp_dir) = test_transport().await;
 
         let error = transport
             .apply(ApplyRequest {
@@ -1128,10 +1175,10 @@ mod tests {
 
     #[tokio::test]
     async fn apply_read_observes_previously_applied_write() {
-        let (transport, _temp_dir) = test_transport().await;
+        let (transport, blob_repository, _temp_dir) = test_transport().await;
         let write = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
-            value: FIRST_VALUE.to_vec(),
+            metadata: stored_payload(&blob_repository, FIRST_VALUE).await,
             last_modified: test_last_modified(),
         });
         let read = ObjectCommand::Read(ReadCommand {
@@ -1164,16 +1211,20 @@ mod tests {
             panic!("expected read result");
         };
 
-        let object = read.object.expect("expected stored object");
-        assert_eq!(object.value, FIRST_VALUE.to_vec());
+        // Blob bytes are no longer embedded in ObjectResult; verify that record is present
+        // and metadata is correct.
+        let record = read.record.expect("expected object record after write");
+        assert_eq!(record.version, ObjectVersion::initial());
+        assert_eq!(record.content_length, FIRST_VALUE.len() as u64);
     }
 
     #[tokio::test]
     async fn apply_is_idempotent_for_duplicate_command_id() {
-        let (transport, _temp_dir) = test_transport().await;
+        let (transport, blob_repository, _temp_dir) = test_transport().await;
+        let payload = stored_payload(&blob_repository, FIRST_VALUE).await;
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
-            value: FIRST_VALUE.to_vec(),
+            metadata: payload,
             last_modified: test_last_modified(),
         });
 
@@ -1206,10 +1257,11 @@ mod tests {
 
     #[tokio::test]
     async fn recover_reports_applied_state_for_journaled_command() {
-        let (transport, _temp_dir) = test_transport().await;
+        let (transport, blob_repository, _temp_dir) = test_transport().await;
+        let payload = stored_payload(&blob_repository, FIRST_VALUE).await;
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
-            value: FIRST_VALUE.to_vec(),
+            metadata: payload,
             last_modified: test_last_modified(),
         });
 
@@ -1233,6 +1285,7 @@ mod tests {
 
         assert_eq!(response.local_state, State::Applied as i32);
     }
+
     fn test_last_modified() -> crate::domain::ObjectLastModified {
         const TEST_LAST_MODIFIED_UNIX_MILLIS: i64 = 1_775_000_000_123;
         crate::domain::ObjectLastModified::try_from(TEST_LAST_MODIFIED_UNIX_MILLIS).unwrap()

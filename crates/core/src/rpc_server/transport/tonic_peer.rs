@@ -173,14 +173,14 @@ mod tests {
     use crate::consensus::coordinator::ConsensusPeerTransport;
     use crate::consensus::executor::PersistentReplicatedCommandExecutor;
     use crate::consensus::journal::SqliteConsensusJournal;
-    use crate::domain::{ObjectCommand, ObjectKey, ObjectResult, WriteCommand};
+    use crate::domain::{BlobPayload, ObjectCommand, ObjectKey, ObjectResult, WriteCommand};
+    use crate::repository::metadata::sqlite::SqliteObjectMetadataRepository;
+    use crate::repository::registry::SqliteFsPersistentObjectRepository;
     use crate::rpc_server::proto::{
         Ballot, CommandId, CommitRequest, EventPayload, PreAcceptRequest, RecoverRequest, State,
     };
     use crate::rpc_server::server::RpcServer;
     use crate::rpc_server::transport::{ApplyingConsensusTransport, RejectingConsensusTransport};
-    use crate::storage::metadata::sqlite::SqliteObjectMetadataRepository;
-    use crate::storage::registry::SqliteFsPersistentObjectRepository;
 
     const LOOPBACK_EPHEMERAL_ADDR: &str = "127.0.0.1:0";
     const COMMAND_ORIGIN_NODE_ID: &str = "node-a";
@@ -242,7 +242,7 @@ mod tests {
         });
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
-            value: FIRST_VALUE.to_vec(),
+            metadata: BlobPayload::Inline(FIRST_VALUE.to_vec()),
             last_modified: test_last_modified(),
         });
         let mut transport = TonicConsensusPeerTransport::from_peer_ids([peer_id.clone()]).unwrap();
@@ -265,7 +265,7 @@ mod tests {
         let ObjectResult::Write(write) = result else {
             panic!("expected write result");
         };
-        assert_eq!(write.object.value, FIRST_VALUE.to_vec());
+        assert_eq!(write.record.content_length, FIRST_VALUE.len() as u64);
         cancellation_token.cancel();
         server_task.await.unwrap().unwrap();
     }

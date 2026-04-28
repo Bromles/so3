@@ -1,31 +1,50 @@
 use crate::consensus::state_machine::ObjectCommandExecutor;
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::{
-    CasCommand, CasResult, DeleteCommand, ObjectCommand, ObjectKey, ObjectLastModified,
-    ObjectResult, ObjectVersion, ReadCommand, StoredObject, WriteCommand,
+    BlobMetadata, CasCommand, CasResult, DeleteCommand, ObjectCommand, ObjectKey,
+    ObjectLastModified, ObjectRecord, ObjectResult, ObjectVersion, ReadCommand, StoredObject,
+    WriteCommand,
 };
+use crate::repository::blob::interface::BlobRepository;
 
 #[derive(Clone)]
-pub struct ObjectService<E: ObjectCommandExecutor> {
+pub struct ObjectService<E: ObjectCommandExecutor, B: BlobRepository> {
     executor: E,
+    blob_repository: B,
 }
 
-impl<E: ObjectCommandExecutor> ObjectService<E> {
+impl<E: ObjectCommandExecutor, B: BlobRepository> ObjectService<E, B> {
     #[must_use]
-    pub fn new(executor: E) -> Self {
-        Self { executor }
+    pub fn new(executor: E, blob_repository: B) -> Self {
+        Self {
+            executor,
+            blob_repository,
+        }
+    }
+
+    /// Returns a reference to the underlying blob repository.
+    #[must_use]
+    pub fn blob_repository(&self) -> &B {
+        &self.blob_repository
     }
 
     /// # Errors
     ///
-    /// Returns any error from the state machine while executing the deterministic `Read` command.
+    /// Returns any error from the state machine while executing the deterministic `Read` command,
+    /// or a repository error when loading blob bytes for the returned record.
     pub async fn read(&self, key: ObjectKey) -> So3Result<Option<StoredObject>> {
         match self
             .executor
             .execute_command(ObjectCommand::Read(ReadCommand { key }))
             .await?
         {
-            ObjectResult::Read(result) => Ok(result.object),
+            ObjectResult::Read(result) => match result.record {
+                Some(record) => {
+                    let value = self.blob_repository.load(&record.blob_id).await?;
+                    Ok(Some(StoredObject { record, value }))
+                }
+                None => Ok(None),
+            },
             result => unexpected_result("Read", &result),
         }
     }
@@ -33,18 +52,23 @@ impl<E: ObjectCommandExecutor> ObjectService<E> {
     /// # Errors
     ///
     /// Returns any error from the state machine while executing the deterministic `Write` command.
-    pub async fn write(&self, key: ObjectKey, value: Vec<u8>) -> So3Result<StoredObject> {
+    pub async fn write(&self, key: ObjectKey, value: Vec<u8>) -> So3Result<ObjectRecord> {
         let last_modified = ObjectLastModified::now()?;
+        let blob = self.blob_repository.store(&value).await?;
         match self
             .executor
             .execute_command(ObjectCommand::Write(WriteCommand {
                 key,
-                value,
+                metadata: BlobMetadata {
+                    blob_id: blob.blob_id,
+                    content_length: blob.content_length,
+                    checksum: blob.checksum_sha256,
+                },
                 last_modified,
             }))
             .await?
         {
-            ObjectResult::Write(result) => Ok(result.object),
+            ObjectResult::Write(result) => Ok(result.record),
             result => unexpected_result("Write", &result),
         }
     }
@@ -73,12 +97,17 @@ impl<E: ObjectCommandExecutor> ObjectService<E> {
         value: Vec<u8>,
     ) -> So3Result<CasResult> {
         let last_modified = ObjectLastModified::now()?;
+        let blob = self.blob_repository.store(&value).await?;
         match self
             .executor
             .execute_command(ObjectCommand::Cas(CasCommand {
                 key,
                 expected_version,
-                value,
+                metadata: BlobMetadata {
+                    blob_id: blob.blob_id,
+                    content_length: blob.content_length,
+                    checksum: blob.checksum_sha256,
+                },
                 last_modified,
             }))
             .await?
@@ -102,7 +131,8 @@ mod tests {
     use super::ObjectService;
     use crate::consensus::state_machine::LocalStateMachine;
     use crate::domain::{CasResult, ObjectKey, ObjectVersion};
-    use crate::storage::registry::SqliteFsPersistentObjectRepository;
+    use crate::repository::blob::fs::FileSystemBlobRepository;
+    use crate::repository::registry::SqliteFsPersistentObjectRepository;
 
     const MISSING_KEY: &str = "missing";
     const ALPHA_KEY: &str = "alpha";
@@ -113,7 +143,10 @@ mod tests {
     const VERSION_INCREMENT: i64 = 1;
 
     async fn test_service() -> (
-        ObjectService<LocalStateMachine<SqliteFsPersistentObjectRepository>>,
+        ObjectService<
+            LocalStateMachine<SqliteFsPersistentObjectRepository>,
+            FileSystemBlobRepository,
+        >,
         TempDir,
     ) {
         let temp_dir = TempDir::new().unwrap();
@@ -123,8 +156,9 @@ mod tests {
         )
         .await
         .unwrap();
+        let blob_repository = repository.blob_repository().clone();
         let state_machine = LocalStateMachine::new(repository);
-        (ObjectService::new(state_machine), temp_dir)
+        (ObjectService::new(state_machine, blob_repository), temp_dir)
     }
 
     #[tokio::test]
@@ -150,9 +184,15 @@ mod tests {
             .unwrap();
         let second = service.write(key, SECOND_VALUE.to_vec()).await.unwrap();
 
-        assert_eq!(first.record.version.get(), INITIAL_VERSION);
-        assert_eq!(second.record.version.get(), NEXT_VERSION);
-        assert_eq!(second.value, SECOND_VALUE.to_vec());
+        assert_eq!(first.version.get(), INITIAL_VERSION);
+        assert_eq!(second.version.get(), NEXT_VERSION);
+        // Blob bytes are not in ObjectRecord; read back to verify payload.
+        let read = service
+            .read(ObjectKey::new(ALPHA_KEY).unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(read.value, SECOND_VALUE.to_vec());
     }
 
     #[tokio::test]
@@ -167,7 +207,7 @@ mod tests {
         let result = service
             .cas(
                 key,
-                ObjectVersion::try_from(written.record.version.get() + VERSION_INCREMENT).unwrap(),
+                ObjectVersion::try_from(written.version.get() + VERSION_INCREMENT).unwrap(),
                 SECOND_VALUE.to_vec(),
             )
             .await
@@ -176,7 +216,7 @@ mod tests {
         assert_eq!(
             result,
             CasResult::Mismatch {
-                current_version: written.record.version,
+                current_version: written.version,
             }
         );
     }

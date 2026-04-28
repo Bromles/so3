@@ -1,3 +1,5 @@
+#![warn(clippy::pedantic)]
+#![forbid(unsafe_code)]
 use std::process::exit;
 
 use tracing::error;

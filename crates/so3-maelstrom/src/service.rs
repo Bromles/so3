@@ -3,31 +3,33 @@ use serde_json::Value;
 use so3_core::consensus::state_machine::ObjectCommandExecutor;
 use so3_core::domain::error::So3Error;
 use so3_core::domain::{
-    CasCommand, CasResult, ObjectCommand, ObjectKey, ObjectLastModified, ObjectResult, ReadCommand,
-    StoredObject, WriteCommand,
+    BlobMetadata, CasCommand, CasResult, ObjectCommand, ObjectKey, ObjectLastModified,
+    ObjectResult, ReadCommand, StoredObject, WriteCommand,
 };
 use so3_core::object_server::service::ObjectService;
+use so3_core::repository::blob::interface::BlobRepository;
 
 use crate::protocol::{
-    CRASH_CODE, ClientRequest, KEY_DOES_NOT_EXIST_CODE, MALFORMED_REQUEST_CODE,
-    PRECONDITION_FAILED_CODE, ResponseBody, error_response,
+    error_response, ClientRequest, ResponseBody, CRASH_CODE,
+    KEY_DOES_NOT_EXIST_CODE, MALFORMED_REQUEST_CODE, PRECONDITION_FAILED_CODE,
 };
 
 #[derive(Clone)]
-pub struct MaelstromService<E: ObjectCommandExecutor> {
-    object_service: ObjectService<E>,
+pub struct MaelstromService<E: ObjectCommandExecutor, B: BlobRepository> {
+    object_service: ObjectService<E, B>,
 }
 
-impl<E: ObjectCommandExecutor> MaelstromService<E> {
+impl<E: ObjectCommandExecutor, B: BlobRepository> MaelstromService<E, B> {
     #[must_use]
-    pub fn new(object_service: ObjectService<E>) -> Self {
+    pub fn new(object_service: ObjectService<E, B>) -> Self {
         Self { object_service }
     }
 }
 
-impl<E> MaelstromService<E>
+impl<E, B> MaelstromService<E, B>
 where
     E: ObjectCommandExecutor + Clone + Send + Sync + 'static,
+    B: BlobRepository + Clone + Send + Sync + 'static,
 {
     #[cfg(test)]
     pub async fn handle(&self, request: crate::protocol::RequestBody) -> ResponseBody {
@@ -103,10 +105,20 @@ where
             }
             ClientRequest::Write { key, value } => {
                 let key = object_key_from_json(&key).map_err(|error| map_error(msg_id, &error))?;
-                let value = value_to_bytes(&value).map_err(|error| map_error(msg_id, &error))?;
+                let bytes = value_to_bytes(&value).map_err(|error| map_error(msg_id, &error))?;
+                let blob = self
+                    .object_service
+                    .blob_repository()
+                    .store(&bytes)
+                    .await
+                    .map_err(|error| map_error(msg_id, &error))?;
                 Ok(ObjectCommand::Write(WriteCommand {
                     key,
-                    value,
+                    metadata: BlobMetadata {
+                        blob_id: blob.blob_id,
+                        content_length: blob.content_length,
+                        checksum: blob.checksum_sha256,
+                    },
                     last_modified: command_last_modified(msg_id)?,
                 }))
             }
@@ -117,7 +129,18 @@ where
                 create_if_not_exists,
             } => {
                 let key = object_key_from_json(&key).map_err(|error| map_error(msg_id, &error))?;
-                let value = value_to_bytes(&to).map_err(|error| map_error(msg_id, &error))?;
+                let bytes = value_to_bytes(&to).map_err(|error| map_error(msg_id, &error))?;
+                let blob = self
+                    .object_service
+                    .blob_repository()
+                    .store(&bytes)
+                    .await
+                    .map_err(|error| map_error(msg_id, &error))?;
+                let payload = BlobMetadata {
+                    blob_id: blob.blob_id,
+                    content_length: blob.content_length,
+                    checksum: blob.checksum_sha256,
+                };
                 let current = self
                     .object_service
                     .read(key.clone())
@@ -128,7 +151,7 @@ where
                     if create_if_not_exists {
                         return Ok(ObjectCommand::Write(WriteCommand {
                             key,
-                            value,
+                            metadata: payload,
                             last_modified: command_last_modified(msg_id)?,
                         }));
                     }
@@ -153,23 +176,35 @@ where
                 Ok(ObjectCommand::Cas(CasCommand {
                     key,
                     expected_version: current.record.version,
-                    value,
+                    metadata: payload,
                     last_modified: command_last_modified(msg_id)?,
                 }))
             }
         }
     }
 
-    pub fn response_from_result(msg_id: u64, result: ObjectResult) -> ResponseBody {
+    pub async fn response_from_result(&self, msg_id: u64, result: ObjectResult) -> ResponseBody {
         match result {
-            ObjectResult::Read(read) => match read.object {
-                Some(object) => match value_from_object(&object) {
-                    Ok(value) => ResponseBody::ReadOk {
-                        in_reply_to: msg_id,
-                        value,
-                    },
-                    Err(error) => map_error(msg_id, &error),
-                },
+            ObjectResult::Read(read) => match read.record {
+                Some(record) => {
+                    match self
+                        .object_service
+                        .blob_repository()
+                        .load(&record.blob_id)
+                        .await
+                    {
+                        Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
+                            Ok(value) => ResponseBody::ReadOk {
+                                in_reply_to: msg_id,
+                                value,
+                            },
+                            Err(error) => {
+                                map_error(msg_id, &So3Error::Serialization(error.to_string()))
+                            }
+                        },
+                        Err(error) => map_error(msg_id, &error),
+                    }
+                }
                 None => error_response(msg_id, KEY_DOES_NOT_EXIST_CODE, "key does not exist"),
             },
             ObjectResult::Write(_) => ResponseBody::WriteOk {
@@ -189,7 +224,9 @@ where
                     current_version.get()
                 ),
             ),
-            ObjectResult::Delete(_) => unreachable!("Maelstrom lin-kv does not issue delete commands"),
+            ObjectResult::Delete(_) => {
+                unreachable!("Maelstrom lin-kv does not issue delete commands")
+            }
         }
     }
 
@@ -359,17 +396,21 @@ mod tests {
 
     use so3_core::consensus::state_machine::LocalStateMachine;
     use so3_core::object_server::service::ObjectService;
-    use so3_core::storage::registry::SqliteFsPersistentObjectRepository;
+    use so3_core::repository::blob::fs::FileSystemBlobRepository;
+    use so3_core::repository::registry::SqliteFsPersistentObjectRepository;
 
     use super::MaelstromService;
     use crate::protocol::{
-        KEY_DOES_NOT_EXIST_CODE, PRECONDITION_FAILED_CODE, RequestBody, ResponseBody,
+        RequestBody, ResponseBody, KEY_DOES_NOT_EXIST_CODE, PRECONDITION_FAILED_CODE,
     };
 
     const TEST_MESSAGE_ID: u64 = 1;
 
     async fn test_service() -> (
-        MaelstromService<LocalStateMachine<SqliteFsPersistentObjectRepository>>,
+        MaelstromService<
+            LocalStateMachine<SqliteFsPersistentObjectRepository>,
+            FileSystemBlobRepository,
+        >,
         TempDir,
     ) {
         let temp_dir = TempDir::new().unwrap();
@@ -379,9 +420,11 @@ mod tests {
         )
         .await
         .unwrap();
+        let blob_repository = repository.blob_repository().clone();
+        let state_machine = LocalStateMachine::new(repository);
 
         (
-            MaelstromService::new(ObjectService::new(LocalStateMachine::new(repository))),
+            MaelstromService::new(ObjectService::new(state_machine, blob_repository)),
             temp_dir,
         )
     }

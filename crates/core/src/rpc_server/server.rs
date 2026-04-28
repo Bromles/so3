@@ -71,12 +71,14 @@ mod tests {
     use super::RpcServer;
     use crate::consensus::executor::PersistentReplicatedCommandExecutor;
     use crate::consensus::journal::SqliteConsensusJournal;
-    use crate::domain::{ObjectCommand, ObjectKey, ObjectResult, ReadCommand, WriteCommand};
+    use crate::domain::{
+        BlobMetadata, ObjectCommand, ObjectKey, ObjectResult, ReadCommand, WriteCommand,
+    };
+    use crate::repository::registry::SqliteFsPersistentObjectRepository;
     use crate::rpc_server::proto::consensus_transport_client::ConsensusTransportClient;
     use crate::rpc_server::proto::{ApplyRequest, CommitRequest, EventPayload};
     use crate::rpc_server::proto::{CommandId, PreAcceptRequest};
     use crate::rpc_server::transport::{ApplyingConsensusTransport, RejectingConsensusTransport};
-    use crate::storage::registry::SqliteFsPersistentObjectRepository;
 
     const CONNECT_RETRY_ATTEMPTS: usize = 20;
     const CONNECT_RETRY_DELAY: Duration = Duration::from_millis(25);
@@ -176,7 +178,7 @@ mod tests {
         .await
         .unwrap();
         let metadata_repository =
-            crate::storage::metadata::sqlite::SqliteObjectMetadataRepository::new(
+            crate::repository::metadata::sqlite::SqliteObjectMetadataRepository::new(
                 temp_dir.path().join("metadata"),
             )
             .await
@@ -202,7 +204,7 @@ mod tests {
         let mut client = ConsensusTransportClient::new(channel);
         let write = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
-            value: FIRST_VALUE.to_vec(),
+            metadata: BlobMetadata::Inline(FIRST_VALUE.to_vec()),
             last_modified: test_last_modified(),
         });
         let read = ObjectCommand::Read(ReadCommand {
@@ -236,7 +238,8 @@ mod tests {
             panic!("expected read result");
         };
 
-        assert_eq!(read.object.unwrap().value, FIRST_VALUE.to_vec());
+        let record = read.record.unwrap();
+        assert_eq!(record.content_length, FIRST_VALUE.len() as u64);
         cancellation_token.cancel();
         server_task.await.unwrap().unwrap();
     }

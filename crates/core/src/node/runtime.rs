@@ -13,10 +13,11 @@ use crate::domain::error::{So3Error, So3Result};
 use crate::node::config::NodeConfig;
 use crate::object_server::server::ObjectServer;
 use crate::object_server::service::ObjectService;
+use crate::repository::blob::fs::FileSystemBlobRepository;
+use crate::repository::metadata::sqlite::SqliteObjectMetadataRepository;
+use crate::repository::registry::RepositoryRegistry;
 use crate::rpc_server::server::RpcServer;
 use crate::rpc_server::transport::{ApplyingConsensusTransport, TonicConsensusPeerTransport};
-use crate::storage::metadata::sqlite::SqliteObjectMetadataRepository;
-use crate::storage::registry::{PersistentStorage, SqliteFsPersistentObjectRepository};
 
 pub struct Node {
     config: NodeConfig,
@@ -38,6 +39,7 @@ pub struct Node {
                 >,
             >,
         >,
+        FileSystemBlobRepository,
     >,
 }
 
@@ -63,17 +65,20 @@ pub struct BoundNode {
                 >,
             >,
         >,
+        FileSystemBlobRepository,
     >,
 }
 
 impl Node {
     /// # Errors
     ///
-    /// Returns an error if durable local storage cannot be opened.
+    /// Returns an error if durable local repository cannot be opened.
     pub async fn new(config: NodeConfig) -> So3Result<Self> {
         config.validate()?;
+
         let node_id = config.node_id;
-        let storage = PersistentStorage::open(&config.metadata_dir, &config.blob_dir).await?;
+        let storage = RepositoryRegistry::new(&config.metadata_dir, &config.blob_dir).await?;
+        let blob_repository = storage.object_repository.blob_repository().clone();
         let executor = PersistentReplicatedCommandExecutor::new(
             storage.object_repository.clone(),
             storage.metadata_repository.clone(),
@@ -93,13 +98,16 @@ impl Node {
             .map(ToString::to_string)
             .collect::<Vec<_>>();
         let peer_transport = TonicConsensusPeerTransport::from_peer_ids(peer_ids.clone())?;
-        let object_service = ObjectService::new(LocalConsensusObjectCommandExecutor::with_peers(
-            node_id,
-            local_transport.clone(),
-            next_sequence,
-            peer_ids,
-            peer_transport,
-        ));
+        let object_service = ObjectService::new(
+            LocalConsensusObjectCommandExecutor::with_peers(
+                node_id,
+                local_transport.clone(),
+                next_sequence,
+                peer_ids,
+                peer_transport,
+            ),
+            blob_repository,
+        );
 
         Ok(Self {
             config,
@@ -225,13 +233,10 @@ mod tests {
     use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
 
-    use super::{Node, fail_fast_join};
+    use super::{fail_fast_join, Node};
     use crate::consensus::journal::{JournalState, SqliteConsensusJournal};
     use crate::domain::error::So3Error;
-    use crate::domain::{ObjectCommand, ObjectKey, ObjectLastModified, WriteCommand};
     use crate::node::config::{ClusterConfig, NodeConfig};
-    use crate::storage::object::repository::ObjectRepository;
-    use crate::storage::registry::SqliteFsPersistentObjectRepository;
 
     const NODE_ID_NIL: Uuid = Uuid::nil();
     const METADATA_DIR_NAME: &str = "metadata";
@@ -454,7 +459,7 @@ mod tests {
             .unwrap();
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
-            value: FIRST_PAYLOAD.to_vec(),
+            metadata: BlobMetadata::Inline(FIRST_PAYLOAD.to_vec()),
             last_modified: ObjectLastModified::try_from(LAST_MODIFIED_UNIX_MILLIS).unwrap(),
         });
         let command_id = crate::consensus::ConsensusCommandId::new(
@@ -485,7 +490,8 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(object.value, FIRST_PAYLOAD.to_vec());
+        let loaded_value = repository.load_value(&object.blob_id).await.unwrap();
+        assert_eq!(loaded_value, FIRST_PAYLOAD.to_vec());
     }
 
     #[tokio::test]

@@ -1,8 +1,10 @@
+use crate::domain::blob::BlobMetadata;
+use crate::domain::error::{So3Error, So3Result};
+use crate::domain::object::{ObjectLastModified, ObjectMetadata};
+use crate::domain::object_key::ObjectKey;
+use crate::domain::object_version::ObjectVersion;
 use postcard::{from_bytes as postcard_from_bytes, to_allocvec as postcard_to_allocvec};
 use serde::{Deserialize, Serialize};
-
-use crate::domain::error::{So3Error, So3Result};
-use crate::domain::{ObjectKey, ObjectLastModified, ObjectVersion, StoredObject};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ObjectCommand {
@@ -36,7 +38,7 @@ pub struct ReadCommand {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WriteCommand {
     pub key: ObjectKey,
-    pub value: Vec<u8>,
+    pub metadata: BlobMetadata,
     pub last_modified: ObjectLastModified,
 }
 
@@ -44,7 +46,7 @@ pub struct WriteCommand {
 pub struct CasCommand {
     pub key: ObjectKey,
     pub expected_version: ObjectVersion,
-    pub value: Vec<u8>,
+    pub metadata: BlobMetadata,
     pub last_modified: ObjectLastModified,
 }
 
@@ -54,14 +56,14 @@ pub struct DeleteCommand {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ObjectResult {
+pub enum CommandResult {
     Read(ReadResult),
     Write(WriteResult),
     Cas(CasResult),
     Delete(DeleteResult),
 }
 
-impl ObjectResult {
+impl CommandResult {
     /// # Errors
     ///
     /// Returns [`So3Error::Serialization`] when postcard cannot encode the result.
@@ -77,21 +79,29 @@ impl ObjectResult {
     }
 }
 
+/// Result of a replicated `Read` command. Contains only metadata; blob bytes are loaded
+/// on demand by the caller via [`crate::repository::blob::BlobRepository`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadResult {
-    pub object: Option<StoredObject>,
+    pub record: Option<ObjectMetadata>,
 }
 
+/// Result of a replicated `Write` command. Contains only metadata; blob bytes are never
+/// stored in the consensus or applied-command tables.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WriteResult {
-    pub object: StoredObject,
+    pub record: ObjectMetadata,
 }
 
+/// Result of a replicated `CAS` command.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CasResult {
-    Applied(StoredObject),
+    /// CAS succeeded; the new record is returned (no blob bytes).
+    Applied(ObjectMetadata),
     NotFound,
-    Mismatch { current_version: ObjectVersion },
+    Mismatch {
+        current_version: ObjectVersion,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,25 +109,53 @@ pub struct DeleteResult;
 
 #[cfg(test)]
 mod tests {
-    use crate::domain::{
-        CasCommand, ObjectCommand, ObjectKey, ObjectLastModified, ObjectResult, ObjectVersion,
-        ReadCommand, ReadResult, WriteCommand,
+    use crate::domain::blob::BlobId;
+    use crate::domain::checksum::Sha256Digest;
+    use crate::domain::command::{
+        BlobMetadata, CasCommand, CommandResult, ObjectCommand, ReadCommand, ReadResult,
+        WriteCommand,
     };
+    use crate::domain::object::ObjectLastModified;
+    use crate::domain::object_key::ObjectKey;
+    use crate::domain::object_version::ObjectVersion;
 
     const KEY_ALPHA: &str = "alpha";
     const READ_KEY: &str = "r";
     const WRITE_KEY: &str = "w";
-    const PAYLOAD: &[u8] = b"payload";
-    const WRITE_VALUE: &[u8] = b"v";
+    const BLOB_ID: BlobId = "abc123def456.blob".into();
+    const CHECKSUM: Sha256Digest = "abc123def456".into();
+    const CONTENT_LENGTH: u64 = 7;
     const EXPECTED_VERSION: i64 = 7;
     const LAST_MODIFIED_UNIX_MILLIS: i64 = 1_775_000_000_123;
+
+    fn test_payload() -> BlobMetadata {
+        BlobMetadata {
+            blob_id: BLOB_ID.to_owned(),
+            content_length: CONTENT_LENGTH,
+            checksum_sha256: CHECKSUM.to_owned(),
+        }
+    }
 
     #[test]
     fn object_command_roundtrip_is_stable() {
         let command = ObjectCommand::Cas(CasCommand {
             key: ObjectKey::new(KEY_ALPHA).unwrap(),
             expected_version: ObjectVersion::try_from(EXPECTED_VERSION).unwrap(),
-            value: PAYLOAD.to_vec(),
+            metadata: test_payload(),
+            last_modified: ObjectLastModified::try_from(LAST_MODIFIED_UNIX_MILLIS).unwrap(),
+        });
+
+        let encoded = command.to_bytes().unwrap();
+        let decoded = ObjectCommand::from_bytes(&encoded).unwrap();
+
+        assert_eq!(decoded, command);
+    }
+
+    #[test]
+    fn stored_payload_roundtrip_is_stable() {
+        let command = ObjectCommand::Write(WriteCommand {
+            key: ObjectKey::new(KEY_ALPHA).unwrap(),
+            metadata: test_payload(),
             last_modified: ObjectLastModified::try_from(LAST_MODIFIED_UNIX_MILLIS).unwrap(),
         });
 
@@ -134,7 +172,7 @@ mod tests {
         });
         let write = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(WRITE_KEY).unwrap(),
-            value: WRITE_VALUE.to_vec(),
+            metadata: test_payload(),
             last_modified: ObjectLastModified::try_from(LAST_MODIFIED_UNIX_MILLIS).unwrap(),
         });
 
@@ -144,10 +182,10 @@ mod tests {
 
     #[test]
     fn object_result_roundtrip_is_stable() {
-        let result = ObjectResult::Read(ReadResult { object: None });
+        let result = CommandResult::Read(ReadResult { record: None });
 
         let encoded = result.to_bytes().unwrap();
-        let decoded = ObjectResult::from_bytes(&encoded).unwrap();
+        let decoded = CommandResult::from_bytes(&encoded).unwrap();
 
         assert_eq!(decoded, result);
     }

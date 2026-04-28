@@ -1,9 +1,9 @@
-use crate::consensus::ConsensusCommandId;
 use crate::consensus::clock::timestamp_is_after;
 use crate::consensus::executor::ReplicatedCommandExecutor;
 use crate::consensus::journal::{JournalMetadata, JournalState, SqliteConsensusJournal};
-use crate::domain::ObjectCommand;
+use crate::consensus::ConsensusCommandId;
 use crate::domain::error::{So3Error, So3Result};
+use crate::domain::ObjectCommand;
 use crate::rpc_server::proto::{DependencySet, LogicalTimestamp};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -176,14 +176,14 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{apply_committed_commands, replay_committed_commands};
-    use crate::consensus::ConsensusCommandId;
     use crate::consensus::executor::PersistentReplicatedCommandExecutor;
     use crate::consensus::journal::{JournalMetadata, JournalState, SqliteConsensusJournal};
-    use crate::domain::{ObjectCommand, ObjectKey, ObjectResult, WriteCommand};
+    use crate::consensus::ConsensusCommandId;
+    use crate::domain::{BlobMetadata, ObjectCommand, ObjectKey, ObjectResult, WriteCommand};
+    use crate::repository::metadata::sqlite::SqliteObjectMetadataRepository;
+    use crate::repository::object::interface::ObjectRepository;
+    use crate::repository::registry::SqliteFsPersistentObjectRepository;
     use crate::rpc_server::proto::{Ballot, CommandId, DependencySet, LogicalTimestamp};
-    use crate::storage::metadata::sqlite::SqliteObjectMetadataRepository;
-    use crate::storage::object::repository::ObjectRepository;
-    use crate::storage::registry::SqliteFsPersistentObjectRepository;
 
     const ALPHA_KEY: &str = "alpha";
     const BETA_KEY: &str = "beta";
@@ -231,7 +231,7 @@ mod tests {
             ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
-            value: FIRST_VALUE.to_vec(),
+            metadata: BlobMetadata::Inline(FIRST_VALUE.to_vec()),
             last_modified: test_last_modified(),
         });
 
@@ -244,13 +244,14 @@ mod tests {
             .unwrap();
 
         let entry = journal.load(&command_id).await.unwrap().unwrap();
+        assert!(!contains_subslice(&entry.result, FIRST_VALUE));
         let result = ObjectResult::from_bytes(&entry.result).unwrap();
 
         assert_eq!(entry.state, JournalState::Applied);
         let ObjectResult::Write(write) = result else {
             panic!("expected write result");
         };
-        assert_eq!(write.object.value, FIRST_VALUE.to_vec());
+        assert_eq!(write.record.content_length, FIRST_VALUE.len() as u64);
     }
 
     #[tokio::test]
@@ -260,7 +261,7 @@ mod tests {
             ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
-            value: FIRST_VALUE.to_vec(),
+            metadata: BlobMetadata::Inline(FIRST_VALUE.to_vec()),
             last_modified: test_last_modified(),
         });
 
@@ -289,12 +290,12 @@ mod tests {
             ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_TWO);
         let first = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
-            value: FIRST_VALUE.to_vec(),
+            metadata: BlobMetadata::Inline(FIRST_VALUE.to_vec()),
             last_modified: test_last_modified(),
         });
         let second = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
-            value: SECOND_VALUE.to_vec(),
+            metadata: BlobMetadata::Inline(SECOND_VALUE.to_vec()),
             last_modified: test_last_modified(),
         });
 
@@ -350,12 +351,13 @@ mod tests {
         );
         let second_entry = journal.load(&second_command_id).await.unwrap().unwrap();
         assert_eq!(second_entry.state, JournalState::Applied);
+        assert!(!contains_subslice(&second_entry.result, SECOND_VALUE));
 
         let result = ObjectResult::from_bytes(&second_entry.result).unwrap();
         let ObjectResult::Write(write) = result else {
             panic!("expected write result");
         };
-        assert_eq!(write.object.value, SECOND_VALUE.to_vec());
+        assert_eq!(write.record.content_length, SECOND_VALUE.len() as u64);
     }
 
     #[tokio::test]
@@ -365,7 +367,7 @@ mod tests {
             ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_TWO);
         let second = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
-            value: SECOND_VALUE.to_vec(),
+            metadata: BlobMetadata::Inline(SECOND_VALUE.to_vec()),
             last_modified: test_last_modified(),
         });
 
@@ -409,7 +411,7 @@ mod tests {
                 ConsensusCommandId::new(PEER_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
             let command = ObjectCommand::Write(WriteCommand {
                 key: ObjectKey::new(ALPHA_KEY).unwrap(),
-                value: FIRST_VALUE.to_vec(),
+                metadata: BlobMetadata::Inline(FIRST_VALUE.to_vec()),
                 last_modified: test_last_modified(),
             });
             let bytes = command.to_bytes().unwrap();
@@ -461,12 +463,12 @@ mod tests {
             let journal = SqliteConsensusJournal::new(&journal_path).await.unwrap();
             let local_cmd = ObjectCommand::Write(WriteCommand {
                 key: ObjectKey::new(ALPHA_KEY).unwrap(),
-                value: FIRST_VALUE.to_vec(),
+                metadata: BlobMetadata::Inline(FIRST_VALUE.to_vec()),
                 last_modified: test_last_modified(),
             });
             let peer_cmd = ObjectCommand::Write(WriteCommand {
                 key: ObjectKey::new(BETA_KEY).unwrap(),
-                value: SECOND_VALUE.to_vec(),
+                metadata: BlobMetadata::Inline(SECOND_VALUE.to_vec()),
                 last_modified: test_last_modified(),
             });
             let _ = journal
@@ -540,7 +542,7 @@ mod tests {
         let cmd = |key: &str, value: &[u8]| {
             ObjectCommand::Write(WriteCommand {
                 key: ObjectKey::new(key).unwrap(),
-                value: value.to_vec(),
+                metadata: BlobMetadata::Inline(value.to_vec()),
                 last_modified: test_last_modified(),
             })
             .to_bytes()
@@ -628,6 +630,13 @@ mod tests {
             sequence,
         }
     }
+
+    fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+    }
+
     fn test_last_modified() -> crate::domain::ObjectLastModified {
         const TEST_LAST_MODIFIED_UNIX_MILLIS: i64 = 1_775_000_000_123;
         crate::domain::ObjectLastModified::try_from(TEST_LAST_MODIFIED_UNIX_MILLIS).unwrap()

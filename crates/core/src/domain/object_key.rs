@@ -43,8 +43,8 @@ impl TryFrom<&str> for ObjectKey {
 
 #[cfg(test)]
 mod tests {
-    use crate::domain::ObjectKey;
     use crate::domain::error::So3Error;
+    use crate::domain::object_key::ObjectKey;
 
     const BLANK_KEY: &str = "   ";
 

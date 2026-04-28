@@ -1,19 +1,19 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use tracing::warn;
 
-use crate::consensus::ConsensusCommandId;
 use crate::consensus::clock::HybridLogicalClock;
 use crate::consensus::coordinator::{AccordCoordinator, AccordCoordinatorConfig};
 use crate::consensus::state_machine::{LocalStateMachine, ObjectCommandExecutor};
+use crate::consensus::ConsensusCommandId;
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::{ObjectCommand, ObjectResult};
+use crate::repository::applied_command::interface::AppliedCommandRepository;
+use crate::repository::object::interface::ObjectRepository;
 use crate::rpc_server::transport::{ConsensusTransportHandler, TonicConsensusPeerTransport};
-use crate::storage::applied_command::repository::AppliedCommandStore;
-use crate::storage::object::repository::ObjectRepository;
 
 const INITIAL_COMMAND_SEQUENCE: u64 = 1;
 const MAX_TRANSIENT_RETRIES: usize = 3;
@@ -32,12 +32,12 @@ pub trait ReplicatedCommandExecutor: Send + Sync {
 }
 
 #[derive(Clone)]
-pub struct PersistentReplicatedCommandExecutor<R: ObjectRepository, S: AppliedCommandStore> {
+pub struct PersistentReplicatedCommandExecutor<R: ObjectRepository, S: AppliedCommandRepository> {
     state_machine: LocalStateMachine<R>,
     applied_command_store: S,
 }
 
-impl<R: ObjectRepository, S: AppliedCommandStore> PersistentReplicatedCommandExecutor<R, S> {
+impl<R: ObjectRepository, S: AppliedCommandRepository> PersistentReplicatedCommandExecutor<R, S> {
     #[must_use]
     pub fn new(object_repository: R, applied_command_store: S) -> Self {
         Self {
@@ -51,7 +51,7 @@ impl<R: ObjectRepository, S: AppliedCommandStore> PersistentReplicatedCommandExe
 impl<R, S> ReplicatedCommandExecutor for PersistentReplicatedCommandExecutor<R, S>
 where
     R: ObjectRepository + Clone + Send + Sync,
-    S: AppliedCommandStore + Clone + Send + Sync,
+    S: AppliedCommandRepository + Clone + Send + Sync,
 {
     async fn execute_replicated(
         &self,
@@ -59,6 +59,8 @@ where
         command: ObjectCommand,
     ) -> So3Result<ObjectResult> {
         if let Some(result) = self.applied_command_store.load_result(command_id).await? {
+            // Result already stored — return directly; no hydration needed because
+            // ObjectResult no longer contains blob bytes.
             return Ok(result);
         }
 
@@ -179,11 +181,11 @@ mod tests {
     use super::{PersistentReplicatedCommandExecutor, ReplicatedCommandExecutor};
     use crate::consensus::ConsensusCommandId;
     use crate::domain::{
-        ObjectCommand, ObjectKey, ObjectLastModified, ObjectResult, ObjectVersion, ReadCommand,
-        WriteCommand,
+        BlobMetadata, ObjectCommand, ObjectKey, ObjectLastModified, ObjectResult, ObjectVersion,
+        ReadCommand, WriteCommand,
     };
-    use crate::storage::metadata::sqlite::SqliteObjectMetadataRepository;
-    use crate::storage::registry::SqliteFsPersistentObjectRepository;
+    use crate::repository::metadata::sqlite::SqliteObjectMetadataRepository;
+    use crate::repository::registry::SqliteFsPersistentObjectRepository;
 
     const ALPHA_KEY: &str = "alpha";
     const FIRST_VALUE: &[u8] = b"first";
@@ -226,7 +228,7 @@ mod tests {
             ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
-            value: FIRST_VALUE.to_vec(),
+            metadata: BlobMetadata::Inline(FIRST_VALUE.to_vec()),
             last_modified: last_modified(FIRST_LAST_MODIFIED),
         });
 
@@ -239,7 +241,7 @@ mod tests {
                 &command_id,
                 ObjectCommand::Write(WriteCommand {
                     key: ObjectKey::new(ALPHA_KEY).unwrap(),
-                    value: SECOND_VALUE.to_vec(),
+                    metadata: BlobMetadata::Inline(SECOND_VALUE.to_vec()),
                     last_modified: last_modified(SECOND_LAST_MODIFIED),
                 }),
             )
@@ -250,8 +252,8 @@ mod tests {
         let ObjectResult::Write(write) = second else {
             panic!("expected write result");
         };
-        assert_eq!(write.object.record.version, ObjectVersion::initial());
-        assert_eq!(write.object.value, FIRST_VALUE.to_vec());
+        // Blob bytes are no longer stored in ObjectResult; verify only record metadata.
+        assert_eq!(write.record.version, ObjectVersion::initial());
     }
 
     #[tokio::test]
@@ -267,7 +269,7 @@ mod tests {
                 &write_id,
                 ObjectCommand::Write(WriteCommand {
                     key: ObjectKey::new(ALPHA_KEY).unwrap(),
-                    value: FIRST_VALUE.to_vec(),
+                    metadata: BlobMetadata::Inline(FIRST_VALUE.to_vec()),
                     last_modified: last_modified(FIRST_LAST_MODIFIED),
                 }),
             )
@@ -286,8 +288,10 @@ mod tests {
         let ObjectResult::Read(read) = result else {
             panic!("expected read result");
         };
-        let object = read.object.expect("expected stored object");
-        assert_eq!(object.value, FIRST_VALUE.to_vec());
+        // Record is present after a prior write; blob bytes are loaded separately by callers
+        // that need them (e.g. ObjectService).
+        let record = read.record.expect("expected object record after write");
+        assert_eq!(record.version, ObjectVersion::initial());
     }
 
     fn last_modified(unix_millis: i64) -> ObjectLastModified {

@@ -7,17 +7,17 @@ use async_trait::async_trait;
 use prost::Message as ProstMessage;
 use serde::Serialize;
 use tokio::io::{
-    AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter, Lines, Stdin, Stdout, stdin, stdout,
+    stdin, stdout, AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter, Lines, Stdin, Stdout,
 };
 use tokio::sync::{mpsc, oneshot};
 
-use so3_core::consensus::ConsensusCommandId;
 use so3_core::consensus::coordinator::{
     AccordCoordinator, AccordCoordinatorConfig, ConsensusPeerTransport,
 };
 use so3_core::consensus::executor::PersistentReplicatedCommandExecutor;
 use so3_core::consensus::recovery::replay_committed_commands;
 use so3_core::consensus::state_machine::LocalStateMachine;
+use so3_core::consensus::ConsensusCommandId;
 use so3_core::domain::error::{So3Error, So3Result};
 use so3_core::object_server::service::ObjectService;
 use so3_core::rpc_server::proto::{
@@ -25,18 +25,20 @@ use so3_core::rpc_server::proto::{
     PreAcceptResponse, RecoverRequest, RecoverResponse,
 };
 use so3_core::rpc_server::transport::{ApplyingConsensusTransport, ConsensusTransportHandler};
-use so3_core::storage::metadata::sqlite::SqliteObjectMetadataRepository;
-use so3_core::storage::registry::{PersistentStorage, SqliteFsPersistentObjectRepository};
+use so3_core::repository::metadata::sqlite::SqliteObjectMetadataRepository;
+use so3_core::repository::registry::{RepositoryRegistry, SqliteFsPersistentObjectRepository};
 
 use crate::config::StorageRoots;
 use crate::protocol::{
-    CRASH_CODE, ClientRequest, ConsensusRpc, Message, RequestBody, ResponseBody, error_response,
-    reply,
+    error_response, reply, ClientRequest, ConsensusRpc, Message, RequestBody, ResponseBody,
+    CRASH_CODE,
 };
 use crate::service::MaelstromService;
 
-type MaelstromObjectService =
-    MaelstromService<LocalStateMachine<SqliteFsPersistentObjectRepository>>;
+type MaelstromObjectService = MaelstromService<
+    LocalStateMachine<SqliteFsPersistentObjectRepository>,
+    so3_core::repository::blob::fs::FileSystemBlobRepository,
+>;
 type MaelstromLocalTransport = ApplyingConsensusTransport<
     PersistentReplicatedCommandExecutor<
         SqliteFsPersistentObjectRepository,
@@ -87,8 +89,8 @@ impl SharedRuntime {
     }
 
     fn send_message(&self, message: &Message<impl Serialize>) -> So3Result<()> {
-        let encoded = serde_json::to_vec(message)
-            .map_err(|e| So3Error::Serialization(e.to_string()))?;
+        let encoded =
+            serde_json::to_vec(message).map_err(|e| So3Error::Serialization(e.to_string()))?;
         self.output
             .send(encoded)
             .map_err(|_| So3Error::InvalidRequest("output channel closed".into()))
@@ -237,17 +239,25 @@ pub async fn run(storage_roots: StorageRoots) -> So3Result<()> {
 
 fn route_or_spawn(shared: &Arc<SharedRuntime>, message: Message<RequestBody>) {
     match &message.body {
-        RequestBody::ConsensusOk { in_reply_to, payload } => {
+        RequestBody::ConsensusOk {
+            in_reply_to,
+            payload,
+        } => {
             if let Some(tx) = shared.pending_consensus.lock().unwrap().remove(in_reply_to) {
                 let _ = tx.send(Ok(payload.clone()));
             }
         }
-        RequestBody::ForwardOk { in_reply_to, response } => {
+        RequestBody::ForwardOk {
+            in_reply_to,
+            response,
+        } => {
             if let Some(tx) = shared.pending_forwards.lock().unwrap().remove(in_reply_to) {
                 let _ = tx.send(Ok(response.clone()));
             }
         }
-        RequestBody::Error { in_reply_to, text, .. } => {
+        RequestBody::Error {
+            in_reply_to, text, ..
+        } => {
             let err = So3Error::InvalidRequest(text.clone());
             let consensus_tx = shared.pending_consensus.lock().unwrap().remove(in_reply_to);
             if let Some(tx) = consensus_tx {
@@ -480,7 +490,7 @@ async fn execute_leader_command(
     let mut coordinator = AccordCoordinator::new(config, &local_transport, &mut peer_transport);
 
     match coordinator.execute(&command_id, command).await {
-        Ok(result) => MaelstromObjectService::response_from_result(msg_id, result),
+        Ok(result) => shared.service.response_from_result(msg_id, result).await,
         Err(error) => map_internal_error(msg_id, &error),
     }
 }
@@ -489,7 +499,7 @@ async fn build_components(
     storage_roots: &StorageRoots,
     node_id: &str,
 ) -> So3Result<RuntimeComponents> {
-    let storage = PersistentStorage::open(
+    let storage = RepositoryRegistry::new(
         node_storage_dir(&storage_roots.metadata_dir, node_id),
         node_storage_dir(&storage_roots.blob_dir, node_id),
     )
@@ -503,9 +513,11 @@ async fn build_components(
         .consensus_journal
         .next_sequence_for_origin(node_id)
         .await?;
-    let service = MaelstromService::new(ObjectService::new(LocalStateMachine::new(
-        storage.object_repository,
-    )));
+    let blob_repository = storage.object_repository.blob_repository().clone();
+    let service = MaelstromService::new(ObjectService::new(
+        LocalStateMachine::new(storage.object_repository),
+        blob_repository,
+    ));
     let local_transport =
         ApplyingConsensusTransport::new(node_id.to_owned(), executor, storage.consensus_journal);
 
@@ -571,8 +583,10 @@ mod tests {
     use crate::config::StorageRoots;
     use crate::protocol::{ClientRequest, ResponseBody};
     use so3_core::consensus::ConsensusCommandId;
-    use so3_core::domain::{ObjectCommand, ObjectKey, ObjectLastModified, WriteCommand};
-    use so3_core::storage::registry::PersistentStorage;
+    use so3_core::domain::{
+        BlobPayload, ObjectCommand, ObjectKey, ObjectLastModified, WriteCommand,
+    };
+    use so3_core::repository::registry::RepositoryRegistry;
 
     const NODE_ID: &str = "n0";
     const KEY_ALPHA: &str = "alpha";
@@ -587,7 +601,7 @@ mod tests {
             metadata_dir: temp_dir.path().join("metadata"),
             blob_dir: temp_dir.path().join("blobs"),
         };
-        let storage = PersistentStorage::open(
+        let storage = RepositoryRegistry::new(
             node_storage_dir(&storage_roots.metadata_dir, NODE_ID),
             node_storage_dir(&storage_roots.blob_dir, NODE_ID),
         )
@@ -595,7 +609,7 @@ mod tests {
         .unwrap();
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(serde_json::to_string(KEY_ALPHA).unwrap()).unwrap(),
-            value: serde_json::to_vec(&json!(42)).unwrap(),
+            metadata: BlobPayload::Inline(serde_json::to_vec(&json!(42)).unwrap()),
             last_modified: ObjectLastModified::try_from(LAST_MODIFIED_UNIX_MILLIS).unwrap(),
         });
         storage

@@ -1,9 +1,10 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Serialize};
-
+use crate::domain::blob::BlobMetadata;
 use crate::domain::error::{So3Error, So3Result};
-use crate::domain::{ObjectKey, ObjectVersion};
+use crate::domain::object_key::ObjectKey;
+use crate::domain::object_version::ObjectVersion;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ObjectLastModified {
@@ -47,17 +48,15 @@ impl TryFrom<i64> for ObjectLastModified {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ObjectRecord {
+pub struct ObjectMetadata {
     pub key: ObjectKey,
     pub version: ObjectVersion,
-    pub blob_id: String,
-    pub content_length: u64,
-    pub checksum: String,
+    pub blob_metadata: BlobMetadata,
     pub last_modified: ObjectLastModified,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredObject {
-    pub record: ObjectRecord,
+    pub metadata: ObjectMetadata,
     pub value: Vec<u8>,
 }

@@ -1,13 +1,7 @@
-mod command;
+pub mod blob;
+pub mod checksum;
+pub mod command;
 pub mod error;
-mod object;
-mod object_key;
-mod object_version;
-
-pub use command::{
-    CasCommand, CasResult, DeleteCommand, DeleteResult, ObjectCommand, ObjectResult, ReadCommand,
-    ReadResult, WriteCommand, WriteResult,
-};
-pub use object::{ObjectLastModified, ObjectRecord, StoredObject};
-pub use object_key::ObjectKey;
-pub use object_version::ObjectVersion;
+pub mod object;
+pub mod object_key;
+pub mod object_version;

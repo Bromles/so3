@@ -2,37 +2,31 @@ use std::path::Path;
 
 use crate::consensus::journal::SqliteConsensusJournal;
 use crate::domain::error::So3Result;
-use crate::storage::blob::fs::FileSystemBlobRepository;
-use crate::storage::metadata::sqlite::SqliteObjectMetadataRepository;
-use crate::storage::object::persistent::PersistentObjectRepository;
+use crate::repository::blob::fs::FileSystemBlobRepository;
+use crate::repository::metadata::sqlite::SqliteObjectMetadataRepository;
 
-pub type SqliteFsPersistentObjectRepository =
-    PersistentObjectRepository<SqliteObjectMetadataRepository, FileSystemBlobRepository>;
-
-pub struct PersistentStorage {
+pub struct RepositoryRegistry {
     pub metadata_repository: SqliteObjectMetadataRepository,
-    pub object_repository: SqliteFsPersistentObjectRepository,
+    pub blob_repository: FileSystemBlobRepository,
     pub consensus_journal: SqliteConsensusJournal,
 }
 
-impl PersistentStorage {
+impl RepositoryRegistry {
     /// # Errors
     ///
-    /// Returns an error if any durable local storage component cannot be created or opened.
-    pub async fn open(
+    /// Returns an error if any durable local repository component cannot be created or opened.
+    pub async fn new(
         metadata_dir: impl AsRef<Path>,
         blob_dir: impl AsRef<Path>,
     ) -> So3Result<Self> {
         let metadata_repository =
             SqliteObjectMetadataRepository::new(metadata_dir.as_ref()).await?;
         let blob_repository = FileSystemBlobRepository::new(blob_dir.as_ref()).await?;
-        let object_repository =
-            PersistentObjectRepository::from_parts(metadata_repository.clone(), blob_repository);
         let consensus_journal = SqliteConsensusJournal::new(metadata_dir.as_ref()).await?;
 
         Ok(Self {
             metadata_repository,
-            object_repository,
+            blob_repository,
             consensus_journal,
         })
     }
@@ -42,13 +36,13 @@ impl PersistentStorage {
 mod tests {
     use tempfile::TempDir;
 
-    use super::PersistentStorage;
+    use super::RepositoryRegistry;
     use crate::consensus::ConsensusCommandId;
-    use crate::domain::{
-        ObjectCommand, ObjectKey, ObjectLastModified, ObjectResult, ReadResult, WriteCommand,
-    };
-    use crate::storage::applied_command::repository::AppliedCommandStore;
-    use crate::storage::object::repository::ObjectRepository;
+    use crate::domain::blob::BlobMetadata;
+    use crate::domain::command::{CommandResult, ObjectCommand, ReadResult, WriteCommand};
+    use crate::domain::object::ObjectLastModified;
+    use crate::domain::object_key::ObjectKey;
+    use crate::repository::applied_command::AppliedCommandRepository;
 
     const ALPHA_KEY: &str = "alpha";
     const FIRST_VALUE: &[u8] = b"first";
@@ -59,7 +53,7 @@ mod tests {
     #[tokio::test]
     async fn open_exposes_shared_durable_repositories() {
         let temp_dir = TempDir::new().unwrap();
-        let storage = PersistentStorage::open(
+        let storage = RepositoryRegistry::new(
             temp_dir.path().join("metadata"),
             temp_dir.path().join("blobs"),
         )
@@ -71,11 +65,15 @@ mod tests {
 
         let written = storage
             .object_repository
-            .write(&key, FIRST_VALUE.to_vec(), last_modified())
+            .write(
+                &key,
+                BlobMetadata::Inline(FIRST_VALUE.to_vec()),
+                last_modified(),
+            )
             .await
             .unwrap();
-        let expected_result = ObjectResult::Read(ReadResult {
-            object: Some(written.clone()),
+        let expected_result = CommandResult::Read(ReadResult {
+            record: Some(written.clone()),
         });
         storage
             .metadata_repository
@@ -98,7 +96,7 @@ mod tests {
     #[tokio::test]
     async fn open_initializes_consensus_journal_in_metadata_directory() {
         let temp_dir = TempDir::new().unwrap();
-        let storage = PersistentStorage::open(
+        let storage = RepositoryRegistry::new(
             temp_dir.path().join("metadata"),
             temp_dir.path().join("blobs"),
         )
@@ -108,7 +106,7 @@ mod tests {
             ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
-            value: FIRST_VALUE.to_vec(),
+            metadata: BlobMetadata::Inline(FIRST_VALUE.to_vec()),
             last_modified: last_modified(),
         });
 

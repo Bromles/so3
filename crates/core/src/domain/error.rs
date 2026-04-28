@@ -1,13 +1,13 @@
 use std::io::Error as IoError;
 
+use crate::domain::object_key::ObjectKey;
+use crate::domain::object_version::ObjectVersion;
 use postcard::Error as PostcardError;
 use serde::Serialize;
 use sqlx::Error as SqlxError;
 use thiserror::Error;
 
-use crate::domain::{ObjectKey, ObjectVersion};
-
-pub type So3Result<T> = std::result::Result<T, So3Error>;
+pub type So3Result<T> = Result<T, So3Error>;
 
 #[derive(Debug, Error, Serialize)]
 #[serde(tag = "kind", content = "detail")]
@@ -26,7 +26,7 @@ pub enum So3Error {
     },
     #[error("invalid request: {0}")]
     InvalidRequest(String),
-    #[error("storage error: {0}")]
+    #[error("repository error: {0}")]
     Storage(String),
     #[error("i/o error: {0}")]
     Io(String),

@@ -8,7 +8,7 @@ publish.workspace = true
 
 [dependencies]
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
-tokio-util = { workspace = true }
+tokio-util = { workspace = true, features = ["io"] }
 tokio-stream = { workspace = true, features = ["net"] }
 axum = { workspace = true }
 tower-http = { workspace = true, features = ["trace", "timeout"] }
@@ -17,7 +17,6 @@ bytes = { workspace = true }
 httpdate = { workspace = true }
 serde = { workspace = true, features = ["derive", "std"] }
 serde_json = { workspace = true, features = ["std"] }
-toml = { workspace = true, features = ["parse", "serde"] }
 tonic = { workspace = true, features = ["codegen", "router", "transport"] }
 tonic-prost = { workspace = true }
 prost = { workspace = true, features = ["derive", "std"] }
@@ -28,6 +27,7 @@ uuid = { workspace = true, features = ["v4"] }
 postcard = { workspace = true, features = ["alloc"] }
 sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
 sha2 = { workspace = true }
+const-hex = { workspace = true, features = ["alloc"] }
 tempfile = { workspace = true }
 
 [build-dependencies]
@@ -35,3 +35,4 @@ tonic-prost-build = { workspace = true }
 
 [dev-dependencies]
 reqwest = { workspace = true, features = ["json"] }
+mockall = { workspace = true }

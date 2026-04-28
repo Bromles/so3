@@ -37,8 +37,8 @@ impl TryFrom<i64> for ObjectVersion {
 
 #[cfg(test)]
 mod tests {
-    use crate::domain::ObjectVersion;
     use crate::domain::error::So3Error;
+    use crate::domain::object_version::ObjectVersion;
 
     const NON_POSITIVE_VERSION: i64 = 0;
 

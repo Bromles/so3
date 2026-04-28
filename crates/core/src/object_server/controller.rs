@@ -14,22 +14,24 @@ use crate::consensus::state_machine::ObjectCommandExecutor;
 use crate::domain::error::So3Error;
 use crate::domain::{CasResult, ObjectKey, ObjectVersion, StoredObject};
 use crate::object_server::api::{
-    DEFAULT_ERROR_LABEL, ETAG_HEADER, ErrorResponse, LAST_MODIFIED_HEADER,
-    OBJECT_METADATA_ROUTE_PATH, OBJECT_ROUTE_PATH, ObjectMetadataResponse, S3_OBJECT_ROUTE_PATH,
-    S3_OBJECT_SIZE_HEADER, S3_STORAGE_CLASS_HEADER, S3_VERSION_ID_HEADER, VERSION_HEADER,
-    WriteQuery,
+    ErrorResponse, ObjectMetadataResponse, WriteQuery, DEFAULT_ERROR_LABEL,
+    ETAG_HEADER, LAST_MODIFIED_HEADER, OBJECT_METADATA_ROUTE_PATH, OBJECT_ROUTE_PATH,
+    S3_OBJECT_ROUTE_PATH, S3_OBJECT_SIZE_HEADER, S3_STORAGE_CLASS_HEADER, S3_VERSION_ID_HEADER,
+    VERSION_HEADER,
 };
 use crate::object_server::service::ObjectService;
+use crate::repository::blob::interface::BlobRepository;
 
 #[derive(Clone)]
-pub struct ObjectApiState<E: ObjectCommandExecutor> {
-    pub service: ObjectService<E>,
+pub struct ObjectApiState<E: ObjectCommandExecutor, B: BlobRepository> {
+    pub service: ObjectService<E, B>,
     pub request_timeout: Duration,
 }
 
-pub fn object_controller<E>(state: ObjectApiState<E>) -> Router
+pub fn object_controller<E, B>(state: ObjectApiState<E, B>) -> Router
 where
     E: ObjectCommandExecutor + Clone + Send + Sync + 'static,
+    B: BlobRepository + Clone + Send + Sync + 'static,
 {
     let request_timeout = state.request_timeout;
 
@@ -53,12 +55,13 @@ where
         ))
 }
 
-async fn handle_get<E>(
-    State(state): State<ObjectApiState<E>>,
+async fn handle_get<E, B>(
+    State(state): State<ObjectApiState<E, B>>,
     Path(key): Path<String>,
 ) -> Result<Response, ApiError>
 where
     E: ObjectCommandExecutor + Clone + Send + Sync + 'static,
+    B: BlobRepository + Clone + Send + Sync + 'static,
 {
     let object = load_object(&state, key).await?;
     let metadata = ObjectMetadataResponse::from(&object);
@@ -68,12 +71,13 @@ where
     Ok(response)
 }
 
-async fn handle_head<E>(
-    State(state): State<ObjectApiState<E>>,
+async fn handle_head<E, B>(
+    State(state): State<ObjectApiState<E, B>>,
     Path(key): Path<String>,
 ) -> Result<Response, ApiError>
 where
     E: ObjectCommandExecutor + Clone + Send + Sync + 'static,
+    B: BlobRepository + Clone + Send + Sync + 'static,
 {
     let object = load_object(&state, key).await?;
     let mut response = StatusCode::OK.into_response();
@@ -83,23 +87,25 @@ where
     Ok(response)
 }
 
-async fn handle_get_metadata<E>(
-    State(state): State<ObjectApiState<E>>,
+async fn handle_get_metadata<E, B>(
+    State(state): State<ObjectApiState<E, B>>,
     Path(key): Path<String>,
 ) -> Result<Json<ObjectMetadataResponse>, ApiError>
 where
     E: ObjectCommandExecutor + Clone + Send + Sync + 'static,
+    B: BlobRepository + Clone + Send + Sync + 'static,
 {
     let object = load_object(&state, key).await?;
     Ok(Json(ObjectMetadataResponse::from(object)))
 }
 
-async fn handle_s3_get<E>(
-    State(state): State<ObjectApiState<E>>,
+async fn handle_s3_get<E, B>(
+    State(state): State<ObjectApiState<E, B>>,
     Path((bucket, key)): Path<(String, String)>,
 ) -> Result<Response, ApiError>
 where
     E: ObjectCommandExecutor + Clone + Send + Sync + 'static,
+    B: BlobRepository + Clone + Send + Sync + 'static,
 {
     let object = load_object(&state, s3_object_key(&bucket, &key)?).await?;
     let metadata = ObjectMetadataResponse::from(&object);
@@ -109,12 +115,13 @@ where
     Ok(response)
 }
 
-async fn handle_s3_head<E>(
-    State(state): State<ObjectApiState<E>>,
+async fn handle_s3_head<E, B>(
+    State(state): State<ObjectApiState<E, B>>,
     Path((bucket, key)): Path<(String, String)>,
 ) -> Result<Response, ApiError>
 where
     E: ObjectCommandExecutor + Clone + Send + Sync + 'static,
+    B: BlobRepository + Clone + Send + Sync + 'static,
 {
     let object = load_object(&state, s3_object_key(&bucket, &key)?).await?;
     let mut response = StatusCode::OK.into_response();
@@ -124,54 +131,61 @@ where
     Ok(response)
 }
 
-async fn handle_s3_put<E>(
-    State(state): State<ObjectApiState<E>>,
+async fn handle_s3_put<E, B>(
+    State(state): State<ObjectApiState<E, B>>,
     Path((bucket, key)): Path<(String, String)>,
     body: Bytes,
 ) -> Result<Response, ApiError>
 where
     E: ObjectCommandExecutor + Clone + Send + Sync + 'static,
+    B: BlobRepository + Clone + Send + Sync + 'static,
 {
     let key = ObjectKey::new(s3_object_key(&bucket, &key)?)?;
-    let object = state.service.write(key, body.to_vec()).await?;
-    let metadata = ObjectMetadataResponse::from(object);
+    let record = state.service.write(key, body.to_vec()).await?;
+    let metadata = ObjectMetadataResponse::from(record);
     let mut response = StatusCode::OK.into_response();
     attach_s3_metadata_headers(response.headers_mut(), &metadata)?;
 
     Ok(response)
 }
 
-async fn handle_s3_delete<E>(
-    State(state): State<ObjectApiState<E>>,
+async fn handle_s3_delete<E, B>(
+    State(state): State<ObjectApiState<E, B>>,
     Path((bucket, key)): Path<(String, String)>,
 ) -> Result<Response, ApiError>
 where
     E: ObjectCommandExecutor + Clone + Send + Sync + 'static,
+    B: BlobRepository + Clone + Send + Sync + 'static,
 {
     let key = ObjectKey::new(s3_object_key(&bucket, &key)?)?;
     state.service.delete(key).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
-async fn handle_put<E>(
-    State(state): State<ObjectApiState<E>>,
+async fn handle_put<E, B>(
+    State(state): State<ObjectApiState<E, B>>,
     Path(key): Path<String>,
     Query(query): Query<WriteQuery>,
     body: Bytes,
 ) -> Result<Json<ObjectMetadataResponse>, ApiError>
 where
     E: ObjectCommandExecutor + Clone + Send + Sync + 'static,
+    B: BlobRepository + Clone + Send + Sync + 'static,
 {
     let key = ObjectKey::new(key)?;
     match query.expected_version {
         None => {
-            let object = state.service.write(key, body.to_vec()).await?;
-            Ok(Json(ObjectMetadataResponse::from(object)))
+            let record = state.service.write(key, body.to_vec()).await?;
+            Ok(Json(ObjectMetadataResponse::from(record)))
         }
         Some(expected_version) => {
             let expected = ObjectVersion::try_from(expected_version)?;
-            match state.service.cas(key.clone(), expected, body.to_vec()).await? {
-                CasResult::Applied(object) => Ok(Json(ObjectMetadataResponse::from(object))),
+            match state
+                .service
+                .cas(key.clone(), expected, body.to_vec())
+                .await?
+            {
+                CasResult::Applied(record) => Ok(Json(ObjectMetadataResponse::from(record))),
                 CasResult::NotFound => Err(ApiError::from(So3Error::not_found(&key))),
                 CasResult::Mismatch { current_version } => Err(ApiError::from(
                     So3Error::cas_mismatch(&key, expected, current_version),
@@ -212,8 +226,12 @@ impl IntoResponse for ApiError {
     }
 }
 
-async fn load_object<E>(state: &ObjectApiState<E>, key: String) -> Result<StoredObject, ApiError>
+async fn load_object<E, B>(
+    state: &ObjectApiState<E, B>,
+    key: String,
+) -> Result<StoredObject, ApiError>
 where
+    B: BlobRepository + Clone + Send + Sync + 'static,
     E: ObjectCommandExecutor + Clone + Send + Sync + 'static,
 {
     let key = ObjectKey::new(key)?;
@@ -242,7 +260,10 @@ fn attach_s3_metadata_headers(
         S3_OBJECT_SIZE_HEADER,
         &metadata.content_length.to_string(),
     )?;
-    headers.insert(S3_STORAGE_CLASS_HEADER, HeaderValue::from_static("STANDARD"));
+    headers.insert(
+        S3_STORAGE_CLASS_HEADER,
+        HeaderValue::from_static("STANDARD"),
+    );
     attach_common_object_headers(headers, metadata)
 }
 
@@ -314,19 +335,19 @@ fn s3_object_key(bucket: &str, key: &str) -> Result<String, ApiError> {
 mod tests {
     use std::time::{Duration, UNIX_EPOCH};
 
-    use axum::body::{Body, to_bytes};
+    use axum::body::{to_bytes, Body};
     use axum::http::{Request, StatusCode};
     use tempfile::TempDir;
     use tower::util::ServiceExt;
 
-    use super::{ObjectApiState, object_controller};
+    use super::{object_controller, ObjectApiState};
     use crate::consensus::state_machine::LocalStateMachine;
     use crate::object_server::api::{
-        LAST_MODIFIED_HEADER, ObjectMetadataResponse, S3_OBJECT_SIZE_HEADER,
+        ObjectMetadataResponse, LAST_MODIFIED_HEADER, S3_OBJECT_SIZE_HEADER,
         S3_STORAGE_CLASS_HEADER, VERSION_HEADER,
     };
     use crate::object_server::service::ObjectService;
-    use crate::storage::registry::SqliteFsPersistentObjectRepository;
+    use crate::repository::registry::SqliteFsPersistentObjectRepository;
 
     const TEST_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
     const TEST_MAX_RESPONSE_BYTES: usize = usize::MAX;
@@ -350,15 +371,15 @@ mod tests {
 
     async fn test_app() -> (axum::Router, TempDir) {
         let temp_dir = TempDir::new().unwrap();
-        let state_machine = LocalStateMachine::new(
-            SqliteFsPersistentObjectRepository::new(
-                temp_dir.path().join("metadata"),
-                temp_dir.path().join("blobs"),
-            )
-            .await
-            .unwrap(),
-        );
-        let service = ObjectService::new(state_machine);
+        let repository = SqliteFsPersistentObjectRepository::new(
+            temp_dir.path().join("metadata"),
+            temp_dir.path().join("blobs"),
+        )
+        .await
+        .unwrap();
+        let blob_repository = repository.blob_repository().clone();
+        let state_machine = LocalStateMachine::new(repository);
+        let service = ObjectService::new(state_machine, blob_repository);
 
         (
             object_controller(ObjectApiState {
@@ -716,11 +737,7 @@ mod tests {
 
         let delete_response = app
             .clone()
-            .oneshot(
-                Request::delete(S3_OBJECT_PATH)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::delete(S3_OBJECT_PATH).body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(delete_response.status(), StatusCode::NO_CONTENT);
@@ -737,11 +754,7 @@ mod tests {
         let (app, _temp_dir) = test_app().await;
 
         let response = app
-            .oneshot(
-                Request::delete(S3_OBJECT_PATH)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::delete(S3_OBJECT_PATH).body(Body::empty()).unwrap())
             .await
             .unwrap();
 

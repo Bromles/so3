@@ -1,4 +1,5 @@
 @startuml
+'!pragma layout smetana
 
 top to bottom direction
 skinparam packageStyle rectangle

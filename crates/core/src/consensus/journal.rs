@@ -6,7 +6,7 @@ use prost::Message as ProstMessage;
 use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow, SqliteSynchronous,
 };
-use sqlx::{Row, SqlitePool, query, query_scalar};
+use sqlx::{query, query_scalar, Row, SqlitePool};
 use tokio::fs;
 use tokio::sync::Mutex;
 
@@ -17,7 +17,9 @@ use crate::rpc_server::proto::{Ballot, DependencySet, LogicalTimestamp};
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SQLITE_MAX_CONNECTIONS: u32 = 1;
 const DATABASE_FILE_NAME: &str = "consensus.sqlite";
-const CURRENT_SCHEMA_VERSION: i64 = 3;
+// Legacy directory name — removed in schema v4; kept as a constant only for the cleanup path.
+const LEGACY_COMMAND_PAYLOADS_DIR_NAME: &str = "command-payloads";
+const CURRENT_SCHEMA_VERSION: i64 = 4;
 const EMPTY_RESULT_BYTES: &[u8] = b"";
 const STATE_PRE_ACCEPTED: i64 = 1;
 const STATE_ACCEPTED: i64 = 2;
@@ -107,6 +109,11 @@ pub struct JournalMetadata {
     pub ballot: Option<Ballot>,
 }
 
+/// Consensus command journal backed by `SQLite`.
+///
+/// Schema v4: command bytes are stored inline in the `command` BLOB column.  The old
+/// `command-payloads/` filesystem directory (used in v1–v3) is no longer created and is
+/// removed from disk during the migration to v4.
 #[derive(Clone, Debug)]
 pub struct SqliteConsensusJournal {
     pool: SqlitePool,
@@ -138,6 +145,14 @@ impl SqliteConsensusJournal {
             write_lock: Arc::new(Mutex::new(())),
         };
         journal.init_schema().await?;
+
+        // Remove the legacy command-payloads directory created by schema versions 1–3.
+        // Failure to remove it is not fatal — orphaned files are harmless.
+        let legacy_dir = data_dir.join(LEGACY_COMMAND_PAYLOADS_DIR_NAME);
+        if fs::try_exists(&legacy_dir).await.unwrap_or(false) {
+            let _ = fs::remove_dir_all(&legacy_dir).await;
+        }
+
         Ok(journal)
     }
 
@@ -150,13 +165,19 @@ impl SqliteConsensusJournal {
             0 => {
                 self.migrate_to_v1().await?;
                 self.migrate_to_v2().await?;
-                self.migrate_to_v3().await
+                self.migrate_to_v3().await?;
+                self.migrate_to_v4().await
             }
             1 => {
                 self.migrate_to_v2().await?;
-                self.migrate_to_v3().await
+                self.migrate_to_v3().await?;
+                self.migrate_to_v4().await
             }
-            2 => self.migrate_to_v3().await,
+            2 => {
+                self.migrate_to_v3().await?;
+                self.migrate_to_v4().await
+            }
+            3 => self.migrate_to_v4().await,
             CURRENT_SCHEMA_VERSION => Ok(()),
             unsupported => Err(So3Error::Storage(format!(
                 "unsupported consensus sqlite schema version: {unsupported}"
@@ -180,6 +201,23 @@ impl SqliteConsensusJournal {
 
     async fn migrate_to_v3(&self) -> So3Result<()> {
         query(ADD_BALLOT_SQL).execute(&self.pool).await?;
+        query("PRAGMA user_version = 3").execute(&self.pool).await?;
+        Ok(())
+    }
+
+    /// Schema v4: drop the old `command_journal` table (whose `command` column held a
+    /// filesystem path reference) and recreate it so that the `command` column stores lean
+    /// command bytes inline.  All prior committed data is invalidated by this migration;
+    /// nodes that upgrade will re-receive commands through the normal Accord recovery path.
+    async fn migrate_to_v4(&self) -> So3Result<()> {
+        query("DROP TABLE IF EXISTS command_journal")
+            .execute(&self.pool)
+            .await?;
+        query(COMMANDS_TABLE_SQL).execute(&self.pool).await?;
+        query(ADD_TIMESTAMP_ZERO_SQL).execute(&self.pool).await?;
+        query(ADD_TIMESTAMP_SQL).execute(&self.pool).await?;
+        query(ADD_DEPENDENCIES_SQL).execute(&self.pool).await?;
+        query(ADD_BALLOT_SQL).execute(&self.pool).await?;
         query(&format!("PRAGMA user_version = {CURRENT_SCHEMA_VERSION}"))
             .execute(&self.pool)
             .await?;
@@ -196,7 +234,10 @@ impl SqliteConsensusJournal {
             .fetch_optional(&self.pool)
             .await?;
 
-        row.as_ref().map(row_to_entry).transpose()
+        match row {
+            Some(row) => row_to_entry(&row).map(Some),
+            None => Ok(None),
+        }
     }
 
     /// # Errors
@@ -208,7 +249,11 @@ impl SqliteConsensusJournal {
             .fetch_all(&self.pool)
             .await?;
 
-        rows.iter().map(row_to_entry).collect()
+        let mut entries = Vec::with_capacity(rows.len());
+        for row in rows {
+            entries.push(row_to_entry(&row)?);
+        }
+        Ok(entries)
     }
 
     /// # Errors
@@ -359,6 +404,8 @@ impl SqliteConsensusJournal {
     ) -> So3Result<JournalEntry> {
         let _guard = self.write_lock.lock().await;
         let Some(existing) = self.load(command_id).await? else {
+            // New entry: store command bytes directly (they are already lean — normalised by
+            // the transport layer before reaching the journal).
             self.insert(command_id, next_state, command, result, metadata)
                 .await?;
             return Ok(JournalEntry {
@@ -460,6 +507,8 @@ impl SqliteConsensusJournal {
 fn row_to_entry(row: &SqliteRow) -> So3Result<JournalEntry> {
     let sequence = row.try_get::<i64, _>("sequence")?;
     let state = row.try_get::<i64, _>("state")?;
+    // Command bytes are stored inline in the column (schema v4+).
+    let command = row.try_get::<Vec<u8>, _>("command")?;
 
     Ok(JournalEntry {
         command_id: ConsensusCommandId::new(
@@ -467,7 +516,7 @@ fn row_to_entry(row: &SqliteRow) -> So3Result<JournalEntry> {
             i64_to_u64_sequence(sequence)?,
         ),
         state: parse_state(state)?,
-        command: row.try_get("command")?,
+        command,
         result: row.try_get("result")?,
         metadata: JournalMetadata {
             timestamp_zero: decode_optional_proto(&row.try_get::<Vec<u8>, _>("timestamp_zero")?)?,
@@ -588,6 +637,7 @@ fn i64_to_u64_sequence(sequence: i64) -> So3Result<u64> {
 
 #[cfg(test)]
 mod tests {
+    use sqlx::{query, Row};
     use tempfile::TempDir;
 
     use super::{JournalMetadata, JournalState, SqliteConsensusJournal};
@@ -622,6 +672,41 @@ mod tests {
         assert_eq!(entry.state, JournalState::Applied);
         assert_eq!(entry.command, COMMAND_BYTES.to_vec());
         assert_eq!(entry.result, RESULT_BYTES.to_vec());
+    }
+
+    /// Verifies that the `command` column in the `SQLite` table holds the lean command bytes
+    /// directly (not a file-path reference) and that `load()` returns the same bytes.
+    #[tokio::test]
+    async fn raw_journal_command_column_stores_lean_command_bytes() {
+        let temp_dir = TempDir::new().unwrap();
+        let journal = SqliteConsensusJournal::new(temp_dir.path()).await.unwrap();
+        let lean_command = b"lean-command-bytes";
+
+        journal
+            .record_applied(&command_id(), lean_command, RESULT_BYTES)
+            .await
+            .unwrap();
+
+        let raw: Vec<u8> =
+            query("SELECT command FROM command_journal WHERE origin_node_id = ? AND sequence = ?")
+                .bind(ORIGIN_NODE_ID)
+                .bind(i64::try_from(COMMAND_SEQUENCE).unwrap())
+                .fetch_one(&journal.pool)
+                .await
+                .unwrap()
+                .try_get("command")
+                .unwrap();
+
+        let loaded = journal.load(&command_id()).await.unwrap().unwrap();
+
+        // The raw column bytes and the loaded entry command must be identical.
+        assert_eq!(raw, lean_command.to_vec());
+        assert_eq!(loaded.command, lean_command.to_vec());
+        // No command-payloads directory should exist.
+        assert!(
+            !temp_dir.path().join("command-payloads").exists(),
+            "command-payloads directory must not be created in schema v4"
+        );
     }
 
     #[tokio::test]
@@ -824,6 +909,40 @@ mod tests {
             error
                 .to_string()
                 .contains("unsupported consensus sqlite schema version")
+        );
+    }
+
+    /// Verifies that a journal with a legacy v3 schema (command-payloads directory present)
+    /// is migrated cleanly to v4 and the directory is removed.
+    #[tokio::test]
+    async fn migration_from_v3_removes_legacy_command_payloads_directory() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Simulate a v3 database by opening, writing an entry, then downgrading the
+        // version pragma so that the next open triggers the v3→v4 migration path.
+        {
+            let journal = SqliteConsensusJournal::new(temp_dir.path()).await.unwrap();
+            journal
+                .record_applied(&command_id(), COMMAND_BYTES, RESULT_BYTES)
+                .await
+                .unwrap();
+            // Force the schema version back to 3 to simulate an older node.
+            journal.set_schema_version_for_test(3).await.unwrap();
+        }
+
+        // Create the legacy directory that v1-v3 nodes would have made.
+        let legacy_dir = temp_dir.path().join("command-payloads");
+        tokio::fs::create_dir_all(&legacy_dir).await.unwrap();
+        tokio::fs::write(legacy_dir.join("some.cmd"), b"old payload")
+            .await
+            .unwrap();
+
+        // Re-open: should migrate to v4 and remove the legacy directory.
+        let _journal = SqliteConsensusJournal::new(temp_dir.path()).await.unwrap();
+
+        assert!(
+            !legacy_dir.exists(),
+            "command-payloads directory should be removed after v4 migration"
         );
     }
 }

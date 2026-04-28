@@ -4,7 +4,7 @@ use crate::domain::error::So3Result;
 use crate::domain::{
     CasResult, DeleteResult, ObjectCommand, ObjectResult, ReadResult, WriteResult,
 };
-use crate::storage::object::repository::{CasWriteOutcome, ObjectRepository};
+use crate::repository::object::interface::{CasWriteOutcome, ObjectRepository};
 
 #[async_trait]
 pub trait ObjectCommandExecutor: Send + Sync {
@@ -32,7 +32,7 @@ impl<R: ObjectRepository> LocalStateMachine<R> {
 
     /// # Errors
     ///
-    /// Returns any storage error raised while executing the deterministic object command.
+    /// Returns any repository error raised while executing the deterministic object command.
     pub async fn execute(&self, command: ObjectCommand) -> So3Result<ObjectResult> {
         self.execute_command(command).await
     }
@@ -46,28 +46,28 @@ where
     async fn execute_command(&self, command: ObjectCommand) -> So3Result<ObjectResult> {
         match command {
             ObjectCommand::Read(command) => {
-                let object = self.repository.read(&command.key).await?;
-                Ok(ObjectResult::Read(ReadResult { object }))
+                let record = self.repository.read(&command.key).await?;
+                Ok(ObjectResult::Read(ReadResult { record }))
             }
             ObjectCommand::Write(command) => {
-                let object = self
+                let record = self
                     .repository
-                    .write(&command.key, command.value, command.last_modified)
+                    .write(&command.key, command.metadata, command.last_modified)
                     .await?;
-                Ok(ObjectResult::Write(WriteResult { object }))
+                Ok(ObjectResult::Write(WriteResult { record }))
             }
             ObjectCommand::Cas(command) => match self
                 .repository
                 .cas(
                     &command.key,
                     command.expected_version,
-                    command.value,
+                    command.metadata,
                     command.last_modified,
                 )
                 .await?
             {
-                CasWriteOutcome::Applied(object) => {
-                    Ok(ObjectResult::Cas(CasResult::Applied(object)))
+                CasWriteOutcome::Applied(record) => {
+                    Ok(ObjectResult::Cas(CasResult::Applied(record)))
                 }
                 CasWriteOutcome::NotFound => Ok(ObjectResult::Cas(CasResult::NotFound)),
                 CasWriteOutcome::Mismatch { current_version } => {
@@ -85,87 +85,166 @@ where
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::fmt::Write as FmtWrite;
 
     use async_trait::async_trait;
+    use sha2::{Digest, Sha256};
     use tokio::sync::Mutex;
 
     use super::LocalStateMachine;
     use crate::domain::error::So3Result;
     use crate::domain::{
-        CasCommand, CasResult, ObjectCommand, ObjectKey, ObjectLastModified, ObjectRecord,
-        ObjectResult, ObjectVersion, ReadCommand, ReadResult, StoredObject, WriteCommand,
+        BlobMetadata, CasCommand, CasResult, ObjectCommand, ObjectKey, ObjectLastModified,
+        ObjectRecord, ObjectResult, ObjectVersion, ReadCommand, ReadResult, WriteCommand,
     };
-    use crate::storage::object::repository::{CasWriteOutcome, ObjectRepository};
+    use crate::repository::object::interface::{CasWriteOutcome, ObjectRepository};
 
     const KEY_ALPHA: &str = "alpha";
     const MISSING_KEY: &str = "missing";
     const FIRST_VALUE: &[u8] = b"first";
     const SECOND_VALUE: &[u8] = b"second";
     const WRITE_VALUE: &[u8] = b"value";
-    const CHECKSUM: &str = "checksum";
     const STALE_VERSION: i64 = 99;
 
+    /// A minimal in-memory object repository used only in unit tests.
+    ///
+    /// Blobs are stored in a separate map keyed by `blob_id` so that `load_value` works
+    /// correctly when the caller supplies a `BlobPayload::Inline` value.
     struct InMemoryRepository {
-        objects: Mutex<HashMap<String, StoredObject>>,
+        objects: Mutex<HashMap<String, ObjectRecord>>,
+        blobs: Mutex<HashMap<String, Vec<u8>>>,
     }
 
     impl InMemoryRepository {
         fn new() -> Self {
             Self {
                 objects: Mutex::new(HashMap::new()),
+                blobs: Mutex::new(HashMap::new()),
+            }
+        }
+
+        /// Persist an inline payload: derive a content-addressed `blob_id`, store the bytes,
+        /// and return an `ObjectRecord` with the resulting metadata.
+        async fn store_inline(
+            &self,
+            key: &ObjectKey,
+            version: ObjectVersion,
+            value: Vec<u8>,
+            last_modified: ObjectLastModified,
+        ) -> ObjectRecord {
+            let checksum = sha256_hex(&value);
+            let blob_id = format!("{checksum}.blob");
+            self.blobs
+                .lock()
+                .await
+                .insert(blob_id.clone(), value.clone());
+            ObjectRecord {
+                key: key.clone(),
+                version,
+                blob_id,
+                content_length: value.len() as u64,
+                checksum,
+                last_modified,
             }
         }
     }
 
     #[async_trait]
     impl ObjectRepository for InMemoryRepository {
-        async fn read(&self, key: &ObjectKey) -> So3Result<Option<StoredObject>> {
+        async fn read(&self, key: &ObjectKey) -> So3Result<Option<ObjectRecord>> {
             Ok(self.objects.lock().await.get(key.as_str()).cloned())
+        }
+
+        async fn load_value(&self, blob_id: &str) -> So3Result<Vec<u8>> {
+            Ok(self
+                .blobs
+                .lock()
+                .await
+                .get(blob_id)
+                .cloned()
+                .unwrap_or_default())
         }
 
         async fn write(
             &self,
             key: &ObjectKey,
-            value: Vec<u8>,
+            metadata: BlobMetadata,
             last_modified: ObjectLastModified,
-        ) -> So3Result<StoredObject> {
-            let mut objects = self.objects.lock().await;
+        ) -> So3Result<ObjectRecord> {
+            let objects = self.objects.lock().await;
             let version = objects
                 .get(key.as_str())
-                .map_or_else(ObjectVersion::initial, |object| {
-                    object.record.version.next()
-                });
-            let object = stored_object(key.clone(), version, value, last_modified);
-            objects.insert(key.as_str().to_owned(), object.clone());
-            Ok(object)
+                .map_or_else(ObjectVersion::initial, |r| r.version.next());
+            drop(objects);
+
+            let record = match metadata {
+                BlobMetadata::Inline(value) => {
+                    self.store_inline(key, version, value, last_modified).await
+                }
+                BlobMetadata::Stored {
+                    blob_id,
+                    content_length,
+                    checksum,
+                } => ObjectRecord {
+                    key: key.clone(),
+                    version,
+                    blob_id,
+                    content_length,
+                    checksum,
+                    last_modified,
+                },
+            };
+            self.objects
+                .lock()
+                .await
+                .insert(key.as_str().to_owned(), record.clone());
+            Ok(record)
         }
 
         async fn cas(
             &self,
             key: &ObjectKey,
             expected_version: ObjectVersion,
-            value: Vec<u8>,
+            metadata: BlobMetadata,
             last_modified: ObjectLastModified,
         ) -> So3Result<CasWriteOutcome> {
-            let mut objects = self.objects.lock().await;
-            let Some(current) = objects.get(key.as_str()).cloned() else {
+            let objects = self.objects.lock().await;
+            let Some(current_record) = objects.get(key.as_str()).cloned() else {
                 return Ok(CasWriteOutcome::NotFound);
             };
 
-            if current.record.version != expected_version {
+            if current_record.version != expected_version {
                 return Ok(CasWriteOutcome::Mismatch {
-                    current_version: current.record.version,
+                    current_version: current_record.version,
                 });
             }
 
-            let object = stored_object(
-                key.clone(),
-                current.record.version.next(),
-                value,
-                last_modified,
-            );
-            objects.insert(key.as_str().to_owned(), object.clone());
-            Ok(CasWriteOutcome::Applied(object))
+            let next_version = current_record.version.next();
+            drop(objects);
+
+            let record = match metadata {
+                BlobMetadata::Inline(value) => {
+                    self.store_inline(key, next_version, value, last_modified)
+                        .await
+                }
+                BlobMetadata::Stored {
+                    blob_id,
+                    content_length,
+                    checksum,
+                } => ObjectRecord {
+                    key: key.clone(),
+                    version: next_version,
+                    blob_id,
+                    content_length,
+                    checksum,
+                    last_modified,
+                },
+            };
+            self.objects
+                .lock()
+                .await
+                .insert(key.as_str().to_owned(), record.clone());
+            Ok(CasWriteOutcome::Applied(record))
         }
 
         async fn delete(&self, key: &ObjectKey) -> So3Result<()> {
@@ -174,23 +253,13 @@ mod tests {
         }
     }
 
-    fn stored_object(
-        key: ObjectKey,
-        version: ObjectVersion,
-        value: Vec<u8>,
-        last_modified: ObjectLastModified,
-    ) -> StoredObject {
-        StoredObject {
-            record: ObjectRecord {
-                key,
-                version,
-                blob_id: format!("blob-{}", version.get()),
-                content_length: value.len() as u64,
-                checksum: CHECKSUM.to_owned(),
-                last_modified,
-            },
-            value,
+    fn sha256_hex(value: &[u8]) -> String {
+        let digest = Sha256::digest(value);
+        let mut out = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            let _ = FmtWrite::write_fmt(&mut out, format_args!("{byte:02x}"));
         }
+        out
     }
 
     #[tokio::test]
@@ -200,7 +269,7 @@ mod tests {
         let result = state_machine
             .execute(ObjectCommand::Write(WriteCommand {
                 key: ObjectKey::new(KEY_ALPHA).unwrap(),
-                value: WRITE_VALUE.to_vec(),
+                metadata: BlobMetadata::Inline(WRITE_VALUE.to_vec()),
                 last_modified: test_last_modified(),
             }))
             .await
@@ -208,8 +277,8 @@ mod tests {
 
         match result {
             ObjectResult::Write(write) => {
-                assert_eq!(write.object.record.version, ObjectVersion::initial());
-                assert_eq!(write.object.value, WRITE_VALUE.to_vec());
+                assert_eq!(write.record.version, ObjectVersion::initial());
+                assert_eq!(write.record.content_length, WRITE_VALUE.len() as u64);
             }
             other => panic!("unexpected result: {other:?}"),
         }
@@ -221,7 +290,7 @@ mod tests {
         state_machine
             .execute(ObjectCommand::Write(WriteCommand {
                 key: ObjectKey::new(KEY_ALPHA).unwrap(),
-                value: FIRST_VALUE.to_vec(),
+                metadata: BlobMetadata::Inline(FIRST_VALUE.to_vec()),
                 last_modified: test_last_modified(),
             }))
             .await
@@ -231,7 +300,7 @@ mod tests {
             .execute(ObjectCommand::Cas(CasCommand {
                 key: ObjectKey::new(KEY_ALPHA).unwrap(),
                 expected_version: ObjectVersion::try_from(STALE_VERSION).unwrap(),
-                value: SECOND_VALUE.to_vec(),
+                metadata: BlobMetadata::Inline(SECOND_VALUE.to_vec()),
                 last_modified: test_last_modified(),
             }))
             .await
@@ -256,8 +325,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(result, ObjectResult::Read(ReadResult { object: None }));
+        assert_eq!(result, ObjectResult::Read(ReadResult { record: None }));
     }
+
     fn test_last_modified() -> crate::domain::ObjectLastModified {
         const TEST_LAST_MODIFIED_UNIX_MILLIS: i64 = 1_775_000_000_123;
         crate::domain::ObjectLastModified::try_from(TEST_LAST_MODIFIED_UNIX_MILLIS).unwrap()
