@@ -1,13 +1,19 @@
+use crate::domain::node::NodeId;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
 use tokio::sync::Mutex;
 
-use crate::rpc_server::proto::LogicalTimestamp;
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogicalTimestamp {
+    pub epoch: u64,
+    pub counter: u64,
+    pub node_id: NodeId,
+}
 
 #[derive(Clone, Debug)]
 pub struct HybridLogicalClock {
-    node_id: String,
+    node_id: NodeId,
     state: Arc<Mutex<HybridLogicalClockState>>,
 }
 
@@ -19,11 +25,11 @@ struct HybridLogicalClockState {
 
 impl HybridLogicalClock {
     #[must_use]
-    pub fn new(node_id: String) -> Self {
+    pub fn new(node_id: NodeId) -> Self {
         Self::with_state(node_id, HybridLogicalClockState::default())
     }
 
-    fn with_state(node_id: String, state: HybridLogicalClockState) -> Self {
+    fn with_state(node_id: NodeId, state: HybridLogicalClockState) -> Self {
         Self {
             node_id,
             state: Arc::new(Mutex::new(state)),
@@ -97,14 +103,15 @@ fn physical_millis_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{timestamp_is_after, HybridLogicalClock, HybridLogicalClockState};
-    use crate::rpc_server::proto::LogicalTimestamp;
+    use crate::domain::consensus::clock::LogicalTimestamp;
+    use crate::domain::node::NodeId;
 
-    const NODE_A: &str = "n0";
-    const NODE_B: &str = "n1";
+    const NODE_A: NodeId = "n0".into();
+    const NODE_B: NodeId = "n1".into();
 
     #[tokio::test]
     async fn tick_returns_monotonic_timestamps_for_node() {
-        let clock = HybridLogicalClock::new(NODE_A.to_owned());
+        let clock = HybridLogicalClock::new(NODE_A.into());
 
         let first = clock.tick().await;
         let second = clock.tick().await;

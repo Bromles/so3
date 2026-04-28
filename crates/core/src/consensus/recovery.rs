@@ -1,15 +1,14 @@
-use crate::consensus::clock::timestamp_is_after;
 use crate::consensus::executor::ReplicatedCommandExecutor;
 use crate::consensus::journal::{JournalMetadata, JournalState, SqliteConsensusJournal};
 use crate::consensus::ConsensusCommandId;
+use crate::domain::consensus::clock::{timestamp_is_after, LogicalTimestamp};
+use crate::domain::command::ObjectCommand;
 use crate::domain::error::{So3Error, So3Result};
-use crate::domain::ObjectCommand;
-use crate::rpc_server::proto::{DependencySet, LogicalTimestamp};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct BlockedCommittedCommand {
     pub command_id: ConsensusCommandId,
-    pub wait_for: Vec<crate::rpc_server::proto::CommandId>,
+    pub wait_for: Vec<CommandId>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -179,11 +178,11 @@ mod tests {
     use crate::consensus::executor::PersistentReplicatedCommandExecutor;
     use crate::consensus::journal::{JournalMetadata, JournalState, SqliteConsensusJournal};
     use crate::consensus::ConsensusCommandId;
-    use crate::domain::{BlobMetadata, ObjectCommand, ObjectKey, ObjectResult, WriteCommand};
+    use crate::domain::blob::BlobMetadata;
+    use crate::domain::consensus::clock::LogicalTimestamp;
+    use crate::domain::command::{ObjectCommand, WriteCommand};
+    use crate::domain::object_key::ObjectKey;
     use crate::repository::metadata::sqlite::SqliteObjectMetadataRepository;
-    use crate::repository::object::interface::ObjectRepository;
-    use crate::repository::registry::SqliteFsPersistentObjectRepository;
-    use crate::rpc_server::proto::{Ballot, CommandId, DependencySet, LogicalTimestamp};
 
     const ALPHA_KEY: &str = "alpha";
     const BETA_KEY: &str = "beta";

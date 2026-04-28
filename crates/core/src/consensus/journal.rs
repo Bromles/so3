@@ -11,8 +11,8 @@ use tokio::fs;
 use tokio::sync::Mutex;
 
 use crate::consensus::ConsensusCommandId;
+use crate::domain::consensus::clock::LogicalTimestamp;
 use crate::domain::error::{So3Error, So3Result};
-use crate::rpc_server::proto::{Ballot, DependencySet, LogicalTimestamp};
 
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SQLITE_MAX_CONNECTIONS: u32 = 1;
@@ -642,8 +642,8 @@ mod tests {
 
     use super::{JournalMetadata, JournalState, SqliteConsensusJournal};
     use crate::consensus::ConsensusCommandId;
+    use crate::domain::consensus::clock::LogicalTimestamp;
     use crate::domain::error::So3Error;
-    use crate::rpc_server::proto::{Ballot, CommandId, DependencySet, LogicalTimestamp};
 
     const ORIGIN_NODE_ID: &str = "node-a";
     const COMMAND_SEQUENCE: u64 = 3;

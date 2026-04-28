@@ -2,15 +2,10 @@ use async_trait::async_trait;
 use tonic::Status;
 use tracing::warn;
 
-use crate::consensus::clock::{timestamp_is_after, HybridLogicalClock};
-use crate::consensus::ConsensusCommandId;
 use crate::domain::error::{So3Error, So3Result};
-use crate::domain::{ObjectCommand, ObjectResult};
-use crate::rpc_server::proto::{
-    AcceptRequest, AcceptResponse, Ballot, CommitRequest, CommitResponse, DependencySet,
-    EventPayload, LastApplied, LogicalTimestamp, PreAcceptRequest, PreAcceptResponse,
-    RecoverRequest, RecoverResponse, State,
-};
+use crate::domain::consensus::clock::{timestamp_is_after, HybridLogicalClock, LogicalTimestamp};
+use crate::domain::command::ObjectCommand;
+use crate::domain::consensus::command::DependencySet;
 use crate::rpc_server::transport::ConsensusTransportHandler;
 
 #[async_trait]
@@ -738,14 +733,11 @@ mod tests {
     };
     use crate::consensus::ConsensusCommandId;
     use crate::domain::error::So3Error;
-    use crate::domain::{
-        BlobMetadata, ObjectCommand, ObjectKey, ObjectResult, ReadCommand, ReadResult, WriteCommand,
-    };
-    use crate::rpc_server::proto::{
-        AcceptRequest, AcceptResponse, ApplyRequest, ApplyResponse, Ballot, CommandId,
-        CommitRequest, CommitResponse, DependencySet, LogicalTimestamp, PreAcceptRequest,
-        PreAcceptResponse, RecoverRequest, RecoverResponse, State,
-    };
+    use crate::domain::blob::BlobMetadata;
+    use crate::domain::consensus::clock::LogicalTimestamp;
+    use crate::domain::command::{ObjectCommand, ReadCommand, ReadResult, WriteCommand};
+    use crate::domain::consensus::command::{CommandId, DependencySet};
+    use crate::domain::object_key::ObjectKey;
     use crate::rpc_server::transport::ConsensusTransportHandler;
 
     const LOCAL_NODE_ID: &str = "n0";

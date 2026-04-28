@@ -5,14 +5,13 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tracing::warn;
 
-use crate::consensus::clock::HybridLogicalClock;
 use crate::consensus::coordinator::{AccordCoordinator, AccordCoordinatorConfig};
 use crate::consensus::state_machine::{LocalStateMachine, ObjectCommandExecutor};
 use crate::consensus::ConsensusCommandId;
+use crate::domain::consensus::clock::HybridLogicalClock;
+use crate::domain::command::ObjectCommand;
 use crate::domain::error::{So3Error, So3Result};
-use crate::domain::{ObjectCommand, ObjectResult};
-use crate::repository::applied_command::interface::AppliedCommandRepository;
-use crate::repository::object::interface::ObjectRepository;
+use crate::repository::applied_command::AppliedCommandRepository;
 use crate::rpc_server::transport::{ConsensusTransportHandler, TonicConsensusPeerTransport};
 
 const INITIAL_COMMAND_SEQUENCE: u64 = 1;
@@ -180,12 +179,12 @@ mod tests {
 
     use super::{PersistentReplicatedCommandExecutor, ReplicatedCommandExecutor};
     use crate::consensus::ConsensusCommandId;
-    use crate::domain::{
-        BlobMetadata, ObjectCommand, ObjectKey, ObjectLastModified, ObjectResult, ObjectVersion,
-        ReadCommand, WriteCommand,
-    };
+    use crate::domain::blob::BlobMetadata;
+    use crate::domain::command::{ObjectCommand, ReadCommand, WriteCommand};
+    use crate::domain::object::ObjectLastModified;
+    use crate::domain::object_key::ObjectKey;
+    use crate::domain::object_version::ObjectVersion;
     use crate::repository::metadata::sqlite::SqliteObjectMetadataRepository;
-    use crate::repository::registry::SqliteFsPersistentObjectRepository;
 
     const ALPHA_KEY: &str = "alpha";
     const FIRST_VALUE: &[u8] = b"first";

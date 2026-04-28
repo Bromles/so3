@@ -1,10 +1,7 @@
 use async_trait::async_trait;
-
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use crate::domain::command::{CasResult, DeleteResult, ObjectCommand, ReadResult, WriteResult};
 use crate::domain::error::So3Result;
-use crate::domain::{
-    CasResult, DeleteResult, ObjectCommand, ObjectResult, ReadResult, WriteResult,
-};
-use crate::repository::object::interface::{CasWriteOutcome, ObjectRepository};
 
 #[async_trait]
 pub trait ObjectCommandExecutor: Send + Sync {
@@ -93,11 +90,11 @@ mod tests {
 
     use super::LocalStateMachine;
     use crate::domain::error::So3Result;
-    use crate::domain::{
-        BlobMetadata, CasCommand, CasResult, ObjectCommand, ObjectKey, ObjectLastModified,
-        ObjectRecord, ObjectResult, ObjectVersion, ReadCommand, ReadResult, WriteCommand,
-    };
-    use crate::repository::object::interface::{CasWriteOutcome, ObjectRepository};
+    use crate::domain::blob::BlobMetadata;
+    use crate::domain::command::{CasCommand, CasResult, ObjectCommand, ReadCommand, ReadResult, WriteCommand};
+    use crate::domain::object::ObjectLastModified;
+    use crate::domain::object_key::ObjectKey;
+    use crate::domain::object_version::ObjectVersion;
 
     const KEY_ALPHA: &str = "alpha";
     const MISSING_KEY: &str = "missing";
