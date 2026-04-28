@@ -37,7 +37,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::RepositoryRegistry;
-    use crate::consensus::ConsensusCommandId;
+    use crate::consensus::CommandId;
     use crate::domain::blob::BlobMetadata;
     use crate::domain::command::{CommandResult, ObjectCommand, ReadResult, WriteCommand};
     use crate::domain::object::ObjectLastModified;
@@ -61,7 +61,7 @@ mod tests {
         .unwrap();
         let key = ObjectKey::new(ALPHA_KEY).unwrap();
         let command_id =
-            ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
+            CommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
 
         let written = storage
             .object_repository
@@ -103,7 +103,7 @@ mod tests {
         .await
         .unwrap();
         let command_id =
-            ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
+            CommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             metadata: BlobMetadata::Inline(FIRST_VALUE.to_vec()),

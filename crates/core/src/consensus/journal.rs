@@ -10,9 +10,10 @@ use sqlx::{query, query_scalar, Row, SqlitePool};
 use tokio::fs;
 use tokio::sync::Mutex;
 
-use crate::consensus::ConsensusCommandId;
 use crate::domain::consensus::clock::LogicalTimestamp;
+use crate::domain::consensus::command_id::CommandId;
 use crate::domain::error::{So3Error, So3Result};
+use crate::rpc_server::proto::Ballot;
 
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SQLITE_MAX_CONNECTIONS: u32 = 1;
@@ -94,7 +95,7 @@ pub enum JournalState {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct JournalEntry {
-    pub command_id: ConsensusCommandId,
+    pub command_id: CommandId,
     pub state: JournalState,
     pub command: Vec<u8>,
     pub result: Vec<u8>,
@@ -227,7 +228,7 @@ impl SqliteConsensusJournal {
     /// # Errors
     ///
     /// Returns an error when the journal cannot load persisted command state.
-    pub async fn load(&self, command_id: &ConsensusCommandId) -> So3Result<Option<JournalEntry>> {
+    pub async fn load(&self, command_id: &CommandId) -> So3Result<Option<JournalEntry>> {
         let row = query(LOAD_COMMAND_SQL)
             .bind(command_id.origin_node_id())
             .bind(sequence_to_i64(command_id.sequence())?)
@@ -273,7 +274,7 @@ impl SqliteConsensusJournal {
     /// Returns an error when the pre-accepted command cannot be durably recorded.
     pub async fn record_pre_accepted(
         &self,
-        command_id: &ConsensusCommandId,
+        command_id: &CommandId,
         command: &[u8],
     ) -> So3Result<JournalEntry> {
         self.record_pre_accepted_with_metadata(command_id, command, JournalMetadata::default())
@@ -285,7 +286,7 @@ impl SqliteConsensusJournal {
     /// Returns an error when the pre-accepted command cannot be durably recorded.
     pub async fn record_pre_accepted_with_metadata(
         &self,
-        command_id: &ConsensusCommandId,
+        command_id: &CommandId,
         command: &[u8],
         metadata: JournalMetadata,
     ) -> So3Result<JournalEntry> {
@@ -304,7 +305,7 @@ impl SqliteConsensusJournal {
     /// Returns an error when the accepted command cannot be durably recorded.
     pub async fn record_accepted(
         &self,
-        command_id: &ConsensusCommandId,
+        command_id: &CommandId,
         command: &[u8],
     ) -> So3Result<JournalEntry> {
         self.record_accepted_with_metadata(command_id, command, JournalMetadata::default())
@@ -316,7 +317,7 @@ impl SqliteConsensusJournal {
     /// Returns an error when the accepted command cannot be durably recorded.
     pub async fn record_accepted_with_metadata(
         &self,
-        command_id: &ConsensusCommandId,
+        command_id: &CommandId,
         command: &[u8],
         metadata: JournalMetadata,
     ) -> So3Result<JournalEntry> {
@@ -335,7 +336,7 @@ impl SqliteConsensusJournal {
     /// Returns an error when the committed command cannot be durably recorded.
     pub async fn record_committed(
         &self,
-        command_id: &ConsensusCommandId,
+        command_id: &CommandId,
         command: &[u8],
     ) -> So3Result<JournalEntry> {
         self.record_committed_with_metadata(command_id, command, JournalMetadata::default())
@@ -347,7 +348,7 @@ impl SqliteConsensusJournal {
     /// Returns an error when the committed command cannot be durably recorded.
     pub async fn record_committed_with_metadata(
         &self,
-        command_id: &ConsensusCommandId,
+        command_id: &CommandId,
         command: &[u8],
         metadata: JournalMetadata,
     ) -> So3Result<JournalEntry> {
@@ -366,7 +367,7 @@ impl SqliteConsensusJournal {
     /// Returns an error when the applied command cannot be durably recorded.
     pub async fn record_applied(
         &self,
-        command_id: &ConsensusCommandId,
+        command_id: &CommandId,
         command: &[u8],
         result: &[u8],
     ) -> So3Result<JournalEntry> {
@@ -379,7 +380,7 @@ impl SqliteConsensusJournal {
     /// Returns an error when the applied command cannot be durably recorded.
     pub async fn record_applied_with_metadata(
         &self,
-        command_id: &ConsensusCommandId,
+        command_id: &CommandId,
         command: &[u8],
         result: &[u8],
         metadata: JournalMetadata,
@@ -396,7 +397,7 @@ impl SqliteConsensusJournal {
 
     async fn advance(
         &self,
-        command_id: &ConsensusCommandId,
+        command_id: &CommandId,
         next_state: JournalState,
         command: &[u8],
         result: &[u8],
@@ -449,7 +450,7 @@ impl SqliteConsensusJournal {
 
     async fn insert(
         &self,
-        command_id: &ConsensusCommandId,
+        command_id: &CommandId,
         state: JournalState,
         command: &[u8],
         result: &[u8],
@@ -473,7 +474,7 @@ impl SqliteConsensusJournal {
 
     async fn update(
         &self,
-        command_id: &ConsensusCommandId,
+        command_id: &CommandId,
         state: JournalState,
         command: &[u8],
         result: &[u8],
@@ -511,7 +512,7 @@ fn row_to_entry(row: &SqliteRow) -> So3Result<JournalEntry> {
     let command = row.try_get::<Vec<u8>, _>("command")?;
 
     Ok(JournalEntry {
-        command_id: ConsensusCommandId::new(
+        command_id: CommandId::new(
             row.try_get("origin_node_id")?,
             i64_to_u64_sequence(sequence)?,
         ),
@@ -641,9 +642,10 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{JournalMetadata, JournalState, SqliteConsensusJournal};
-    use crate::consensus::ConsensusCommandId;
+    use crate::consensus::CommandId;
     use crate::domain::consensus::clock::LogicalTimestamp;
     use crate::domain::error::So3Error;
+    use crate::rpc_server::proto::Ballot;
 
     const ORIGIN_NODE_ID: &str = "node-a";
     const COMMAND_SEQUENCE: u64 = 3;
@@ -653,8 +655,8 @@ mod tests {
     const TIMESTAMP_EPOCH: u64 = 11;
     const TIMESTAMP_COUNTER: u64 = 12;
 
-    fn command_id() -> ConsensusCommandId {
-        ConsensusCommandId::new(ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE)
+    fn command_id() -> CommandId {
+        CommandId::new(ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE)
     }
 
     #[tokio::test]
@@ -797,8 +799,8 @@ mod tests {
     async fn list_by_state_returns_only_matching_entries() {
         let temp_dir = TempDir::new().unwrap();
         let journal = SqliteConsensusJournal::new(temp_dir.path()).await.unwrap();
-        let accepted_id = ConsensusCommandId::new("node-a".to_owned(), 1);
-        let committed_id = ConsensusCommandId::new("node-b".to_owned(), 2);
+        let accepted_id = CommandId::new("node-a".to_owned(), 1);
+        let committed_id = CommandId::new("node-b".to_owned(), 2);
 
         let _ = journal
             .record_accepted(&accepted_id, COMMAND_BYTES)
@@ -825,9 +827,9 @@ mod tests {
     async fn next_sequence_for_origin_advances_from_durable_journal() {
         let temp_dir = TempDir::new().unwrap();
         let journal = SqliteConsensusJournal::new(temp_dir.path()).await.unwrap();
-        let first_id = ConsensusCommandId::new(ORIGIN_NODE_ID.to_owned(), 1);
-        let third_id = ConsensusCommandId::new(ORIGIN_NODE_ID.to_owned(), 3);
-        let other_id = ConsensusCommandId::new("node-b".to_owned(), 9);
+        let first_id = CommandId::new(ORIGIN_NODE_ID.to_owned(), 1);
+        let third_id = CommandId::new(ORIGIN_NODE_ID.to_owned(), 3);
+        let other_id = CommandId::new("node-b".to_owned(), 9);
 
         let empty = journal
             .next_sequence_for_origin(ORIGIN_NODE_ID)

@@ -17,7 +17,7 @@ use so3_core::consensus::coordinator::{
 use so3_core::consensus::executor::PersistentReplicatedCommandExecutor;
 use so3_core::consensus::recovery::replay_committed_commands;
 use so3_core::consensus::state_machine::LocalStateMachine;
-use so3_core::consensus::ConsensusCommandId;
+use so3_core::consensus::CommandId;
 use so3_core::domain::error::{So3Error, So3Result};
 use so3_core::object_server::service::ObjectService;
 use so3_core::rpc_server::proto::{
@@ -478,7 +478,7 @@ async fn execute_leader_command(
         Err(response) => return response,
     };
     let command_id =
-        ConsensusCommandId::new(shared.node_id.clone(), shared.next_command_sequence());
+        CommandId::new(shared.node_id.clone(), shared.next_command_sequence());
     let config = AccordCoordinatorConfig {
         node_id: shared.node_id.clone(),
         peer_ids: shared.peer_ids(),
@@ -582,7 +582,7 @@ mod tests {
     use super::{build_components, node_storage_dir};
     use crate::config::StorageRoots;
     use crate::protocol::{ClientRequest, ResponseBody};
-    use so3_core::consensus::ConsensusCommandId;
+    use so3_core::consensus::CommandId;
     use so3_core::domain::{
         BlobPayload, ObjectCommand, ObjectKey, ObjectLastModified, WriteCommand,
     };
@@ -615,7 +615,7 @@ mod tests {
         storage
             .consensus_journal
             .record_committed(
-                &ConsensusCommandId::new(NODE_ID.to_owned(), COMMAND_SEQUENCE_SEVEN),
+                &CommandId::new(NODE_ID.to_owned(), COMMAND_SEQUENCE_SEVEN),
                 &command.to_bytes().unwrap(),
             )
             .await

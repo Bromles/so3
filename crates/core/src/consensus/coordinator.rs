@@ -5,7 +5,8 @@ use tracing::warn;
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::consensus::clock::{timestamp_is_after, HybridLogicalClock, LogicalTimestamp};
 use crate::domain::command::ObjectCommand;
-use crate::domain::consensus::command::DependencySet;
+use crate::domain::consensus::command_id::{CommandId, DependencySet};
+use crate::rpc_server::proto::{AcceptRequest, AcceptResponse, Ballot, CommitRequest, CommitResponse, EventPayload, LastApplied, PreAcceptRequest, PreAcceptResponse, RecoverRequest, RecoverResponse};
 use crate::rpc_server::transport::ConsensusTransportHandler;
 
 #[async_trait]
@@ -100,7 +101,7 @@ where
     /// configured replica, committed, applied, or decoded from the applied result.
     pub async fn execute(
         &mut self,
-        command_id: &ConsensusCommandId,
+        command_id: &CommandId,
         command: ObjectCommand,
     ) -> So3Result<ObjectResult> {
         let command_bytes = command.to_bytes()?;
@@ -153,7 +154,7 @@ where
     /// Returns an error if the recovery request is rejected locally or by any configured replica.
     pub async fn recover(
         &mut self,
-        command_id: &ConsensusCommandId,
+        command_id: &CommandId,
         ballot: Option<Ballot>,
     ) -> So3Result<RecoveryDecision> {
         let timestamp_zero = self.clock.tick().await;
@@ -185,7 +186,7 @@ where
 
     async fn pre_accept_all(
         &mut self,
-        command_id: &ConsensusCommandId,
+        command_id: &CommandId,
         command: &[u8],
         timestamp_zero: &LogicalTimestamp,
     ) -> So3Result<PreAcceptDecision> {
@@ -266,7 +267,7 @@ where
 
     async fn accept_with_retry(
         &mut self,
-        command_id: &ConsensusCommandId,
+        command_id: &CommandId,
         command: &[u8],
         timestamp_zero: &LogicalTimestamp,
         timestamp: &LogicalTimestamp,
@@ -339,7 +340,7 @@ where
 
     async fn accept_all(
         &mut self,
-        command_id: &ConsensusCommandId,
+        command_id: &CommandId,
         command: &[u8],
         timestamp_zero: &LogicalTimestamp,
         timestamp: &LogicalTimestamp,
@@ -408,7 +409,7 @@ where
 
     async fn commit_all(
         &mut self,
-        command_id: &ConsensusCommandId,
+        command_id: &CommandId,
         command: &[u8],
         timestamp_zero: &LogicalTimestamp,
         timestamp: &LogicalTimestamp,
@@ -600,7 +601,7 @@ fn apply_recover_response(
     Ok(())
 }
 
-fn command_id_proto(command_id: &ConsensusCommandId) -> crate::rpc_server::proto::CommandId {
+fn command_id_proto(command_id: &CommandId) -> crate::rpc_server::proto::CommandId {
     crate::rpc_server::proto::CommandId {
         origin_node_id: command_id.origin_node_id().to_owned(),
         sequence: command_id.sequence(),
@@ -731,13 +732,14 @@ mod tests {
         empty_dependencies, AccordCoordinator, AccordCoordinatorConfig, ConsensusPeerTransport,
         RecoveryDecision,
     };
-    use crate::consensus::ConsensusCommandId;
+    use crate::consensus::CommandId;
     use crate::domain::error::So3Error;
     use crate::domain::blob::BlobMetadata;
     use crate::domain::consensus::clock::LogicalTimestamp;
     use crate::domain::command::{ObjectCommand, ReadCommand, ReadResult, WriteCommand};
     use crate::domain::consensus::command::{CommandId, DependencySet};
     use crate::domain::object_key::ObjectKey;
+    use crate::rpc_server::proto::{AcceptRequest, AcceptResponse, ApplyRequest, ApplyResponse, Ballot, CommitRequest, CommitResponse, FetchBlobRequest, FetchBlobResponse, PreAcceptRequest, PreAcceptResponse, RecoverRequest, RecoverResponse};
     use crate::rpc_server::transport::ConsensusTransportHandler;
 
     const LOCAL_NODE_ID: &str = "n0";
@@ -781,7 +783,7 @@ mod tests {
         });
         let actual = coordinator
             .execute(
-                &ConsensusCommandId::new(LOCAL_NODE_ID.to_owned(), 7),
+                &CommandId::new(LOCAL_NODE_ID.to_owned(), 7),
                 command,
             )
             .await
@@ -837,7 +839,7 @@ mod tests {
         });
         let error = coordinator
             .execute(
-                &ConsensusCommandId::new(LOCAL_NODE_ID.to_owned(), 8),
+                &CommandId::new(LOCAL_NODE_ID.to_owned(), 8),
                 command,
             )
             .await
@@ -902,7 +904,7 @@ mod tests {
 
         let decision = coordinator
             .recover(
-                &ConsensusCommandId::new(LOCAL_NODE_ID.to_owned(), 9),
+                &CommandId::new(LOCAL_NODE_ID.to_owned(), 9),
                 Some(Ballot {
                     round: 0,
                     node_id: LOCAL_NODE_ID.to_owned(),
@@ -974,7 +976,7 @@ mod tests {
 
         let actual = coordinator
             .execute(
-                &ConsensusCommandId::new(LOCAL_NODE_ID.to_owned(), 10),
+                &CommandId::new(LOCAL_NODE_ID.to_owned(), 10),
                 ObjectCommand::Read(ReadCommand {
                     key: ObjectKey::new(KEY_ALPHA).unwrap(),
                 }),
@@ -1045,7 +1047,7 @@ mod tests {
 
         let actual = coordinator
             .execute(
-                &ConsensusCommandId::new(LOCAL_NODE_ID.to_owned(), 11),
+                &CommandId::new(LOCAL_NODE_ID.to_owned(), 11),
                 ObjectCommand::Read(ReadCommand {
                     key: ObjectKey::new(KEY_ALPHA).unwrap(),
                 }),
@@ -1106,7 +1108,7 @@ mod tests {
 
         let error = coordinator
             .execute(
-                &ConsensusCommandId::new(LOCAL_NODE_ID.to_owned(), 12),
+                &CommandId::new(LOCAL_NODE_ID.to_owned(), 12),
                 ObjectCommand::Read(ReadCommand {
                     key: ObjectKey::new(KEY_ALPHA).unwrap(),
                 }),
@@ -1163,7 +1165,7 @@ mod tests {
 
         let _ = coordinator
             .execute(
-                &ConsensusCommandId::new(LOCAL_NODE_ID.to_owned(), 13),
+                &CommandId::new(LOCAL_NODE_ID.to_owned(), 13),
                 ObjectCommand::Read(ReadCommand {
                     key: ObjectKey::new(KEY_ALPHA).unwrap(),
                 }),
@@ -1491,7 +1493,7 @@ mod tests {
 
         let actual = coordinator
             .execute(
-                &ConsensusCommandId::new(LOCAL_NODE_ID.to_owned(), 20),
+                &CommandId::new(LOCAL_NODE_ID.to_owned(), 20),
                 ObjectCommand::Read(ReadCommand {
                     key: ObjectKey::new(KEY_ALPHA).unwrap(),
                 }),
@@ -1535,7 +1537,7 @@ mod tests {
 
         let actual = coordinator
             .execute(
-                &ConsensusCommandId::new(LOCAL_NODE_ID.to_owned(), 21),
+                &CommandId::new(LOCAL_NODE_ID.to_owned(), 21),
                 ObjectCommand::Read(ReadCommand {
                     key: ObjectKey::new(KEY_ALPHA).unwrap(),
                 }),
@@ -1574,7 +1576,7 @@ mod tests {
 
         let error = coordinator
             .execute(
-                &ConsensusCommandId::new(LOCAL_NODE_ID.to_owned(), 22),
+                &CommandId::new(LOCAL_NODE_ID.to_owned(), 22),
                 ObjectCommand::Read(ReadCommand {
                     key: ObjectKey::new(KEY_ALPHA).unwrap(),
                 }),
@@ -1627,7 +1629,7 @@ mod tests {
 
         let actual = coordinator
             .execute(
-                &ConsensusCommandId::new(LOCAL_NODE_ID.to_owned(), 23),
+                &CommandId::new(LOCAL_NODE_ID.to_owned(), 23),
                 ObjectCommand::Read(ReadCommand {
                     key: ObjectKey::new(KEY_ALPHA).unwrap(),
                 }),
@@ -1672,7 +1674,7 @@ mod tests {
         // Fast path: PEER_A commit fails but local commit still succeeds.
         let actual = coordinator
             .execute(
-                &ConsensusCommandId::new(LOCAL_NODE_ID.to_owned(), 24),
+                &CommandId::new(LOCAL_NODE_ID.to_owned(), 24),
                 ObjectCommand::Read(ReadCommand {
                     key: ObjectKey::new(KEY_ALPHA).unwrap(),
                 }),

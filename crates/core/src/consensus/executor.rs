@@ -7,9 +7,9 @@ use tracing::warn;
 
 use crate::consensus::coordinator::{AccordCoordinator, AccordCoordinatorConfig};
 use crate::consensus::state_machine::{LocalStateMachine, ObjectCommandExecutor};
-use crate::consensus::ConsensusCommandId;
 use crate::domain::consensus::clock::HybridLogicalClock;
 use crate::domain::command::ObjectCommand;
+use crate::domain::consensus::command_id::CommandId;
 use crate::domain::error::{So3Error, So3Result};
 use crate::repository::applied_command::AppliedCommandRepository;
 use crate::rpc_server::transport::{ConsensusTransportHandler, TonicConsensusPeerTransport};
@@ -25,7 +25,7 @@ pub trait ReplicatedCommandExecutor: Send + Sync {
     /// Returns an error when the command cannot be durably applied or replayed.
     async fn execute_replicated(
         &self,
-        command_id: &ConsensusCommandId,
+        command_id: &CommandId,
         command: ObjectCommand,
     ) -> So3Result<ObjectResult>;
 }
@@ -54,7 +54,7 @@ where
 {
     async fn execute_replicated(
         &self,
-        command_id: &ConsensusCommandId,
+        command_id: &CommandId,
         command: ObjectCommand,
     ) -> So3Result<ObjectResult> {
         if let Some(result) = self.applied_command_store.load_result(command_id).await? {
@@ -121,8 +121,8 @@ impl<H: ConsensusTransportHandler> LocalConsensusObjectCommandExecutor<H> {
         }
     }
 
-    fn next_command_id(&self) -> ConsensusCommandId {
-        ConsensusCommandId::new(
+    fn next_command_id(&self) -> CommandId {
+        CommandId::new(
             self.node_id.clone(),
             self.next_sequence.fetch_add(1, Ordering::Relaxed),
         )
@@ -178,7 +178,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{PersistentReplicatedCommandExecutor, ReplicatedCommandExecutor};
-    use crate::consensus::ConsensusCommandId;
+    use crate::consensus::CommandId;
     use crate::domain::blob::BlobMetadata;
     use crate::domain::command::{ObjectCommand, ReadCommand, WriteCommand};
     use crate::domain::object::ObjectLastModified;
@@ -224,7 +224,7 @@ mod tests {
     async fn execute_replicated_returns_stored_result_for_duplicate_command_id() {
         let (executor, _temp_dir) = test_executor().await;
         let command_id =
-            ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
+            CommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             metadata: BlobMetadata::Inline(FIRST_VALUE.to_vec()),
@@ -259,9 +259,9 @@ mod tests {
     async fn execute_replicated_read_observes_previous_write() {
         let (executor, _temp_dir) = test_executor().await;
         let write_id =
-            ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
+            CommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
         let read_id =
-            ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_TWO);
+            CommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_TWO);
 
         let _ = executor
             .execute_replicated(

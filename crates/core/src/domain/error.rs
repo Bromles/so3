@@ -4,7 +4,6 @@ use crate::domain::object_key::ObjectKey;
 use crate::domain::object_version::ObjectVersion;
 use postcard::Error as PostcardError;
 use serde::Serialize;
-use sqlx::Error as SqlxError;
 use thiserror::Error;
 
 pub type So3Result<T> = Result<T, So3Error>;
@@ -58,12 +57,6 @@ impl So3Error {
 impl From<IoError> for So3Error {
     fn from(value: IoError) -> Self {
         Self::Io(value.to_string())
-    }
-}
-
-impl From<SqlxError> for So3Error {
-    fn from(value: SqlxError) -> Self {
-        Self::Storage(value.to_string())
     }
 }
 

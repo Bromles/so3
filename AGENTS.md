@@ -160,10 +160,10 @@ where
 
 ## Шаги реализации
 
-### Шаг 1: Завершить начатую миграцию ConsensusCommandId
+### Шаг 1: Завершить начатую миграцию CommandId
 
 Переименовать `domain/consensus/command.rs` → `command_id.rs`.  
-Заменить `ConsensusCommandId` → `CommandId` (`domain::consensus::command_id::CommandId`) в 9 файлах:  
+Заменить `CommandId` → `CommandId` (`domain::consensus::command_id::CommandId`) в 9 файлах:  
 `consensus/{coordinator,executor,journal,recovery}.rs`, `rpc_server/transport/applying.rs`, `repository/{registry,applied_command/sqlite,applied_command/interface}.rs`, `node/runtime.rs`
 
 **Проверка:** `cargo clippy -- -W clippy::pedantic`
@@ -285,7 +285,7 @@ where
 6. `status_error()` → убрать (возвращаем `So3Error` напрямую)
 7. `handle_consensus()` — `local_transport.pre_accept(req)` теперь принимает domain-тип; при обработке входящих RPC декодировать postcard → domain, вызвать handler, кодировать ответ обратно в postcard
 
-8. Обновить `ConsensusCommandId::new(...)` → `CommandId::new(NodeId::from(...), ...)`
+8. Обновить `CommandId::new(...)` → `CommandId::new(NodeId::from(...), ...)`
 9. Обновить `so3_core::consensus::*` → `so3_core::service::consensus::*` / `so3_core::domain::consensus::*`
 
 **Изменения в `service.rs`:**
@@ -310,7 +310,7 @@ grep -r "sqlx" crates/core/src/domain/          # → 0
 grep -r "tonic\|prost" crates/core/src/domain/   # → 0
 grep -r "tonic\|prost" crates/core/src/service/  # → 0
 grep -r "sqlx" crates/core/src/service/          # → 0
-grep -r "ConsensusCommandId" crates/core/src/    # → 0
+grep -r "CommandId" crates/core/src/    # → 0
 grep -r "rpc_server\|object_server" crates/core/src/ # → 0
 grep -r "consensus::" crates/core/src/           # → 0 (модуль удалён)
 

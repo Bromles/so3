@@ -462,7 +462,7 @@ mod tests {
             metadata: BlobMetadata::Inline(FIRST_PAYLOAD.to_vec()),
             last_modified: ObjectLastModified::try_from(LAST_MODIFIED_UNIX_MILLIS).unwrap(),
         });
-        let command_id = crate::consensus::ConsensusCommandId::new(
+        let command_id = crate::consensus::CommandId::new(
             COMMAND_ORIGIN_NODE_ID.to_owned(),
             COMMAND_SEQUENCE_ONE,
         );

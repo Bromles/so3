@@ -1,4 +1,4 @@
-use crate::consensus::ConsensusCommandId;
+use crate::consensus::CommandId;
 use crate::domain::command::CommandResult;
 use crate::domain::error::{So3Error, So3Result};
 use crate::repository::applied_command::AppliedCommandRepository;
@@ -24,7 +24,7 @@ pub struct SqliteAppliedCommandRepository {
 impl AppliedCommandRepository for SqliteAppliedCommandRepository {
     async fn load_result(
         &self,
-        command_id: &ConsensusCommandId,
+        command_id: &CommandId,
     ) -> So3Result<Option<CommandResult>> {
         let row = query(LOAD_APPLIED_RESULT_SQL)
             .bind(command_id.origin_node_id())
@@ -41,7 +41,7 @@ impl AppliedCommandRepository for SqliteAppliedCommandRepository {
 
     async fn save_result(
         &self,
-        command_id: &ConsensusCommandId,
+        command_id: &CommandId,
         result: &CommandResult,
     ) -> So3Result<()> {
         query(INSERT_APPLIED_RESULT_SQL)
@@ -65,7 +65,7 @@ fn sequence_to_i64(sequence: u64) -> So3Result<i64> {
 
 #[cfg(test)]
 mod test {
-    use crate::consensus::ConsensusCommandId;
+    use crate::consensus::CommandId;
     use crate::domain::blob::BlobMetadata;
     use crate::domain::command::{CommandResult, ReadResult, WriteResult};
     use crate::domain::object::{ObjectLastModified, ObjectMetadata};
@@ -97,7 +97,7 @@ mod test {
             .await
             .unwrap();
         let command_id =
-            ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
+            CommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
         let result = CommandResult::Read(ReadResult { record: None });
 
         repository.save_result(&command_id, &result).await.unwrap();
@@ -113,7 +113,7 @@ mod test {
             .await
             .unwrap();
         let command_id =
-            ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
+            CommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
         let first = CommandResult::Read(ReadResult { record: None });
         let second = CommandResult::Read(ReadResult {
             record: Some(test_record()),
@@ -133,7 +133,7 @@ mod test {
             .await
             .unwrap();
         let command_id =
-            ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
+            CommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
         let payload = b"value-bytes-that-must-not-be-cached";
         // WriteResult now holds only ObjectRecord (no value bytes), so payload must never
         // appear in the persisted row. We embed the payload text in the blob_id to verify

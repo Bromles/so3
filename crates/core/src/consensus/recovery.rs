@@ -1,13 +1,13 @@
 use crate::consensus::executor::ReplicatedCommandExecutor;
 use crate::consensus::journal::{JournalMetadata, JournalState, SqliteConsensusJournal};
-use crate::consensus::ConsensusCommandId;
 use crate::domain::consensus::clock::{timestamp_is_after, LogicalTimestamp};
 use crate::domain::command::ObjectCommand;
+use crate::domain::consensus::command_id::CommandId;
 use crate::domain::error::{So3Error, So3Result};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct BlockedCommittedCommand {
-    pub command_id: ConsensusCommandId,
+    pub command_id: CommandId,
     pub wait_for: Vec<CommandId>,
 }
 
@@ -126,7 +126,7 @@ pub async fn wait_for_unapplied_dependencies(
     let mut wait_for = Vec::new();
 
     for dependency in &dependencies.commands {
-        let command_id = ConsensusCommandId::try_from(dependency)?;
+        let command_id = CommandId::try_from(dependency)?;
         let entry = journal.load(&command_id).await?;
 
         if entry
@@ -154,7 +154,7 @@ pub async fn wait_for_unapplied_dependencies(
 async fn apply_committed_entry<E>(
     journal: &SqliteConsensusJournal,
     executor: &E,
-    command_id: &ConsensusCommandId,
+    command_id: &CommandId,
     command_bytes: &[u8],
     metadata: &JournalMetadata,
 ) -> So3Result<()>
@@ -177,12 +177,13 @@ mod tests {
     use super::{apply_committed_commands, replay_committed_commands};
     use crate::consensus::executor::PersistentReplicatedCommandExecutor;
     use crate::consensus::journal::{JournalMetadata, JournalState, SqliteConsensusJournal};
-    use crate::consensus::ConsensusCommandId;
+    use crate::consensus::CommandId;
     use crate::domain::blob::BlobMetadata;
     use crate::domain::consensus::clock::LogicalTimestamp;
     use crate::domain::command::{ObjectCommand, WriteCommand};
     use crate::domain::object_key::ObjectKey;
     use crate::repository::metadata::sqlite::SqliteObjectMetadataRepository;
+    use crate::rpc_server::proto::Ballot;
 
     const ALPHA_KEY: &str = "alpha";
     const BETA_KEY: &str = "beta";
@@ -227,7 +228,7 @@ mod tests {
     async fn replay_committed_commands_applies_and_rejournals_entries() {
         let (journal, executor, _temp_dir) = test_recovery_components().await;
         let command_id =
-            ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
+            CommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             metadata: BlobMetadata::Inline(FIRST_VALUE.to_vec()),
@@ -257,7 +258,7 @@ mod tests {
     async fn replay_committed_commands_is_idempotent_after_first_replay() {
         let (journal, executor, _temp_dir) = test_recovery_components().await;
         let command_id =
-            ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
+            CommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             metadata: BlobMetadata::Inline(FIRST_VALUE.to_vec()),
@@ -284,9 +285,9 @@ mod tests {
     async fn apply_committed_commands_waits_for_unapplied_dependencies() {
         let (journal, executor, _temp_dir) = test_recovery_components().await;
         let first_command_id =
-            ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
+            CommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
         let second_command_id =
-            ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_TWO);
+            CommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_TWO);
         let first = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             metadata: BlobMetadata::Inline(FIRST_VALUE.to_vec()),
@@ -363,7 +364,7 @@ mod tests {
     async fn replay_committed_commands_fails_when_dependencies_remain_unresolved() {
         let (journal, executor, _temp_dir) = test_recovery_components().await;
         let second_command_id =
-            ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_TWO);
+            CommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_TWO);
         let second = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
             metadata: BlobMetadata::Inline(SECOND_VALUE.to_vec()),
@@ -403,11 +404,11 @@ mod tests {
         {
             let journal = SqliteConsensusJournal::new(&journal_path).await.unwrap();
             let pre_accepted_id =
-                ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
+                CommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
             let accepted_id =
-                ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_TWO);
+                CommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_TWO);
             let peer_committed_id =
-                ConsensusCommandId::new(PEER_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
+                CommandId::new(PEER_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
             let command = ObjectCommand::Write(WriteCommand {
                 key: ObjectKey::new(ALPHA_KEY).unwrap(),
                 metadata: BlobMetadata::Inline(FIRST_VALUE.to_vec()),
@@ -454,8 +455,8 @@ mod tests {
         let blobs_path = temp_dir.path().join("blobs");
 
         let local_id =
-            ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
-        let peer_id = ConsensusCommandId::new(PEER_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
+            CommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
+        let peer_id = CommandId::new(PEER_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
 
         // Record committed commands: peer's command depends on local's.
         {
@@ -532,11 +533,11 @@ mod tests {
         let (journal, executor, _temp_dir) = test_recovery_components().await;
 
         let pre_accepted_id =
-            ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
+            CommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
         let accepted_id =
-            ConsensusCommandId::new(PEER_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
+            CommandId::new(PEER_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
         let committed_id =
-            ConsensusCommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_TWO);
+            CommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_TWO);
 
         let cmd = |key: &str, value: &[u8]| {
             ObjectCommand::Write(WriteCommand {

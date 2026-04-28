@@ -8,7 +8,7 @@ use crate::consensus::journal::{
     ballot_is_after, JournalEntry, JournalMetadata, JournalState, SqliteConsensusJournal,
 };
 use crate::consensus::recovery::{apply_committed_commands, wait_for_unapplied_dependencies};
-use crate::consensus::ConsensusCommandId;
+use crate::consensus::CommandId;
 use crate::domain::error::So3Error;
 use crate::domain::{ObjectCommand, ObjectKey};
 use crate::repository::blob::interface::BlobRepository;
@@ -285,7 +285,7 @@ where
             });
         };
         let command_id =
-            ConsensusCommandId::try_from(command_id).map_err(|error| map_error(&error))?;
+            CommandId::try_from(command_id).map_err(|error| map_error(&error))?;
         let entry = self
             .journal
             .load(&command_id)
@@ -356,7 +356,7 @@ where
 {
     async fn dependencies_for_unapplied_conflicts(
         &self,
-        command_id: &ConsensusCommandId,
+        command_id: &CommandId,
         command: &ObjectCommand,
     ) -> crate::domain::error::So3Result<DependencySet> {
         let mut dependencies = empty_dependencies();
@@ -375,7 +375,7 @@ where
 
     async fn reject_stale_accept(
         &self,
-        command_id: &ConsensusCommandId,
+        command_id: &CommandId,
         ballot: Option<&Ballot>,
     ) -> Result<Option<AcceptResponse>, Status> {
         let entry = self
@@ -408,10 +408,10 @@ fn extract_command_bytes(
 
 fn extract_command_id(
     command_id: Option<&crate::rpc_server::proto::CommandId>,
-) -> Result<ConsensusCommandId, Status> {
+) -> Result<CommandId, Status> {
     let command_id =
         command_id.ok_or_else(|| Status::invalid_argument(MISSING_COMMAND_ID_ERROR))?;
-    ConsensusCommandId::try_from(command_id).map_err(|error| map_error(&error))
+    CommandId::try_from(command_id).map_err(|error| map_error(&error))
 }
 
 fn empty_dependencies() -> DependencySet {
@@ -422,7 +422,7 @@ fn empty_dependencies() -> DependencySet {
 
 fn append_dependency_if_conflicting(
     dependencies: &mut DependencySet,
-    command_id: &ConsensusCommandId,
+    command_id: &CommandId,
     command: &ObjectCommand,
     entry: &JournalEntry,
 ) -> crate::domain::error::So3Result<()> {

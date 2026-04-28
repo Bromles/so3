@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use crate::domain::node::NodeId;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -27,6 +26,14 @@ impl CommandId {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct DependencySet {
-    pub commands: HashSet<CommandId>,
+    pub commands: Vec<CommandId>,
+}
+
+impl DependencySet {
+    #[must_use]
+    pub fn empty() -> Self {
+        Self::default()
+    }
 }

@@ -189,7 +189,7 @@ package "crates/core::consensus" {
     }
 
     class HybridLogicalClock
-    class ConsensusCommandId
+    class CommandId
 }
 
 package "crates/core::rpc_server" {
