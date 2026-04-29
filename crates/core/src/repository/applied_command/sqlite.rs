@@ -98,7 +98,7 @@ mod test {
             .unwrap();
         let command_id =
             CommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
-        let result = CommandResult::Read(ReadResult { record: None });
+        let result = CommandResult::Read(ReadResult { metadata: None });
 
         repository.save_result(&command_id, &result).await.unwrap();
         let loaded = repository.load_result(&command_id).await.unwrap().unwrap();
@@ -114,9 +114,9 @@ mod test {
             .unwrap();
         let command_id =
             CommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
-        let first = CommandResult::Read(ReadResult { record: None });
+        let first = CommandResult::Read(ReadResult { metadata: None });
         let second = CommandResult::Read(ReadResult {
-            record: Some(test_record()),
+            metadata: Some(test_record()),
         });
 
         repository.save_result(&command_id, &first).await.unwrap();
@@ -139,7 +139,7 @@ mod test {
         // appear in the persisted row. We embed the payload text in the blob_id to verify
         // that the record fields do not escape either.
         let result = CommandResult::Write(WriteResult {
-            record: test_record(),
+            metadata: test_record(),
         });
 
         repository.save_result(&command_id, &result).await.unwrap();

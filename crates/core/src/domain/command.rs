@@ -83,14 +83,14 @@ impl CommandResult {
 /// on demand by the caller via [`crate::repository::blob::BlobRepository`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadResult {
-    pub record: Option<ObjectMetadata>,
+    pub metadata: Option<ObjectMetadata>,
 }
 
 /// Result of a replicated `Write` command. Contains only metadata; blob bytes are never
 /// stored in the consensus or applied-command tables.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WriteResult {
-    pub record: ObjectMetadata,
+    pub metadata: ObjectMetadata,
 }
 
 /// Result of a replicated `CAS` command.
@@ -182,7 +182,7 @@ mod tests {
 
     #[test]
     fn object_result_roundtrip_is_stable() {
-        let result = CommandResult::Read(ReadResult { record: None });
+        let result = CommandResult::Read(ReadResult { metadata: None });
 
         let encoded = result.to_bytes().unwrap();
         let decoded = CommandResult::from_bytes(&encoded).unwrap();

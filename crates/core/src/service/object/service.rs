@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use crate::domain::blob::{Blob, BlobPayload};
 use crate::domain::command::CasResult;
 use crate::domain::error::So3Result;
-use crate::domain::object::{ObjectLastModified, ObjectMetadata};
+use crate::domain::object::{ObjectLastModified, ObjectMetadata, StoredObject};
 use crate::domain::object_key::ObjectKey;
 use crate::domain::object_version::ObjectVersion;
 use crate::repository::blob::BlobRepository;
@@ -21,14 +21,6 @@ impl<M: ObjectMetadataRepository, B: BlobRepository> ObjectServiceImpl<M, B> {
             metadata_repository,
             blob_repository,
         }
-    }
-
-    pub fn blob_repository(&self) -> &B {
-        &self.blob_repository
-    }
-
-    pub fn metadata_repository(&self) -> &M {
-        &self.metadata_repository
     }
 
     async fn write_next_version(
@@ -55,19 +47,24 @@ impl<M: ObjectMetadataRepository, B: BlobRepository> ObjectServiceImpl<M, B> {
 
 #[async_trait]
 impl<M: ObjectMetadataRepository, B: BlobRepository> ObjectService for ObjectServiceImpl<M, B> {
-    async fn read(&self, key: &ObjectKey) -> So3Result<Option<Blob>> {
+    async fn read(&self, key: &ObjectKey) -> So3Result<Option<StoredObject>> {
         let Some(metadata) = self.metadata_repository.read(key).await? else {
             return Ok(None);
         };
 
-        let value = self
+        let blob_payload = self
             .blob_repository
             .load(metadata.blob_metadata.blob_id.clone())
             .await?;
 
-        Ok(Some(Blob {
-            metadata: metadata.blob_metadata,
-            payload: value,
+        let blob = Blob {
+            metadata: metadata.blob_metadata.clone(),
+            payload: blob_payload,
+        };
+
+        Ok(Some(StoredObject {
+            metadata,
+            blob
         }))
     }
 

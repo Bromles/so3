@@ -44,14 +44,14 @@ where
         match command {
             ObjectCommand::Read(command) => {
                 let record = self.repository.read(&command.key).await?;
-                Ok(ObjectResult::Read(ReadResult { record }))
+                Ok(ObjectResult::Read(ReadResult { metadata: record }))
             }
             ObjectCommand::Write(command) => {
                 let record = self
                     .repository
                     .write(&command.key, command.metadata, command.last_modified)
                     .await?;
-                Ok(ObjectResult::Write(WriteResult { record }))
+                Ok(ObjectResult::Write(WriteResult { metadata: record }))
             }
             ObjectCommand::Cas(command) => match self
                 .repository
@@ -322,7 +322,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(result, ObjectResult::Read(ReadResult { record: None }));
+        assert_eq!(result, ObjectResult::Read(ReadResult { metadata: None }));
     }
 
     fn test_last_modified() -> crate::domain::ObjectLastModified {

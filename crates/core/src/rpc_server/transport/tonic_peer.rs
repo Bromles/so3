@@ -6,11 +6,8 @@ use tonic::{Request, Response};
 
 use crate::consensus::coordinator::ConsensusPeerTransport;
 use crate::domain::error::{So3Error, So3Result};
-use crate::rpc_server::proto::consensus_transport_client::ConsensusTransportClient;
-use crate::rpc_server::proto::{
-    AcceptRequest, AcceptResponse, CommitRequest, CommitResponse, PreAcceptRequest,
-    PreAcceptResponse, RecoverRequest, RecoverResponse,
-};
+use crate::proto::consensus_transport_client::ConsensusTransportClient;
+use crate::proto::{PreAcceptRequest, PreAcceptResponse};
 
 const HTTP_SCHEME_PREFIX: &str = "http://";
 const HTTPS_SCHEME_PREFIX: &str = "https://";
@@ -174,6 +171,10 @@ mod tests {
     use crate::consensus::executor::PersistentReplicatedCommandExecutor;
     use crate::consensus::journal::SqliteConsensusJournal;
     use crate::domain::{BlobPayload, ObjectCommand, ObjectKey, ObjectResult, WriteCommand};
+    use crate::domain::blob::BlobPayload;
+    use crate::domain::command::{ObjectCommand, WriteCommand};
+    use crate::domain::object_key::ObjectKey;
+    use crate::proto::EventPayload;
     use crate::repository::metadata::sqlite::SqliteObjectMetadataRepository;
     use crate::repository::registry::SqliteFsPersistentObjectRepository;
     use crate::rpc_server::proto::{

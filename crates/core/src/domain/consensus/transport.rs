@@ -60,6 +60,11 @@ pub struct CommitRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitResponse {
+    pub result: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplyHashes {
     pub transaction_hash: Vec<u8>,
     pub execution_hash: Vec<u8>,

@@ -7,3 +7,6 @@ pub mod object_server;
 pub mod repository;
 pub mod rpc_server;
 pub mod service;
+pub mod api;
+pub mod client;
+pub mod proto;

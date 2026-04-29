@@ -2,13 +2,13 @@ use async_trait::async_trait;
 use crate::domain::blob::{Blob, BlobPayload};
 use crate::domain::command::CasResult;
 use crate::domain::error::So3Result;
-use crate::domain::object::{ObjectLastModified, ObjectMetadata};
+use crate::domain::object::{ObjectLastModified, ObjectMetadata, StoredObject};
 use crate::domain::object_key::ObjectKey;
 use crate::domain::object_version::ObjectVersion;
 
 #[async_trait]
 pub trait ObjectService {
-    async fn read(&self, key: &ObjectKey) -> So3Result<Option<Blob>>;
+    async fn read(&self, key: &ObjectKey) -> So3Result<Option<StoredObject>>;
 
     async fn write(
         &self,

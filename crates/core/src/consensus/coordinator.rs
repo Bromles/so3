@@ -749,7 +749,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_drives_all_consensus_phases_through_core() {
-        let result = ObjectResult::Read(ReadResult { record: None });
+        let result = ObjectResult::Read(ReadResult { metadata: None });
         let local = FakeLocalTransport::new(result.to_bytes().unwrap());
         let mut peers = FakePeerTransport::with_pre_accepts([
             pre_accept_response(
@@ -814,7 +814,7 @@ mod tests {
     #[tokio::test]
     async fn execute_rejects_pre_accept_nack_before_accepting() {
         let local = FakeLocalTransport::new(
-            ObjectResult::Read(ReadResult { record: None })
+            ObjectResult::Read(ReadResult { metadata: None })
                 .to_bytes()
                 .unwrap(),
         );
@@ -853,7 +853,7 @@ mod tests {
     #[tokio::test]
     async fn recover_merges_peer_state_dependencies_waits_and_highest_nack() {
         let local = FakeLocalTransport::new(
-            ObjectResult::Read(ReadResult { record: None })
+            ObjectResult::Read(ReadResult { metadata: None })
                 .to_bytes()
                 .unwrap(),
         );
@@ -939,7 +939,7 @@ mod tests {
     #[tokio::test]
     async fn execute_retries_accept_with_higher_ballot_after_stale_rejection() {
         let local = FakeLocalTransport::with_accept_and_recover(
-            ObjectResult::Read(ReadResult { record: None })
+            ObjectResult::Read(ReadResult { metadata: None })
                 .to_bytes()
                 .unwrap(),
             [
@@ -984,7 +984,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(actual, ObjectResult::Read(ReadResult { record: None }));
+        assert_eq!(actual, ObjectResult::Read(ReadResult { metadata: None }));
         assert_eq!(
             local.accept_ballots(),
             vec![
@@ -1010,7 +1010,7 @@ mod tests {
     #[tokio::test]
     async fn execute_rebroadcasts_commit_when_recovery_observes_committed_state() {
         let local = FakeLocalTransport::with_accept_and_recover(
-            ObjectResult::Read(ReadResult { record: None })
+            ObjectResult::Read(ReadResult { metadata: None })
                 .to_bytes()
                 .unwrap(),
             [AcceptResponse {
@@ -1055,7 +1055,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(actual, ObjectResult::Read(ReadResult { record: None }));
+        assert_eq!(actual, ObjectResult::Read(ReadResult { metadata: None }));
         assert_eq!(
             local.commit_dependencies(),
             vec![DependencySet {
@@ -1075,7 +1075,7 @@ mod tests {
     #[tokio::test]
     async fn execute_fails_when_recovery_observes_committed_state_waiting_for_dependencies() {
         let local = FakeLocalTransport::with_accept_and_recover(
-            ObjectResult::Read(ReadResult { record: None })
+            ObjectResult::Read(ReadResult { metadata: None })
                 .to_bytes()
                 .unwrap(),
             [AcceptResponse {
@@ -1122,7 +1122,7 @@ mod tests {
     #[tokio::test]
     async fn execute_merges_recovered_metadata_before_retrying_accept() {
         let local = FakeLocalTransport::with_accept_and_recover(
-            ObjectResult::Read(ReadResult { record: None })
+            ObjectResult::Read(ReadResult { metadata: None })
                 .to_bytes()
                 .unwrap(),
             [
@@ -1467,7 +1467,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_takes_fast_path_when_all_replicas_agree_on_timestamp_zero() {
-        let result = ObjectResult::Read(ReadResult { record: None });
+        let result = ObjectResult::Read(ReadResult { metadata: None });
         let local = FakeLocalTransport::new(result.to_bytes().unwrap());
         // Both peers respond without bumping the timestamp → unanimous agreement.
         let mut peers = FakePeerTransport::with_pre_accepts([
@@ -1514,7 +1514,7 @@ mod tests {
 
     #[tokio::test]
     async fn pre_accept_succeeds_when_minority_of_peers_are_unreachable() {
-        let result = ObjectResult::Read(ReadResult { record: None });
+        let result = ObjectResult::Read(ReadResult { metadata: None });
         let local = FakeLocalTransport::new(result.to_bytes().unwrap());
         // 3-node cluster (local + PEER_A + PEER_B). PEER_B is unreachable.
         // Quorum = 2; local + PEER_A = 2 → quorum met.
@@ -1556,7 +1556,7 @@ mod tests {
     #[tokio::test]
     async fn pre_accept_fails_when_majority_of_peers_are_unreachable() {
         let local = FakeLocalTransport::new(
-            ObjectResult::Read(ReadResult { record: None })
+            ObjectResult::Read(ReadResult { metadata: None })
                 .to_bytes()
                 .unwrap(),
         );
@@ -1594,7 +1594,7 @@ mod tests {
 
     #[tokio::test]
     async fn accept_succeeds_when_minority_of_peers_are_unreachable() {
-        let result = ObjectResult::Read(ReadResult { record: None });
+        let result = ObjectResult::Read(ReadResult { metadata: None });
         // Force slow path; accept from PEER_A succeeds, PEER_B unreachable.
         // local + PEER_A = 2 = quorum for 3-node cluster.
         let local = FakeLocalTransport::new(result.to_bytes().unwrap());
@@ -1642,7 +1642,7 @@ mod tests {
 
     #[tokio::test]
     async fn commit_succeeds_even_when_a_peer_commit_fails() {
-        let result = ObjectResult::Read(ReadResult { record: None });
+        let result = ObjectResult::Read(ReadResult { metadata: None });
         let local = FakeLocalTransport::new(result.to_bytes().unwrap());
         let mut peers = FakePeerTransport {
             pre_accepts: VecDeque::from([

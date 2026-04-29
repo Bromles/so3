@@ -1,6 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::domain::blob::BlobMetadata;
+use crate::domain::blob::{Blob, BlobMetadata};
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::object_key::ObjectKey;
 use crate::domain::object_version::ObjectVersion;
@@ -58,5 +58,5 @@ pub struct ObjectMetadata {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredObject {
     pub metadata: ObjectMetadata,
-    pub value: Vec<u8>,
+    pub blob: Blob,
 }

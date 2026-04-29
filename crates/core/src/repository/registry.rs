@@ -73,7 +73,7 @@ mod tests {
             .await
             .unwrap();
         let expected_result = CommandResult::Read(ReadResult {
-            record: Some(written.clone()),
+            metadata: Some(written.clone()),
         });
         storage
             .metadata_repository
