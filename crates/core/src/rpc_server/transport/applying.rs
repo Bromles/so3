@@ -2,24 +2,15 @@ use async_trait::async_trait;
 use tonic::Status;
 use tracing::{debug, info, warn};
 
-use crate::consensus::clock::HybridLogicalClock;
 use crate::consensus::executor::ReplicatedCommandExecutor;
-use crate::consensus::journal::{
-    ballot_is_after, JournalEntry, JournalMetadata, JournalState, SqliteConsensusJournal,
-};
+use crate::consensus::journal::ballot_is_after;
 use crate::consensus::recovery::{apply_committed_commands, wait_for_unapplied_dependencies};
-use crate::consensus::CommandId;
 use crate::domain::error::So3Error;
-use crate::domain::{ObjectCommand, ObjectKey};
 use crate::domain::command::ObjectCommand;
 use crate::domain::consensus::clock::HybridLogicalClock;
+use crate::domain::consensus::journal::{JournalEntry, JournalMetadata};
 use crate::domain::object_key::ObjectKey;
-use crate::repository::blob::interface::BlobRepository;
-use crate::rpc_server::proto::{
-    AcceptRequest, AcceptResponse, ApplyRequest, ApplyResponse, Ballot, CommitRequest,
-    CommitResponse, DependencySet, FetchBlobRequest, FetchBlobResponse, LogicalTimestamp,
-    PreAcceptRequest, PreAcceptResponse, RecoverRequest, RecoverResponse, State,
-};
+use crate::repository::blob::BlobRepository;
 use crate::rpc_server::transport::ConsensusTransportHandler;
 
 const MISSING_EVENT_PAYLOAD_ERROR: &str = "missing apply event payload";
@@ -340,15 +331,6 @@ where
             timestamp: Some(response_timestamp),
             nack: None,
         })
-    }
-
-    async fn fetch_blob(&self, request: FetchBlobRequest) -> Result<FetchBlobResponse, Status> {
-        let data = self
-            .blob_repository
-            .load(&request.blob_id)
-            .await
-            .map_err(|error| Status::not_found(error.to_string()))?;
-        Ok(FetchBlobResponse { data })
     }
 }
 

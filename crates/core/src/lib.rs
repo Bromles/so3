@@ -10,3 +10,4 @@ pub mod service;
 pub mod api;
 pub mod client;
 pub mod proto;
+pub mod use_case;
