@@ -5,7 +5,7 @@ use tonic::transport::Server;
 use tracing::info;
 
 use crate::domain::error::{So3Error, So3Result};
-use crate::rpc_server::proto::consensus_transport_server::ConsensusTransportServer;
+use crate::proto::consensus_transport_server::ConsensusTransportServer;
 use crate::rpc_server::service::ConsensusTransportService;
 use crate::rpc_server::transport::{ConsensusTransportHandler, RejectingConsensusTransport};
 use uuid::Uuid;
@@ -71,9 +71,14 @@ mod tests {
     use super::RpcServer;
     use crate::consensus::executor::PersistentReplicatedCommandExecutor;
     use crate::consensus::journal::SqliteConsensusJournal;
+    use crate::domain::blob::BlobMetadata;
+    use crate::domain::command::{ObjectCommand, ReadCommand, WriteCommand};
+    use crate::domain::object_key::ObjectKey;
     use crate::domain::{
         BlobMetadata, ObjectCommand, ObjectKey, ObjectResult, ReadCommand, WriteCommand,
     };
+    use crate::proto::consensus_transport_client::ConsensusTransportClient;
+    use crate::proto::EventPayload;
     use crate::repository::registry::SqliteFsPersistentObjectRepository;
     use crate::rpc_server::proto::consensus_transport_client::ConsensusTransportClient;
     use crate::rpc_server::proto::{ApplyRequest, CommitRequest, EventPayload};
@@ -175,14 +180,14 @@ mod tests {
             temp_dir.path().join("metadata"),
             temp_dir.path().join("blobs"),
         )
-        .await
-        .unwrap();
+            .await
+            .unwrap();
         let metadata_repository =
             crate::repository::metadata::sqlite::SqliteObjectMetadataRepository::new(
                 temp_dir.path().join("metadata"),
             )
-            .await
-            .unwrap();
+                .await
+                .unwrap();
         let journal = SqliteConsensusJournal::new(temp_dir.path().join("consensus"))
             .await
             .unwrap();
@@ -197,8 +202,8 @@ mod tests {
                 PersistentReplicatedCommandExecutor::new(repository, metadata_repository),
                 journal,
             ))
-            .run(listener, shutdown_token)
-            .await
+                .run(listener, shutdown_token)
+                .await
         });
         let channel = connect_with_retry(format!("http://{local_addr}")).await;
         let mut client = ConsensusTransportClient::new(channel);

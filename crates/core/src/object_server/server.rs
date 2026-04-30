@@ -7,7 +7,7 @@ use crate::domain::error::{So3Error, So3Result};
 use crate::node::config::NodeConfig;
 use crate::object_server::controller::{object_controller, ObjectApiState};
 use crate::object_server::service::ObjectService;
-use crate::repository::blob::interface::BlobRepository;
+use crate::repository::blob::BlobRepository;
 
 pub struct ObjectServer;
 
@@ -44,10 +44,10 @@ impl ObjectServer {
                 request_timeout: config.object_request_timeout,
             }),
         )
-        .with_graceful_shutdown(async move {
-            cancellation_token.cancelled().await;
-        })
-        .await
-        .map_err(|error| So3Error::Io(error.to_string()))
+            .with_graceful_shutdown(async move {
+                cancellation_token.cancelled().await;
+            })
+            .await
+            .map_err(|error| So3Error::Io(error.to_string()))
     }
 }

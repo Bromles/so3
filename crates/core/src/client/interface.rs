@@ -1,7 +1,6 @@
-use async_trait::async_trait;
 use crate::domain::consensus::transport::{AcceptRequest, AcceptResponse, CommitRequest, CommitResponse, PreAcceptRequest, PreAcceptResponse, RecoverRequest, RecoverResponse};
 use crate::domain::error::So3Result;
-use crate::domain::node::NodeId;
+use async_trait::async_trait;
 
 #[async_trait]
 pub trait ConsensusPeerClient: Send + Sync {

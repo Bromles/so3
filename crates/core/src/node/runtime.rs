@@ -235,7 +235,11 @@ mod tests {
 
     use super::{fail_fast_join, Node};
     use crate::consensus::journal::{JournalState, SqliteConsensusJournal};
+    use crate::domain::blob::BlobMetadata;
+    use crate::domain::command::{ObjectCommand, WriteCommand};
     use crate::domain::error::So3Error;
+    use crate::domain::object::ObjectLastModified;
+    use crate::domain::object_key::ObjectKey;
     use crate::node::config::{ClusterConfig, NodeConfig};
 
     const NODE_ID_NIL: Uuid = Uuid::nil();
@@ -400,11 +404,11 @@ mod tests {
             &temp_dir.path().join("follower"),
             "123e4567-e89b-12d3-a456-426614174001",
         ))
-        .await
-        .unwrap()
-        .bind()
-        .await
-        .unwrap();
+            .await
+            .unwrap()
+            .bind()
+            .await
+            .unwrap();
         let follower_rpc_addr = follower_bound.config().rpc_api_addr;
         let follower_base_url = format!("http://{}", follower_bound.config().object_api_addr);
         let follower_token = CancellationToken::new();
@@ -482,8 +486,8 @@ mod tests {
             temp_dir.path().join(METADATA_DIR_NAME),
             temp_dir.path().join(BLOB_DIR_NAME),
         )
-        .await
-        .unwrap();
+            .await
+            .unwrap();
         let object = repository
             .read(&ObjectKey::new(ALPHA_KEY).unwrap())
             .await
@@ -516,8 +520,8 @@ mod tests {
             Duration::from_secs(PEER_SHUTDOWN_TIMEOUT_SECS),
             peer_stopped_waiter.notified(),
         )
-        .await
-        .unwrap();
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

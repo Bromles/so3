@@ -26,7 +26,7 @@ impl TonicConsensusPeerTransport {
     /// # Errors
     ///
     /// Returns an error when any configured peer endpoint cannot be parsed.
-    pub fn from_peer_ids(peer_ids: impl IntoIterator<Item = String>) -> So3Result<Self> {
+    pub fn from_peer_ids(peer_ids: impl IntoIterator<Item=String>) -> So3Result<Self> {
         let mut transport = Self::new();
         for peer_id in peer_ids {
             let endpoint = endpoint_from_peer_id(&peer_id)?;
@@ -170,10 +170,10 @@ mod tests {
     use crate::consensus::coordinator::ConsensusPeerTransport;
     use crate::consensus::executor::PersistentReplicatedCommandExecutor;
     use crate::consensus::journal::SqliteConsensusJournal;
-    use crate::domain::{BlobPayload, ObjectCommand, ObjectKey, ObjectResult, WriteCommand};
     use crate::domain::blob::BlobPayload;
     use crate::domain::command::{ObjectCommand, WriteCommand};
     use crate::domain::object_key::ObjectKey;
+    use crate::domain::{BlobPayload, ObjectCommand, ObjectKey, ObjectResult, WriteCommand};
     use crate::proto::EventPayload;
     use crate::repository::metadata::sqlite::SqliteObjectMetadataRepository;
     use crate::repository::registry::SqliteFsPersistentObjectRepository;
@@ -219,8 +219,8 @@ mod tests {
             temp_dir.path().join("metadata"),
             temp_dir.path().join("blobs"),
         )
-        .await
-        .unwrap();
+            .await
+            .unwrap();
         let metadata_repository =
             SqliteObjectMetadataRepository::new(temp_dir.path().join("metadata"))
                 .await
@@ -238,8 +238,8 @@ mod tests {
                 PersistentReplicatedCommandExecutor::new(repository, metadata_repository),
                 journal,
             ))
-            .run(listener, shutdown_token)
-            .await
+                .run(listener, shutdown_token)
+                .await
         });
         let command = ObjectCommand::Write(WriteCommand {
             key: ObjectKey::new(ALPHA_KEY).unwrap(),
@@ -278,8 +278,8 @@ mod tests {
             temp_dir.path().join("metadata"),
             temp_dir.path().join("blobs"),
         )
-        .await
-        .unwrap();
+            .await
+            .unwrap();
         let metadata_repository =
             SqliteObjectMetadataRepository::new(temp_dir.path().join("metadata"))
                 .await
@@ -297,8 +297,8 @@ mod tests {
                 PersistentReplicatedCommandExecutor::new(repository, metadata_repository),
                 journal,
             ))
-            .run(listener, shutdown_token)
-            .await
+                .run(listener, shutdown_token)
+                .await
         });
         let mut transport = TonicConsensusPeerTransport::from_peer_ids([peer_id.clone()]).unwrap();
 

@@ -1,5 +1,5 @@
-use std::ops::{Deref, DerefMut};
 use serde::{Deserialize, Serialize};
+use std::ops::{Deref, DerefMut};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]

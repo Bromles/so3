@@ -4,16 +4,17 @@ use std::time::Duration;
 
 use prost::Message as ProstMessage;
 use sqlx::sqlite::{
-    SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow, SqliteSynchronous,
+    SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
 };
 use sqlx::{query, query_scalar, Row, SqlitePool};
 use tokio::fs;
 use tokio::sync::Mutex;
 
-use crate::domain::consensus::clock::LogicalTimestamp;
-use crate::domain::consensus::command_id::CommandId;
+use crate::domain::consensus::command_id::{CommandId, DependencySet};
+use crate::domain::consensus::journal::{JournalEntry, JournalMetadata};
+use crate::domain::consensus::transport::{Ballot, RecoveryState};
 use crate::domain::error::{So3Error, So3Result};
-use crate::rpc_server::proto::Ballot;
+use crate::repository::consensus_journal::mappers::row_to_entry;
 
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SQLITE_MAX_CONNECTIONS: u32 = 1;
@@ -84,31 +85,6 @@ const ADD_BALLOT_SQL: &str = r"
     ALTER TABLE command_journal
     ADD COLUMN ballot BLOB NOT NULL DEFAULT X''
 ";
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum JournalState {
-    PreAccepted,
-    Accepted,
-    Committed,
-    Applied,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct JournalEntry {
-    pub command_id: CommandId,
-    pub state: JournalState,
-    pub command: Vec<u8>,
-    pub result: Vec<u8>,
-    pub metadata: JournalMetadata,
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct JournalMetadata {
-    pub timestamp_zero: Option<LogicalTimestamp>,
-    pub timestamp: Option<LogicalTimestamp>,
-    pub dependencies: DependencySet,
-    pub ballot: Option<Ballot>,
-}
 
 /// Consensus command journal backed by `SQLite`.
 ///
@@ -244,7 +220,7 @@ impl SqliteConsensusJournal {
     /// # Errors
     ///
     /// Returns an error when the journal cannot enumerate persisted command state.
-    pub async fn list_by_state(&self, state: JournalState) -> So3Result<Vec<JournalEntry>> {
+    pub async fn list_by_state(&self, state: RecoveryState) -> So3Result<Vec<JournalEntry>> {
         let rows = query(LIST_COMMANDS_BY_STATE_SQL)
             .bind(state.as_sql())
             .fetch_all(&self.pool)
@@ -292,12 +268,12 @@ impl SqliteConsensusJournal {
     ) -> So3Result<JournalEntry> {
         self.advance(
             command_id,
-            JournalState::PreAccepted,
+            RecoveryState::PreAccepted,
             command,
             EMPTY_RESULT_BYTES,
             &metadata,
         )
-        .await
+            .await
     }
 
     /// # Errors
@@ -323,12 +299,12 @@ impl SqliteConsensusJournal {
     ) -> So3Result<JournalEntry> {
         self.advance(
             command_id,
-            JournalState::Accepted,
+            RecoveryState::Accepted,
             command,
             EMPTY_RESULT_BYTES,
             &metadata,
         )
-        .await
+            .await
     }
 
     /// # Errors
@@ -354,12 +330,12 @@ impl SqliteConsensusJournal {
     ) -> So3Result<JournalEntry> {
         self.advance(
             command_id,
-            JournalState::Committed,
+            RecoveryState::Committed,
             command,
             EMPTY_RESULT_BYTES,
             &metadata,
         )
-        .await
+            .await
     }
 
     /// # Errors
@@ -387,18 +363,18 @@ impl SqliteConsensusJournal {
     ) -> So3Result<JournalEntry> {
         self.advance(
             command_id,
-            JournalState::Applied,
+            RecoveryState::Applied,
             command,
             result,
             &metadata,
         )
-        .await
+            .await
     }
 
     async fn advance(
         &self,
         command_id: &CommandId,
-        next_state: JournalState,
+        next_state: RecoveryState,
         command: &[u8],
         result: &[u8],
         metadata: &JournalMetadata,
@@ -412,8 +388,6 @@ impl SqliteConsensusJournal {
             return Ok(JournalEntry {
                 command_id: command_id.clone(),
                 state: next_state,
-                command: command.to_vec(),
-                result: result.to_vec(),
                 metadata: metadata.clone(),
             });
         };
@@ -431,7 +405,7 @@ impl SqliteConsensusJournal {
         }
 
         if existing.state == next_state
-            && (next_state != JournalState::Applied || !existing.result.is_empty())
+            && (next_state != RecoveryState::Applied || !existing.result.is_empty())
         {
             return Ok(existing);
         }
@@ -442,8 +416,6 @@ impl SqliteConsensusJournal {
         Ok(JournalEntry {
             command_id: command_id.clone(),
             state: next_state,
-            command: command.to_vec(),
-            result: result.to_vec(),
             metadata,
         })
     }
@@ -451,7 +423,7 @@ impl SqliteConsensusJournal {
     async fn insert(
         &self,
         command_id: &CommandId,
-        state: JournalState,
+        state: RecoveryState,
         command: &[u8],
         result: &[u8],
         metadata: &JournalMetadata,
@@ -475,7 +447,7 @@ impl SqliteConsensusJournal {
     async fn update(
         &self,
         command_id: &CommandId,
-        state: JournalState,
+        state: RecoveryState,
         command: &[u8],
         result: &[u8],
         metadata: &JournalMetadata,
@@ -505,28 +477,6 @@ impl SqliteConsensusJournal {
     }
 }
 
-fn row_to_entry(row: &SqliteRow) -> So3Result<JournalEntry> {
-    let sequence = row.try_get::<i64, _>("sequence")?;
-    let state = row.try_get::<i64, _>("state")?;
-    // Command bytes are stored inline in the column (schema v4+).
-    let command = row.try_get::<Vec<u8>, _>("command")?;
-
-    Ok(JournalEntry {
-        command_id: CommandId::new(
-            row.try_get("origin_node_id")?,
-            i64_to_u64_sequence(sequence)?,
-        ),
-        state: parse_state(state)?,
-        command,
-        result: row.try_get("result")?,
-        metadata: JournalMetadata {
-            timestamp_zero: decode_optional_proto(&row.try_get::<Vec<u8>, _>("timestamp_zero")?)?,
-            timestamp: decode_optional_proto(&row.try_get::<Vec<u8>, _>("timestamp")?)?,
-            dependencies: decode_dependencies(&row.try_get::<Vec<u8>, _>("dependencies")?)?,
-            ballot: decode_optional_proto(&row.try_get::<Vec<u8>, _>("ballot")?)?,
-        },
-    })
-}
 
 fn merge_metadata(existing: &JournalMetadata, next: &JournalMetadata) -> JournalMetadata {
     JournalMetadata {
@@ -596,19 +546,19 @@ fn decode_dependencies(bytes: &[u8]) -> So3Result<DependencySet> {
     DependencySet::decode(bytes).map_err(|error| So3Error::Serialization(error.to_string()))
 }
 
-fn parse_state(state: i64) -> So3Result<JournalState> {
+fn parse_state(state: i64) -> So3Result<RecoveryState> {
     match state {
-        STATE_PRE_ACCEPTED => Ok(JournalState::PreAccepted),
-        STATE_ACCEPTED => Ok(JournalState::Accepted),
-        STATE_COMMITTED => Ok(JournalState::Committed),
-        STATE_APPLIED => Ok(JournalState::Applied),
+        STATE_PRE_ACCEPTED => Ok(RecoveryState::PreAccepted),
+        STATE_ACCEPTED => Ok(RecoveryState::Accepted),
+        STATE_COMMITTED => Ok(RecoveryState::Committed),
+        STATE_APPLIED => Ok(RecoveryState::Applied),
         unsupported => Err(So3Error::Storage(format!(
             "unsupported journal command state: {unsupported}"
         ))),
     }
 }
 
-impl JournalState {
+impl RecoveryState {
     fn as_sql(self) -> i64 {
         match self {
             Self::PreAccepted => STATE_PRE_ACCEPTED,
@@ -641,9 +591,11 @@ mod tests {
     use sqlx::{query, Row};
     use tempfile::TempDir;
 
-    use super::{JournalMetadata, JournalState, SqliteConsensusJournal};
+    use super::{JournalMetadata, RecoveryState, SqliteConsensusJournal};
     use crate::consensus::CommandId;
     use crate::domain::consensus::clock::LogicalTimestamp;
+    use crate::domain::consensus::journal::JournalMetadata;
+    use crate::domain::consensus::transport::RecoveryState;
     use crate::domain::error::So3Error;
     use crate::rpc_server::proto::Ballot;
 
@@ -671,7 +623,7 @@ mod tests {
         let entry = journal.load(&command_id()).await.unwrap().unwrap();
 
         assert_eq!(entry.command_id, command_id());
-        assert_eq!(entry.state, JournalState::Applied);
+        assert_eq!(entry.state, RecoveryState::Applied);
         assert_eq!(entry.command, COMMAND_BYTES.to_vec());
         assert_eq!(entry.result, RESULT_BYTES.to_vec());
     }
@@ -768,7 +720,7 @@ mod tests {
         let reopened = SqliteConsensusJournal::new(temp_dir.path()).await.unwrap();
         let entry = reopened.load(&command_id()).await.unwrap().unwrap();
 
-        assert_eq!(entry.state, JournalState::Committed);
+        assert_eq!(entry.state, RecoveryState::Committed);
         assert_eq!(entry.metadata, metadata);
     }
 
@@ -790,9 +742,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(pre_accepted.state, JournalState::PreAccepted);
-        assert_eq!(accepted.state, JournalState::Accepted);
-        assert_eq!(committed.state, JournalState::Committed);
+        assert_eq!(pre_accepted.state, RecoveryState::PreAccepted);
+        assert_eq!(accepted.state, RecoveryState::Accepted);
+        assert_eq!(committed.state, RecoveryState::Committed);
     }
 
     #[tokio::test]
@@ -811,9 +763,9 @@ mod tests {
             .await
             .unwrap();
 
-        let accepted = journal.list_by_state(JournalState::Accepted).await.unwrap();
+        let accepted = journal.list_by_state(RecoveryState::Accepted).await.unwrap();
         let committed = journal
-            .list_by_state(JournalState::Committed)
+            .list_by_state(RecoveryState::Committed)
             .await
             .unwrap();
 
@@ -870,7 +822,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(entry.state, JournalState::Applied);
+        assert_eq!(entry.state, RecoveryState::Applied);
         assert_eq!(entry.result, RESULT_BYTES.to_vec());
     }
 

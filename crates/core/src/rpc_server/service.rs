@@ -1,9 +1,9 @@
 use tonic::{async_trait, Request, Response, Status};
 
-use crate::rpc_server::proto::consensus_transport_server::ConsensusTransport;
-use crate::rpc_server::proto::{
+use crate::proto::consensus_transport_server::ConsensusTransport;
+use crate::proto::{
     AcceptRequest, AcceptResponse, ApplyRequest, ApplyResponse, CommitRequest, CommitResponse,
-    FetchBlobRequest, FetchBlobResponse, PreAcceptRequest, PreAcceptResponse, RecoverRequest,
+    PreAcceptRequest, PreAcceptResponse, RecoverRequest,
     RecoverResponse,
 };
 use crate::rpc_server::transport::ConsensusTransportHandler;
@@ -34,22 +34,22 @@ where
             .map(Response::new)
     }
 
-    async fn commit(
-        &self,
-        request: Request<CommitRequest>,
-    ) -> Result<Response<CommitResponse>, Status> {
-        self.handler
-            .commit(request.into_inner())
-            .await
-            .map(Response::new)
-    }
-
     async fn accept(
         &self,
         request: Request<AcceptRequest>,
     ) -> Result<Response<AcceptResponse>, Status> {
         self.handler
             .accept(request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn commit(
+        &self,
+        request: Request<CommitRequest>,
+    ) -> Result<Response<CommitResponse>, Status> {
+        self.handler
+            .commit(request.into_inner())
             .await
             .map(Response::new)
     }
@@ -70,16 +70,6 @@ where
     ) -> Result<Response<RecoverResponse>, Status> {
         self.handler
             .recover(request.into_inner())
-            .await
-            .map(Response::new)
-    }
-
-    async fn fetch_blob(
-        &self,
-        request: Request<FetchBlobRequest>,
-    ) -> Result<Response<FetchBlobResponse>, Status> {
-        self.handler
-            .fetch_blob(request.into_inner())
             .await
             .map(Response::new)
     }

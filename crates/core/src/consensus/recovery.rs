@@ -1,7 +1,7 @@
 use crate::consensus::executor::ReplicatedCommandExecutor;
 use crate::consensus::journal::{JournalMetadata, JournalState, SqliteConsensusJournal};
-use crate::domain::consensus::clock::{timestamp_is_after, LogicalTimestamp};
 use crate::domain::command::ObjectCommand;
+use crate::domain::consensus::clock::{timestamp_is_after, LogicalTimestamp};
 use crate::domain::consensus::command_id::CommandId;
 use crate::domain::error::{So3Error, So3Result};
 
@@ -47,7 +47,7 @@ where
                 &entry.metadata.dependencies,
                 entry.metadata.timestamp.as_ref(),
             )
-            .await?;
+                .await?;
             if !wait_for.is_empty() {
                 blocked.push(BlockedCommittedCommand {
                     command_id: entry.command_id,
@@ -63,7 +63,7 @@ where
                 &entry.command,
                 &entry.metadata,
             )
-            .await?;
+                .await?;
             applied_count = applied_count.saturating_add(1);
             progressed = true;
         }
@@ -179,8 +179,8 @@ mod tests {
     use crate::consensus::journal::{JournalMetadata, JournalState, SqliteConsensusJournal};
     use crate::consensus::CommandId;
     use crate::domain::blob::BlobMetadata;
-    use crate::domain::consensus::clock::LogicalTimestamp;
     use crate::domain::command::{ObjectCommand, WriteCommand};
+    use crate::domain::consensus::clock::LogicalTimestamp;
     use crate::domain::object_key::ObjectKey;
     use crate::repository::metadata::sqlite::SqliteObjectMetadataRepository;
     use crate::rpc_server::proto::Ballot;
@@ -214,8 +214,8 @@ mod tests {
             temp_dir.path().join("metadata"),
             temp_dir.path().join("blobs"),
         )
-        .await
-        .unwrap();
+            .await
+            .unwrap();
 
         (
             journal,
@@ -545,8 +545,8 @@ mod tests {
                 metadata: BlobMetadata::Inline(value.to_vec()),
                 last_modified: test_last_modified(),
             })
-            .to_bytes()
-            .unwrap()
+                .to_bytes()
+                .unwrap()
         };
 
         let _ = journal

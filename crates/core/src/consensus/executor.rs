@@ -7,8 +7,8 @@ use tracing::warn;
 
 use crate::consensus::coordinator::{AccordCoordinator, AccordCoordinatorConfig};
 use crate::consensus::state_machine::{LocalStateMachine, ObjectCommandExecutor};
-use crate::domain::consensus::clock::HybridLogicalClock;
 use crate::domain::command::ObjectCommand;
+use crate::domain::consensus::clock::HybridLogicalClock;
 use crate::domain::consensus::command_id::CommandId;
 use crate::domain::error::{So3Error, So3Result};
 use crate::repository::applied_command::AppliedCommandRepository;
@@ -211,8 +211,8 @@ mod tests {
             temp_dir.path().join("metadata"),
             temp_dir.path().join("blobs"),
         )
-        .await
-        .unwrap();
+            .await
+            .unwrap();
 
         (
             PersistentReplicatedCommandExecutor::new(object_repository, metadata_repository),

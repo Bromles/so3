@@ -5,7 +5,7 @@ use crate::domain::object::ObjectMetadata;
 use crate::domain::object_key::ObjectKey;
 
 #[async_trait]
-pub trait ObjectMetadataRepository: Send + Sync {
+pub trait ObjectMetadataRepository {
     /// # Errors
     ///
     /// Returns an error when metadata cannot be loaded from durable repository.

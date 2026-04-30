@@ -130,8 +130,8 @@ impl SqliteObjectMetadataRepository {
         query(&format!(
             "PRAGMA user_version = {APPLIED_COMMANDS_SCHEMA_VERSION}"
         ))
-        .execute(&self.pool)
-        .await?;
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -139,14 +139,14 @@ impl SqliteObjectMetadataRepository {
         query(
             "ALTER TABLE objects ADD COLUMN last_modified_unix_millis INTEGER NOT NULL DEFAULT 0",
         )
-        .execute(&self.pool)
-        .await?;
+            .execute(&self.pool)
+            .await?;
         query(
             "UPDATE objects SET last_modified_unix_millis = ? WHERE last_modified_unix_millis = 0",
         )
-        .bind(ObjectLastModified::now()?.unix_millis())
-        .execute(&self.pool)
-        .await?;
+            .bind(ObjectLastModified::now()?.unix_millis())
+            .execute(&self.pool)
+            .await?;
         query(&format!("PRAGMA user_version = {CURRENT_SCHEMA_VERSION}"))
             .execute(&self.pool)
             .await?;

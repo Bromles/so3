@@ -1,7 +1,7 @@
-use async_trait::async_trait;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::domain::command::{CasResult, DeleteResult, ObjectCommand, ReadResult, WriteResult};
 use crate::domain::error::So3Result;
+use async_trait::async_trait;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[async_trait]
 pub trait ObjectCommandExecutor: Send + Sync {
@@ -89,9 +89,9 @@ mod tests {
     use tokio::sync::Mutex;
 
     use super::LocalStateMachine;
-    use crate::domain::error::So3Result;
     use crate::domain::blob::BlobMetadata;
     use crate::domain::command::{CasCommand, CasResult, ObjectCommand, ReadCommand, ReadResult, WriteCommand};
+    use crate::domain::error::So3Result;
     use crate::domain::object::ObjectLastModified;
     use crate::domain::object_key::ObjectKey;
     use crate::domain::object_version::ObjectVersion;

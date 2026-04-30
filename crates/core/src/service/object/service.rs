@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use crate::domain::blob::{Blob, BlobPayload};
 use crate::domain::command::CasResult;
 use crate::domain::error::So3Result;
@@ -8,6 +7,7 @@ use crate::domain::object_version::ObjectVersion;
 use crate::repository::blob::BlobRepository;
 use crate::repository::metadata::ObjectMetadataRepository;
 use crate::service::object::ObjectService;
+use async_trait::async_trait;
 
 pub struct ObjectServiceImpl<M: ObjectMetadataRepository, B: BlobRepository> {
     metadata_repository: M,
@@ -64,7 +64,7 @@ impl<M: ObjectMetadataRepository, B: BlobRepository> ObjectService for ObjectSer
 
         Ok(Some(StoredObject {
             metadata,
-            blob
+            blob,
         }))
     }
 

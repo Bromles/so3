@@ -57,8 +57,8 @@ mod tests {
             temp_dir.path().join("metadata"),
             temp_dir.path().join("blobs"),
         )
-        .await
-        .unwrap();
+            .await
+            .unwrap();
         let key = ObjectKey::new(ALPHA_KEY).unwrap();
         let command_id =
             CommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
@@ -100,8 +100,8 @@ mod tests {
             temp_dir.path().join("metadata"),
             temp_dir.path().join("blobs"),
         )
-        .await
-        .unwrap();
+            .await
+            .unwrap();
         let command_id =
             CommandId::new(COMMAND_ORIGIN_NODE_ID.to_owned(), COMMAND_SEQUENCE_ONE);
         let command = ObjectCommand::Write(WriteCommand {

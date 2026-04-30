@@ -11,6 +11,9 @@ use crate::consensus::recovery::{apply_committed_commands, wait_for_unapplied_de
 use crate::consensus::CommandId;
 use crate::domain::error::So3Error;
 use crate::domain::{ObjectCommand, ObjectKey};
+use crate::domain::command::ObjectCommand;
+use crate::domain::consensus::clock::HybridLogicalClock;
+use crate::domain::object_key::ObjectKey;
 use crate::repository::blob::interface::BlobRepository;
 use crate::rpc_server::proto::{
     AcceptRequest, AcceptResponse, ApplyRequest, ApplyResponse, Ballot, CommitRequest,
@@ -214,8 +217,8 @@ where
             &entry.metadata.dependencies,
             entry.metadata.timestamp.as_ref(),
         )
-        .await
-        .map_err(|error| map_error(&error))?;
+            .await
+            .map_err(|error| map_error(&error))?;
         warn!(
             node_id = %self.node_id,
             command_origin = command_id.origin_node_id(),
@@ -319,8 +322,8 @@ where
             &dependencies,
             Some(&response_timestamp),
         )
-        .await
-        .map_err(|error| map_error(&error))?;
+            .await
+            .map_err(|error| map_error(&error))?;
 
         debug!(
             node_id = %self.node_id,
@@ -501,6 +504,11 @@ mod tests {
         BlobPayload, ObjectCommand, ObjectKey, ObjectResult, ObjectVersion, ReadCommand,
         WriteCommand,
     };
+    use crate::domain::blob::BlobPayload;
+    use crate::domain::command::{ObjectCommand, ReadCommand, WriteCommand};
+    use crate::domain::object_key::ObjectKey;
+    use crate::domain::object_version::ObjectVersion;
+    use crate::proto::EventPayload;
     use crate::repository::blob::fs::FileSystemBlobRepository;
     use crate::repository::blob::interface::BlobRepository;
     use crate::repository::metadata::sqlite::SqliteObjectMetadataRepository;
@@ -538,15 +546,15 @@ mod tests {
             temp_dir.path().join("metadata"),
             temp_dir.path().join("blobs"),
         )
-        .await
-        .unwrap();
+            .await
+            .unwrap();
         let blob_repository = repository.blob_repository().clone();
         let metadata_repository =
             crate::repository::metadata::sqlite::SqliteObjectMetadataRepository::new(
                 temp_dir.path().join("metadata"),
             )
-            .await
-            .unwrap();
+                .await
+                .unwrap();
         let journal = SqliteConsensusJournal::new(temp_dir.path().join("consensus"))
             .await
             .unwrap();
@@ -1091,8 +1099,8 @@ mod tests {
                     command: ObjectCommand::Read(ReadCommand {
                         key: ObjectKey::new(ALPHA_KEY).unwrap(),
                     })
-                    .to_bytes()
-                    .unwrap(),
+                        .to_bytes()
+                        .unwrap(),
                 }),
                 ..ApplyRequest::default()
             })

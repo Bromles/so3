@@ -1,10 +1,10 @@
-use async_trait::async_trait;
 use crate::domain::blob::{Blob, BlobPayload};
 use crate::domain::command::CasResult;
 use crate::domain::error::So3Result;
 use crate::domain::object::{ObjectLastModified, ObjectMetadata, StoredObject};
 use crate::domain::object_key::ObjectKey;
 use crate::domain::object_version::ObjectVersion;
+use async_trait::async_trait;
 
 #[async_trait]
 pub trait ObjectService {

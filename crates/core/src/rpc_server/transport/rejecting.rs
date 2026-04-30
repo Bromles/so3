@@ -125,7 +125,7 @@ fn empty_dependencies() -> DependencySet {
 mod tests {
     use tonic::Code;
     use uuid::Uuid;
-
+    use crate::proto::EventPayload;
     use super::RejectingConsensusTransport;
     use crate::rpc_server::proto::{
         AcceptRequest, ApplyRequest, Ballot, CommandId, CommitRequest, EventPayload,

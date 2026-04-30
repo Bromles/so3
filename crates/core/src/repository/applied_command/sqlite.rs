@@ -36,7 +36,7 @@ impl AppliedCommandRepository for SqliteAppliedCommandRepository {
             let bytes = row.try_get::<Vec<u8>, _>("result")?;
             CommandResult::from_bytes(&bytes)
         })
-        .transpose()
+            .transpose()
     }
 
     async fn save_result(
@@ -146,11 +146,11 @@ mod test {
         let bytes: Vec<u8> = sqlx::query_scalar(
             "SELECT result FROM applied_commands WHERE origin_node_id = ? AND sequence = ?",
         )
-        .bind(COMMAND_ORIGIN_NODE_ID)
-        .bind(i64::try_from(COMMAND_SEQUENCE_ONE).unwrap())
-        .fetch_one(&repository.pool)
-        .await
-        .unwrap();
+            .bind(COMMAND_ORIGIN_NODE_ID)
+            .bind(i64::try_from(COMMAND_SEQUENCE_ONE).unwrap())
+            .fetch_one(&repository.pool)
+            .await
+            .unwrap();
 
         assert!(!contains_subslice(&bytes, payload));
     }

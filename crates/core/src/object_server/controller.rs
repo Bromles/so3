@@ -11,16 +11,13 @@ use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::consensus::state_machine::ObjectCommandExecutor;
+use crate::domain::command::CasResult;
 use crate::domain::error::So3Error;
-use crate::domain::{CasResult, ObjectKey, ObjectVersion, StoredObject};
-use crate::object_server::api::{
-    ErrorResponse, ObjectMetadataResponse, WriteQuery, DEFAULT_ERROR_LABEL,
-    ETAG_HEADER, LAST_MODIFIED_HEADER, OBJECT_METADATA_ROUTE_PATH, OBJECT_ROUTE_PATH,
-    S3_OBJECT_ROUTE_PATH, S3_OBJECT_SIZE_HEADER, S3_STORAGE_CLASS_HEADER, S3_VERSION_ID_HEADER,
-    VERSION_HEADER,
-};
+use crate::domain::object::StoredObject;
+use crate::domain::object_key::ObjectKey;
+use crate::domain::object_version::ObjectVersion;
 use crate::object_server::service::ObjectService;
-use crate::repository::blob::interface::BlobRepository;
+use crate::repository::blob::BlobRepository;
 
 #[derive(Clone)]
 pub struct ObjectApiState<E: ObjectCommandExecutor, B: BlobRepository> {
@@ -37,11 +34,6 @@ where
 
     Router::new()
         .route(
-            OBJECT_ROUTE_PATH,
-            get(handle_get).head(handle_head).put(handle_put),
-        )
-        .route(OBJECT_METADATA_ROUTE_PATH, get(handle_get_metadata))
-        .route(
             S3_OBJECT_ROUTE_PATH,
             get(handle_s3_get)
                 .head(handle_s3_head)
@@ -53,50 +45,6 @@ where
             TraceLayer::new_for_http(),
             TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, request_timeout),
         ))
-}
-
-async fn handle_get<E, B>(
-    State(state): State<ObjectApiState<E, B>>,
-    Path(key): Path<String>,
-) -> Result<Response, ApiError>
-where
-    E: ObjectCommandExecutor + Clone + Send + Sync + 'static,
-    B: BlobRepository + Clone + Send + Sync + 'static,
-{
-    let object = load_object(&state, key).await?;
-    let metadata = ObjectMetadataResponse::from(&object);
-    let mut response = object.value.into_response();
-    attach_metadata_headers(response.headers_mut(), &metadata)?;
-
-    Ok(response)
-}
-
-async fn handle_head<E, B>(
-    State(state): State<ObjectApiState<E, B>>,
-    Path(key): Path<String>,
-) -> Result<Response, ApiError>
-where
-    E: ObjectCommandExecutor + Clone + Send + Sync + 'static,
-    B: BlobRepository + Clone + Send + Sync + 'static,
-{
-    let object = load_object(&state, key).await?;
-    let mut response = StatusCode::OK.into_response();
-    let metadata = ObjectMetadataResponse::from(&object);
-    attach_metadata_headers(response.headers_mut(), &metadata)?;
-
-    Ok(response)
-}
-
-async fn handle_get_metadata<E, B>(
-    State(state): State<ObjectApiState<E, B>>,
-    Path(key): Path<String>,
-) -> Result<Json<ObjectMetadataResponse>, ApiError>
-where
-    E: ObjectCommandExecutor + Clone + Send + Sync + 'static,
-    B: BlobRepository + Clone + Send + Sync + 'static,
-{
-    let object = load_object(&state, key).await?;
-    Ok(Json(ObjectMetadataResponse::from(object)))
 }
 
 async fn handle_s3_get<E, B>(
@@ -375,8 +323,8 @@ mod tests {
             temp_dir.path().join("metadata"),
             temp_dir.path().join("blobs"),
         )
-        .await
-        .unwrap();
+            .await
+            .unwrap();
         let blob_repository = repository.blob_repository().clone();
         let state_machine = LocalStateMachine::new(repository);
         let service = ObjectService::new(state_machine, blob_repository);
@@ -569,8 +517,8 @@ mod tests {
                     "/objects/alpha?expected_version={}",
                     initial.version
                 ))
-                .body(Body::from(SECOND_VALUE))
-                .unwrap(),
+                    .body(Body::from(SECOND_VALUE))
+                    .unwrap(),
             )
             .await
             .unwrap();

@@ -1,6 +1,5 @@
+use crate::domain::object::StoredObject;
 use serde::{Deserialize, Serialize};
-
-use crate::domain::{ObjectRecord, StoredObject};
 
 pub const OBJECT_ROUTE_PATH: &str = "/objects/{key}";
 pub const OBJECT_METADATA_ROUTE_PATH: &str = "/objects/{key}/metadata";
@@ -55,10 +54,4 @@ impl From<&StoredObject> for ObjectMetadataResponse {
     fn from(object: &StoredObject) -> Self {
         Self::from(&object.record)
     }
-}
-
-#[derive(Debug, Serialize)]
-pub struct ErrorResponse {
-    pub error: String,
-    pub detail: String,
 }

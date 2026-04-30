@@ -1,15 +1,15 @@
 use crate::client::interface::ConsensusPeerClient;
-use crate::client::mappers::{
-    accept_req_to_proto, accept_res_to_domain, commit_req_to_proto, commit_res_to_domain,
-    map_tonic_status, pre_accept_req_to_proto, pre_accept_res_to_domain, recover_req_to_proto,
-    recover_res_to_domain,
-};
 use crate::domain::consensus::transport::{
     AcceptRequest, AcceptResponse, CommitRequest, CommitResponse, PreAcceptRequest,
     PreAcceptResponse, RecoverRequest, RecoverResponse,
 };
 use crate::domain::error::So3Result;
 use crate::proto::consensus_transport_client::ConsensusTransportClient;
+use crate::proto::mappers::{
+    accept_req_to_proto, accept_res_to_domain, commit_req_to_proto, commit_res_to_domain,
+    map_tonic_status, pre_accept_req_to_proto, pre_accept_res_to_domain, recover_req_to_proto,
+    recover_res_to_domain,
+};
 use async_trait::async_trait;
 use tonic::transport::{Channel, Endpoint};
 use tonic::Response;

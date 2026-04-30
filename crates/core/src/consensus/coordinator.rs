@@ -2,10 +2,11 @@ use async_trait::async_trait;
 use tonic::Status;
 use tracing::warn;
 
-use crate::domain::error::{So3Error, So3Result};
-use crate::domain::consensus::clock::{timestamp_is_after, HybridLogicalClock, LogicalTimestamp};
 use crate::domain::command::ObjectCommand;
+use crate::domain::consensus::clock::{timestamp_is_after, HybridLogicalClock, LogicalTimestamp};
 use crate::domain::consensus::command_id::{CommandId, DependencySet};
+use crate::domain::error::{So3Error, So3Result};
+use crate::proto::EventPayload;
 use crate::rpc_server::proto::{AcceptRequest, AcceptResponse, Ballot, CommitRequest, CommitResponse, EventPayload, LastApplied, PreAcceptRequest, PreAcceptResponse, RecoverRequest, RecoverResponse};
 use crate::rpc_server::transport::ConsensusTransportHandler;
 
@@ -733,11 +734,11 @@ mod tests {
         RecoveryDecision,
     };
     use crate::consensus::CommandId;
-    use crate::domain::error::So3Error;
     use crate::domain::blob::BlobMetadata;
-    use crate::domain::consensus::clock::LogicalTimestamp;
     use crate::domain::command::{ObjectCommand, ReadCommand, ReadResult, WriteCommand};
+    use crate::domain::consensus::clock::LogicalTimestamp;
     use crate::domain::consensus::command::{CommandId, DependencySet};
+    use crate::domain::error::So3Error;
     use crate::domain::object_key::ObjectKey;
     use crate::rpc_server::proto::{AcceptRequest, AcceptResponse, ApplyRequest, ApplyResponse, Ballot, CommitRequest, CommitResponse, FetchBlobRequest, FetchBlobResponse, PreAcceptRequest, PreAcceptResponse, RecoverRequest, RecoverResponse};
     use crate::rpc_server::transport::ConsensusTransportHandler;
@@ -801,13 +802,13 @@ mod tests {
         assert!(peers.commit_dependencies.iter().all(|dependencies| {
             dependencies.commands.len() == 2
                 && dependencies
-                    .commands
-                    .iter()
-                    .any(|command| command.origin_node_id == PEER_A && command.sequence == 11)
+                .commands
+                .iter()
+                .any(|command| command.origin_node_id == PEER_A && command.sequence == 11)
                 && dependencies
-                    .commands
-                    .iter()
-                    .any(|command| command.origin_node_id == PEER_B && command.sequence == 12)
+                .commands
+                .iter()
+                .any(|command| command.origin_node_id == PEER_B && command.sequence == 12)
         }));
     }
 

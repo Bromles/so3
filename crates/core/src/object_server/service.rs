@@ -1,11 +1,11 @@
 use crate::consensus::state_machine::ObjectCommandExecutor;
+use crate::domain::blob::BlobMetadata;
+use crate::domain::command::{CasCommand, CasResult, DeleteCommand, ObjectCommand, ReadCommand, WriteCommand};
 use crate::domain::error::{So3Error, So3Result};
-use crate::domain::{
-    BlobMetadata, CasCommand, CasResult, DeleteCommand, ObjectCommand, ObjectKey,
-    ObjectLastModified, ObjectRecord, ObjectResult, ObjectVersion, ReadCommand, StoredObject,
-    WriteCommand,
-};
-use crate::repository::blob::interface::BlobRepository;
+use crate::domain::object::{ObjectLastModified, StoredObject};
+use crate::domain::object_key::ObjectKey;
+use crate::domain::object_version::ObjectVersion;
+use crate::repository::blob::BlobRepository;
 
 #[derive(Clone)]
 pub struct ObjectService<E: ObjectCommandExecutor, B: BlobRepository> {
@@ -130,6 +130,9 @@ mod tests {
 
     use super::ObjectService;
     use crate::consensus::state_machine::LocalStateMachine;
+    use crate::domain::command::CasResult;
+    use crate::domain::object_key::ObjectKey;
+    use crate::domain::object_version::ObjectVersion;
     use crate::domain::{CasResult, ObjectKey, ObjectVersion};
     use crate::repository::blob::fs::FileSystemBlobRepository;
     use crate::repository::registry::SqliteFsPersistentObjectRepository;
@@ -154,8 +157,8 @@ mod tests {
             temp_dir.path().join("metadata"),
             temp_dir.path().join("blobs"),
         )
-        .await
-        .unwrap();
+            .await
+            .unwrap();
         let blob_repository = repository.blob_repository().clone();
         let state_machine = LocalStateMachine::new(repository);
         (ObjectService::new(state_machine, blob_repository), temp_dir)
