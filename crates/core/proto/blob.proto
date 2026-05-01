@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package blob;
+
+service BlobService {
+  rpc StoreBlob(stream StoreBlobRequest) returns (StoreBlobResponse);
+  rpc FetchBlob(FetchBlobRequest) returns (stream FetchBlobResponse);
+}
+
+message StoreBlobRequest {
+  oneof payload {
+    StoreBlobHeader header = 1;
+    bytes chunk = 2;
+  }
+}
+
+message StoreBlobHeader {
+  string blob_id = 1;
+  uint64 size = 2;
+  bytes  sha256 = 3;
+}
+
+message StoreBlobResponse {
+  bool already_existed = 1;
+}
+
+message FetchBlobRequest  {
+  bytes blob_id = 1;
+}
+
+message FetchBlobResponse {
+  bytes chunk = 1;
+}

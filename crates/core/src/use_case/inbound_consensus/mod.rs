@@ -1,9 +1,9 @@
-pub mod pre_accept;
 pub mod accept;
-pub mod commit;
 pub mod apply;
+pub mod commit;
+mod interface;
+pub mod pre_accept;
 pub mod recover;
 pub mod use_case;
-mod interface;
 
 pub use interface::InboundConsensusUseCase;

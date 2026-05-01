@@ -17,22 +17,22 @@ impl InboundConsensusUseCaseImpl {
 #[async_trait]
 impl InboundConsensusUseCase for InboundConsensusUseCaseImpl {
     async fn pre_accept(&self, request: PreAcceptRequest) -> So3Result<PreAcceptResponse> {
-        todo!()
+        self.pre_accept_internal(request).await
     }
 
     async fn accept(&self, request: AcceptRequest) -> So3Result<AcceptResponse> {
-        todo!()
+        self.accept_internal(request).await
     }
 
     async fn commit(&self, request: CommitRequest) -> So3Result<CommitResponse> {
-        todo!()
+        self.commit_internal(request).await
     }
 
     async fn apply(&self, request: ApplyRequest) -> So3Result<ApplyResponse> {
-        todo!()
+        self.apply_internal(request).await
     }
 
     async fn recover(&self, request: RecoverRequest) -> So3Result<RecoverResponse> {
-        todo!()
+        self.recover_internal(request).await
     }
 }
