@@ -1,4 +1,4 @@
-use crate::domain::blob::{BlobMetadata, BlobPayload};
+use crate::domain::blobs::{BlobMetadata, BlobPayload};
 use crate::domain::command::{CommandResult, ObjectCommand, WriteCommand};
 use crate::domain::error::So3Result;
 use crate::domain::object::{ObjectLastModified, ObjectMetadata};

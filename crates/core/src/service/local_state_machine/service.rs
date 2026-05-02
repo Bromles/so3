@@ -1,4 +1,4 @@
-use crate::domain::blob::BlobMetadata;
+use crate::domain::blobs::BlobMetadata;
 use crate::domain::command::{
     CasResult, CommandResult, DeleteResult, ObjectCommand, ReadResult, WriteResult,
 };

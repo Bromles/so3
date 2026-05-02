@@ -3,7 +3,7 @@ use std::fs::File as StdFile;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::domain::blob::{BlobMetadata, BlobPayload};
+use crate::domain::blobs::{BlobMetadata, BlobPayload};
 use crate::domain::checksum::Sha256Digest;
 use crate::domain::error::{So3Error, So3Result};
 use crate::repository::blob::interface::BlobRepository;
@@ -168,7 +168,7 @@ fn open_directory_for_sync(path: &Path) -> io::Result<StdFile> {
 #[cfg(test)]
 mod tests {
     use super::{FileSystemBlobRepository, COMMITTED_BLOBS_DIR_NAME, TEMP_BLOBS_DIR_NAME};
-    use crate::domain::blob::BlobPayload;
+    use crate::domain::blobs::BlobPayload;
     use crate::repository::blob::interface::BlobRepository;
     use tempfile::TempDir;
     use tokio::fs;

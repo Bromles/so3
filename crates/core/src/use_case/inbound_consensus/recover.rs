@@ -1,5 +1,4 @@
 use tracing::debug;
-use crate::consensus::recovery::wait_for_unapplied_dependencies;
 use crate::domain::consensus::command_id::CommandId;
 use crate::domain::consensus::transport::{
     RecoverRequest, RecoverResponse,

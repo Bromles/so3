@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use crate::domain::blob::BlobPayload;
+use crate::domain::blobs::BlobPayload;
 use crate::domain::command::CasResult;
 use crate::domain::error::So3Result;
 use crate::domain::object::{ObjectMetadata, StoredObject};

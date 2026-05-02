@@ -1,6 +1,5 @@
 use tonic::Status;
 use tracing::{info, warn};
-use crate::consensus::recovery::{apply_committed_commands, wait_for_unapplied_dependencies};
 use crate::domain::consensus::journal::JournalMetadata;
 use crate::domain::consensus::transport::{
     CommitRequest, CommitResponse,

@@ -1,4 +1,4 @@
-use crate::domain::consensus::clock::LogicalTimestamp as DomainLogicalTimestamp;
+use crate::domain::clock::LogicalTimestamp as DomainLogicalTimestamp;
 use crate::domain::consensus::command_id::{
     CommandId as DomainCommandId, DependencySet as DomainDependencySet,
 };
@@ -15,16 +15,13 @@ use crate::domain::consensus::transport::{
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::node::NodeId;
 use crate::proto::{
-    AcceptRequest as ProtoAcceptRequest, AcceptResponse as ProtoAcceptResponse,
-    ApplyHashes as ProtoApplyHashes, ApplyRequest as ProtoApplyRequest,
+    AcceptRequest as ProtoAcceptRequest, AcceptResponse as ProtoAcceptResponse, ApplyRequest as ProtoApplyRequest,
     ApplyResponse as ProtoApplyResponse, Ballot as ProtoBallot, CommandId as ProtoCommandId,
     CommitRequest as ProtoCommitRequest, CommitResponse as ProtoCommitResponse,
-    LastApplied as ProtoLastApplied, LogicalTimestamp as ProtoLogicalTimestamp,
+    LogicalTimestamp as ProtoLogicalTimestamp,
     PreAcceptResponse as ProtoPreAcceptResponse, RecoverRequest as ProtoRecoverRequest,
     RecoverResponse as ProtoRecoverResponse, State as ProtoState,
-};
-use crate::proto::{
-    DependencySet as ProtoDependencySet, EventPayload as ProtoEventPayload,
+    DependencySet as ProtoDependencySet,
     PreAcceptRequest as ProtoPreAcceptRequest,
 };
 
@@ -61,7 +58,7 @@ pub fn command_id_to_domain(command_id: ProtoCommandId) -> DomainCommandId {
 
 pub fn logical_timestamp_to_proto(timestamp: DomainLogicalTimestamp) -> ProtoLogicalTimestamp {
     ProtoLogicalTimestamp {
-        epoch: timestamp.epoch,
+        epoch: timestamp.physical_time_ms,
         counter: timestamp.counter,
         node_id: node_id_to_proto(timestamp.node_id),
     }
@@ -69,7 +66,7 @@ pub fn logical_timestamp_to_proto(timestamp: DomainLogicalTimestamp) -> ProtoLog
 
 pub fn logical_timestamp_to_domain(timestamp: ProtoLogicalTimestamp) -> DomainLogicalTimestamp {
     DomainLogicalTimestamp {
-        epoch: timestamp.epoch,
+        physical_time_ms: timestamp.epoch,
         counter: timestamp.counter,
         node_id: timestamp.node_id.into(),
     }

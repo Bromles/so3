@@ -1,4 +1,4 @@
-use crate::domain::blob::BlobPayload;
+use crate::domain::blobs::BlobPayload;
 use crate::domain::command::{CasResult, CommandResult};
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::object::{ObjectMetadata, StoredObject};

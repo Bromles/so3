@@ -1,7 +1,7 @@
 use std::io::Error as IoError;
 
-use crate::domain::object_key::ObjectKey;
-use crate::domain::object_version::ObjectVersion;
+use crate::domain::object::key::ObjectKey;
+use crate::domain::object::version::ObjectVersion;
 use postcard::Error as PostcardError;
 use serde::Serialize;
 use thiserror::Error;
@@ -31,8 +31,6 @@ pub enum So3Error {
     Io(String),
     #[error("serialization error: {0}")]
     Serialization(String),
-    #[error("rpc server is not implemented yet")]
-    RpcNotImplemented,
     /// Transient failure contacting a consensus peer; safe to retry the operation.
     #[error("peer unavailable: {0}")]
     PeerUnavailable(String),
@@ -41,13 +39,13 @@ pub enum So3Error {
 impl So3Error {
     #[must_use]
     pub fn not_found(key: &ObjectKey) -> Self {
-        Self::NotFound(key.as_str().to_owned())
+        Self::NotFound(key.as_ref().to_owned())
     }
 
     #[must_use]
     pub fn cas_mismatch(key: &ObjectKey, expected: ObjectVersion, actual: ObjectVersion) -> Self {
         Self::CasMismatch {
-            key: key.as_str().to_owned(),
+            key: key.as_ref().to_owned(),
             expected: expected.get(),
             actual: actual.get(),
         }

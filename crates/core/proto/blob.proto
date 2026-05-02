@@ -10,14 +10,23 @@ service BlobService {
 message StoreBlobRequest {
   oneof payload {
     StoreBlobHeader header = 1;
-    bytes chunk = 2;
+    StoreBlobChunk chunk = 2;
+    StoreBlobFooter footer = 3;
   }
 }
 
 message StoreBlobHeader {
   string blob_id = 1;
   uint64 size = 2;
-  bytes  sha256 = 3;
+}
+
+message StoreBlobChunk {
+  bytes sha256 = 1;
+  bytes chunk = 2;
+}
+
+message StoreBlobFooter {
+  bytes sha256 = 1;
 }
 
 message StoreBlobResponse {
@@ -25,7 +34,7 @@ message StoreBlobResponse {
 }
 
 message FetchBlobRequest  {
-  bytes blob_id = 1;
+  string blob_id = 1;
 }
 
 message FetchBlobResponse {

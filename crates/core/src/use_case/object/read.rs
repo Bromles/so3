@@ -1,4 +1,4 @@
-use crate::domain::blob::Blob;
+use crate::domain::blobs::Blob;
 use crate::domain::command::{CommandResult, ObjectCommand, ReadCommand};
 use crate::domain::error::So3Result;
 use crate::domain::object::StoredObject;

@@ -1,8 +1,8 @@
 use std::path::Path;
 
-use crate::consensus::journal::SqliteConsensusJournal;
 use crate::domain::error::So3Result;
 use crate::repository::blob::fs::FileSystemBlobRepository;
+use crate::repository::consensus_journal::sqlite::SqliteConsensusJournal;
 use crate::repository::metadata::sqlite::SqliteObjectMetadataRepository;
 
 pub struct RepositoryRegistry {
@@ -38,11 +38,13 @@ mod tests {
 
     use super::RepositoryRegistry;
     use crate::consensus::CommandId;
-    use crate::domain::blob::BlobMetadata;
+    use crate::domain::blobs::BlobMetadata;
     use crate::domain::command::{CommandResult, ObjectCommand, ReadResult, WriteCommand};
+    use crate::domain::consensus::command_id::CommandId;
     use crate::domain::object::ObjectLastModified;
     use crate::domain::object_key::ObjectKey;
     use crate::repository::applied_command::AppliedCommandRepository;
+    use crate::repository::consensus_journal::ConsensusJournal;
 
     const ALPHA_KEY: &str = "alpha";
     const FIRST_VALUE: &[u8] = b"first";

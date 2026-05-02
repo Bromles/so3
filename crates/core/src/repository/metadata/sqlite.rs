@@ -8,7 +8,7 @@ use sqlx::sqlite::{
 use sqlx::{query, query_scalar, Row, SqlitePool};
 use tokio::fs;
 
-use crate::domain::blob::BlobMetadata;
+use crate::domain::blobs::BlobMetadata;
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::object::{ObjectLastModified, ObjectMetadata};
 use crate::domain::object_key::ObjectKey;
@@ -242,7 +242,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::SqliteObjectMetadataRepository;
-    use crate::domain::blob::BlobMetadata;
+    use crate::domain::blobs::BlobMetadata;
     use crate::domain::error::So3Error;
     use crate::domain::object::{ObjectLastModified, ObjectMetadata};
     use crate::domain::object_key::ObjectKey;

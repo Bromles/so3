@@ -43,7 +43,7 @@ impl SqliteConsensusJournal {
 #[async_trait]
 impl ConsensusJournal for SqliteConsensusJournal {
     async fn load(&self, command_id: &CommandId) -> So3Result<Option<JournalEntry>> {
-        let row = query(LOAD_COMMAND_SQL)
+        /*let row = query(LOAD_COMMAND_SQL)
             .bind(command_id.origin_node_id())
             .bind(sequence_to_i64(command_id.sequence())?)
             .fetch_optional(&self.pool)
@@ -52,11 +52,13 @@ impl ConsensusJournal for SqliteConsensusJournal {
         match row {
             Some(row) => row_to_entry(&row).map(Some),
             None => Ok(None),
-        }
+        }*/
+
+        unimplemented!()
     }
 
     async fn list_by_state(&self, state: RecoveryState) -> So3Result<Vec<JournalEntry>> {
-        let rows = query(LIST_COMMANDS_BY_STATE_SQL)
+        /*let rows = query(LIST_COMMANDS_BY_STATE_SQL)
             .bind(state.as_sql())
             .fetch_all(&self.pool)
             .await?;
@@ -65,7 +67,9 @@ impl ConsensusJournal for SqliteConsensusJournal {
         for row in rows {
             entries.push(row_to_entry(&row)?);
         }
-        Ok(entries)
+        Ok(entries)*/
+
+        unimplemented!()
     }
 
     async fn next_sequence_for_origin(&self, origin_node_id: &str) -> So3Result<u64> {

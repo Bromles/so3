@@ -1,4 +1,4 @@
-use crate::domain::blob::{BlobId, BlobMetadata, BlobPayload};
+use crate::domain::blobs::{BlobId, BlobMetadata, BlobPayload};
 use crate::domain::error::So3Result;
 use async_trait::async_trait;
 

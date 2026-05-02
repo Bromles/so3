@@ -5,68 +5,22 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-use crate::consensus::executor::{
-    LocalConsensusObjectCommandExecutor, PersistentReplicatedCommandExecutor,
-};
-use crate::consensus::recovery::replay_committed_commands;
 use crate::domain::error::{So3Error, So3Result};
 use crate::node::config::NodeConfig;
-use crate::object_server::server::ObjectServer;
-use crate::object_server::service::ObjectService;
 use crate::repository::blob::fs::FileSystemBlobRepository;
+use crate::repository::consensus_journal::ConsensusJournal;
 use crate::repository::metadata::sqlite::SqliteObjectMetadataRepository;
 use crate::repository::registry::RepositoryRegistry;
-use crate::rpc_server::server::RpcServer;
-use crate::rpc_server::transport::{ApplyingConsensusTransport, TonicConsensusPeerTransport};
+use crate::service::object::ObjectService;
 
 pub struct Node {
     config: NodeConfig,
-    object_server: ObjectServer,
-    rpc_server: RpcServer<
-        ApplyingConsensusTransport<
-            PersistentReplicatedCommandExecutor<
-                SqliteFsPersistentObjectRepository,
-                SqliteObjectMetadataRepository,
-            >,
-        >,
-    >,
-    object_service: ObjectService<
-        LocalConsensusObjectCommandExecutor<
-            ApplyingConsensusTransport<
-                PersistentReplicatedCommandExecutor<
-                    SqliteFsPersistentObjectRepository,
-                    SqliteObjectMetadataRepository,
-                >,
-            >,
-        >,
-        FileSystemBlobRepository,
-    >,
 }
 
 pub struct BoundNode {
     config: NodeConfig,
     object_listener: TcpListener,
     rpc_listener: TcpListener,
-    object_server: ObjectServer,
-    rpc_server: RpcServer<
-        ApplyingConsensusTransport<
-            PersistentReplicatedCommandExecutor<
-                SqliteFsPersistentObjectRepository,
-                SqliteObjectMetadataRepository,
-            >,
-        >,
-    >,
-    object_service: ObjectService<
-        LocalConsensusObjectCommandExecutor<
-            ApplyingConsensusTransport<
-                PersistentReplicatedCommandExecutor<
-                    SqliteFsPersistentObjectRepository,
-                    SqliteObjectMetadataRepository,
-                >,
-            >,
-        >,
-        FileSystemBlobRepository,
-    >,
 }
 
 impl Node {
@@ -76,45 +30,7 @@ impl Node {
     pub async fn new(config: NodeConfig) -> So3Result<Self> {
         config.validate()?;
 
-        let node_id = config.node_id;
-        let storage = RepositoryRegistry::new(&config.metadata_dir, &config.blob_dir).await?;
-        let blob_repository = storage.object_repository.blob_repository().clone();
-        let executor = PersistentReplicatedCommandExecutor::new(
-            storage.object_repository.clone(),
-            storage.metadata_repository.clone(),
-        );
-        replay_committed_commands(&storage.consensus_journal, &executor).await?;
-        let node_id = node_id.to_string();
-        let next_sequence = storage
-            .consensus_journal
-            .next_sequence_for_origin(&node_id)
-            .await?;
-        let local_transport =
-            ApplyingConsensusTransport::new(node_id.clone(), executor, storage.consensus_journal);
-        let peer_ids = config
-            .cluster
-            .peers
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>();
-        let peer_transport = TonicConsensusPeerTransport::from_peer_ids(peer_ids.clone())?;
-        let object_service = ObjectService::new(
-            LocalConsensusObjectCommandExecutor::with_peers(
-                node_id,
-                local_transport.clone(),
-                next_sequence,
-                peer_ids,
-                peer_transport,
-            ),
-            blob_repository,
-        );
-
-        Ok(Self {
-            config,
-            object_server: ObjectServer::new(),
-            rpc_server: RpcServer::new(local_transport),
-            object_service,
-        })
+       unimplemented!()
     }
 
     /// # Errors
@@ -128,14 +44,8 @@ impl Node {
         config.object_api_addr = object_listener.local_addr()?;
         config.rpc_api_addr = rpc_listener.local_addr()?;
 
-        Ok(BoundNode {
-            config,
-            object_listener,
-            rpc_listener,
-            object_server: self.object_server,
-            rpc_server: self.rpc_server,
-            object_service: self.object_service,
-        })
+
+        unimplemented!()
     }
 
     /// # Errors
@@ -234,13 +144,14 @@ mod tests {
     use uuid::Uuid;
 
     use super::{fail_fast_join, Node};
-    use crate::consensus::journal::{JournalState, SqliteConsensusJournal};
-    use crate::domain::blob::BlobMetadata;
+    use crate::domain::blobs::BlobMetadata;
     use crate::domain::command::{ObjectCommand, WriteCommand};
     use crate::domain::error::So3Error;
     use crate::domain::object::ObjectLastModified;
     use crate::domain::object_key::ObjectKey;
     use crate::node::config::{ClusterConfig, NodeConfig};
+    use crate::repository::consensus_journal::ConsensusJournal;
+    use crate::repository::consensus_journal::sqlite::SqliteConsensusJournal;
 
     const NODE_ID_NIL: Uuid = Uuid::nil();
     const METADATA_DIR_NAME: &str = "metadata";
