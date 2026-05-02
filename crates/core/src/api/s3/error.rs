@@ -1,9 +1,9 @@
-use crate::api::s3::dto::DEFAULT_ERROR_LABEL;
 use crate::domain::error::So3Error;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Serialize;
+use crate::api::s3::controller::DEFAULT_ERROR_LABEL;
 
 pub struct ApiError(So3Error);
 

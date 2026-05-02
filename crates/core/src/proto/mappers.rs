@@ -85,6 +85,16 @@ pub fn last_applied_to_proto(last_applied: DomainLastApplied) -> ProtoLastApplie
     }
 }
 
+pub fn last_applied_to_domain(last_applied: ProtoLastApplied) -> DomainLastApplied {
+    DomainLastApplied {
+        commands: last_applied
+            .commands
+            .iter()
+            .map(command_id_to_domain)
+            .collect(),
+    }
+}
+
 pub fn command_payload_to_proto(command_payload: DomainCommandPayload) -> ProtoEventPayload {
     ProtoEventPayload {
         command: command_payload.command,
@@ -138,6 +148,13 @@ pub fn apply_hashes_to_proto(hashes: DomainApplyHashes) -> ProtoApplyHashes {
     }
 }
 
+pub fn apply_hashes_to_domain(hashes: ProtoApplyHashes) -> DomainApplyHashes {
+    DomainApplyHashes {
+        transaction_hash: hashes.transaction_hash,
+        execution_hash: hashes.execution_hash,
+    }
+}
+
 pub fn recovery_state_to_domain(state: ProtoState) -> So3Result<DomainRecoveryState> {
     match state {
         ProtoState::PreAccepted => Ok(DomainRecoveryState::PreAccepted),
@@ -157,12 +174,31 @@ pub fn pre_accept_req_to_proto(req: DomainPreAcceptRequest) -> ProtoPreAcceptReq
     }
 }
 
+pub fn pre_accept_req_to_domain(req: ProtoPreAcceptRequest) -> So3Result<DomainPreAcceptRequest> {
+    Ok(DomainPreAcceptRequest {
+        command_id: command_id_to_domain(req.command_id.ok_or(So3Error::InvalidRequest)?),
+        timestamp_zero: logical_timestamp_to_domain(
+            req.timestamp_zero.ok_or(So3Error::InvalidRequest)?,
+        ),
+        last_applied: last_applied_to_domain(req.last_applied.ok_or(So3Error::InvalidRequest)?),
+        payload: command_payload_to_domain(req.event.ok_or(So3Error::InvalidRequest)?),
+    })
+}
+
 pub fn pre_accept_res_to_domain(res: ProtoPreAcceptResponse) -> So3Result<DomainPreAcceptResponse> {
     Ok(DomainPreAcceptResponse {
         timestamp: logical_timestamp_to_domain(res.timestamp.ok_or(So3Error::InvalidRequest)?),
         dependencies: dependency_set_to_domain(res.dependencies.ok_or(So3Error::InvalidRequest)?),
         nack: res.nack,
     })
+}
+
+pub fn pre_accept_res_to_proto(res: DomainPreAcceptResponse) -> ProtoPreAcceptResponse {
+    ProtoPreAcceptResponse {
+        timestamp: Some(logical_timestamp_to_proto(res.timestamp)),
+        dependencies: Some(dependency_set_to_proto(res.dependencies)),
+        nack: res.nack,
+    }
 }
 
 pub fn accept_req_to_proto(req: DomainAcceptRequest) -> ProtoAcceptRequest {
@@ -177,11 +213,32 @@ pub fn accept_req_to_proto(req: DomainAcceptRequest) -> ProtoAcceptRequest {
     }
 }
 
+pub fn accept_req_to_domain(req: ProtoAcceptRequest) -> So3Result<DomainAcceptRequest> {
+    Ok(DomainAcceptRequest {
+        command_id: command_id_to_domain(req.command_id.ok_or(So3Error::InvalidRequest)?),
+        ballot: ballot_to_domain(req.ballot.ok_or(So3Error::InvalidRequest)?),
+        timestamp_zero: logical_timestamp_to_domain(
+            req.timestamp_zero.ok_or(So3Error::InvalidRequest)?,
+        ),
+        timestamp: logical_timestamp_to_domain(req.timestamp.ok_or(So3Error::InvalidRequest)?),
+        dependencies: dependency_set_to_domain(req.dependencies.ok_or(So3Error::InvalidRequest)?),
+        last_applied: last_applied_to_domain(req.last_applied.ok_or(So3Error::InvalidRequest)?),
+        payload: command_payload_to_domain(req.event.ok_or(So3Error::InvalidRequest)?),
+    })
+}
+
 pub fn accept_res_to_domain(res: ProtoAcceptResponse) -> So3Result<DomainAcceptResponse> {
     Ok(DomainAcceptResponse {
         dependencies: dependency_set_to_domain(res.dependencies.ok_or(So3Error::InvalidRequest)?),
         nack: res.nack,
     })
+}
+
+pub fn accept_res_to_proto(res: DomainAcceptResponse) -> ProtoAcceptResponse {
+    ProtoAcceptResponse {
+        dependencies: Some(dependency_set_to_proto(res.dependencies)),
+        nack: res.nack,
+    }
 }
 
 pub fn commit_req_to_proto(req: DomainCommitRequest) -> ProtoCommitRequest {
@@ -194,8 +251,24 @@ pub fn commit_req_to_proto(req: DomainCommitRequest) -> ProtoCommitRequest {
     }
 }
 
+pub fn commit_req_to_domain(req: ProtoCommitRequest) -> So3Result<DomainCommitRequest> {
+    Ok(DomainCommitRequest {
+        command_id: command_id_to_domain(req.command_id.ok_or(So3Error::InvalidRequest)?),
+        timestamp_zero: logical_timestamp_to_domain(
+            req.timestamp_zero.ok_or(So3Error::InvalidRequest)?,
+        ),
+        timestamp: logical_timestamp_to_domain(req.timestamp.ok_or(So3Error::InvalidRequest)?),
+        dependencies: dependency_set_to_domain(req.dependencies.ok_or(So3Error::InvalidRequest)?),
+        payload: command_payload_to_domain(req.event.ok_or(So3Error::InvalidRequest)?),
+    })
+}
+
 pub fn commit_res_to_domain(res: ProtoCommitResponse) -> So3Result<DomainCommitResponse> {
     Ok(DomainCommitResponse { result: res.result })
+}
+
+pub fn commit_res_to_proto(res: DomainCommitResponse) -> ProtoCommitResponse {
+    ProtoCommitResponse { result: res.result }
 }
 
 pub fn apply_req_to_proto(req: DomainApplyRequest) -> ProtoApplyRequest {
@@ -209,8 +282,25 @@ pub fn apply_req_to_proto(req: DomainApplyRequest) -> ProtoApplyRequest {
     }
 }
 
+pub fn apply_req_to_domain(req: ProtoApplyRequest) -> So3Result<DomainApplyRequest> {
+    Ok(DomainApplyRequest {
+        command_id: command_id_to_domain(req.command_id.ok_or(So3Error::InvalidRequest)?),
+        timestamp_zero: logical_timestamp_to_domain(
+            req.timestamp_zero.ok_or(So3Error::InvalidRequest)?,
+        ),
+        timestamp: logical_timestamp_to_domain(req.timestamp.ok_or(So3Error::InvalidRequest)?),
+        dependencies: dependency_set_to_domain(req.dependencies.ok_or(So3Error::InvalidRequest)?),
+        hashes: apply_hashes_to_domain(req.hashes.ok_or(So3Error::InvalidRequest)?),
+        payload: command_payload_to_domain(req.event.ok_or(So3Error::InvalidRequest)?),
+    })
+}
+
 pub fn apply_res_to_domain(res: ProtoApplyResponse) -> So3Result<DomainApplyResponse> {
     Ok(DomainApplyResponse { result: res.result })
+}
+
+pub fn apply_res_to_proto(res: DomainApplyResponse) -> ProtoApplyResponse {
+    ProtoApplyResponse { result: res.result }
 }
 
 pub fn recover_req_to_proto(req: DomainRecoverRequest) -> ProtoRecoverRequest {
@@ -220,6 +310,17 @@ pub fn recover_req_to_proto(req: DomainRecoverRequest) -> ProtoRecoverRequest {
         event: Some(command_payload_to_proto(req.payload)),
         timestamp_zero: Some(logical_timestamp_to_proto(req.timestamp_zero)),
     }
+}
+
+pub fn recover_req_to_domain(req: ProtoRecoverRequest) -> So3Result<DomainRecoverRequest> {
+    Ok(DomainRecoverRequest {
+        command_id: command_id_to_domain(req.command_id.ok_or(So3Error::InvalidRequest)?),
+        ballot: ballot_to_domain(req.ballot.ok_or(So3Error::InvalidRequest)?),
+        timestamp_zero: logical_timestamp_to_domain(
+            req.timestamp_zero.ok_or(So3Error::InvalidRequest)?,
+        ),
+        payload: command_payload_to_domain(req.event.ok_or(So3Error::InvalidRequest)?),
+    })
 }
 
 pub fn recover_res_to_domain(res: ProtoRecoverResponse) -> So3Result<DomainRecoverResponse> {
@@ -233,4 +334,15 @@ pub fn recover_res_to_domain(res: ProtoRecoverResponse) -> So3Result<DomainRecov
         timestamp: logical_timestamp_to_domain(res.timestamp.ok_or(So3Error::InvalidRequest)?),
         nack: ballot_to_domain(res.nack.ok_or(So3Error::InvalidRequest)?),
     })
+}
+
+pub fn recover_res_to_proto(res: DomainRecoverResponse) -> ProtoRecoverResponse {
+    ProtoRecoverResponse {
+        local_state: res.local_state.to_i32(),
+        wait_for: res.wait_for.iter().map(command_id_to_proto).collect(),
+        superseding: res.superseding,
+        dependencies: Some(dependency_set_to_proto(res.dependencies)),
+        timestamp: Some(logical_timestamp_to_proto(res.timestamp)),
+        nack: Some(ballot_to_proto(res.nack)),
+    }
 }

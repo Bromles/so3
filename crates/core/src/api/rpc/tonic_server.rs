@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use crate::api::rpc::consensus_transport_service::ConsensusTransportService;
 use crate::api::rpc::RpcApi;
 use crate::domain::error::{So3Error, So3Result};
@@ -8,6 +9,7 @@ use tokio_stream::wrappers::TcpListenerStream;
 use tokio_util::sync::CancellationToken;
 use tonic::transport::Server;
 use tracing::info;
+use crate::use_case::inbound_consensus::InboundConsensusUseCase;
 
 pub struct TonicRpcServer {}
 
@@ -19,10 +21,11 @@ impl TonicRpcServer {
 
 #[async_trait]
 impl RpcApi for TonicRpcServer {
-    async fn start(
+    async fn start<I: InboundConsensusUseCase>(
         self,
         listener: TcpListener,
         cancellation_token: CancellationToken,
+        inbound_consensus_use_case: Arc<I>,
     ) -> So3Result<()> {
         let local_addr = listener.local_addr()?;
         info!(%local_addr, "rpc server started");
@@ -30,7 +33,7 @@ impl RpcApi for TonicRpcServer {
 
         server
             .add_service(ConsensusTransportServer::new(
-                ConsensusTransportService::new(),
+                ConsensusTransportService::new(inbound_consensus_use_case),
             ))
             .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async move {
                 cancellation_token.cancelled().await;

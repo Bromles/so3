@@ -93,6 +93,17 @@ pub enum RecoveryState {
     Applied,
 }
 
+impl RecoveryState {
+    pub fn to_i32(self) -> i32 {
+        match self {
+            RecoveryState::PreAccepted => 1,
+            RecoveryState::Accepted => 2,
+            RecoveryState::Committed => 3,
+            RecoveryState::Applied => 4,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecoverRequest {
     pub command_id: CommandId,
