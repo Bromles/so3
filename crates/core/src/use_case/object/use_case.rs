@@ -7,6 +7,10 @@ use crate::domain::object_version::ObjectVersion;
 use crate::repository::blob::BlobRepository;
 use crate::use_case::object::ObjectUseCase;
 use async_trait::async_trait;
+use crate::domain::blob::payload::BlobPayload;
+use crate::domain::object::key::ObjectKey;
+use crate::domain::object::metadata::StoredObject;
+use crate::domain::object::version::ObjectVersion;
 
 pub struct ObjectUseCaseImpl<B: BlobRepository> {
     pub blob_repository: B,

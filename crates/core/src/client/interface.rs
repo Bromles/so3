@@ -1,4 +1,7 @@
-use crate::domain::consensus::transport::{AcceptRequest, AcceptResponse, CommitRequest, CommitResponse, PreAcceptRequest, PreAcceptResponse, RecoverRequest, RecoverResponse};
+use crate::domain::consensus::transport::{
+    AcceptRequest, AcceptResponse, CommitRequest, CommitResponse, PreAcceptRequest,
+    PreAcceptResponse, RecoverRequest, RecoverResponse,
+};
 use crate::domain::error::So3Result;
 use async_trait::async_trait;
 

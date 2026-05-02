@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
+use crate::domain::object::key::ObjectKey;
 
 pub const S3_OBJECT_ROUTE_PATH: &str = "/{bucket}/{*key}";
 pub const VERSION_HEADER: &str = "x-so3-version";

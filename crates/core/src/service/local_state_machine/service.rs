@@ -10,6 +10,10 @@ use crate::repository::blob::BlobRepository;
 use crate::repository::metadata::ObjectMetadataRepository;
 use crate::service::local_state_machine::LocalStateMachine;
 use async_trait::async_trait;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use crate::domain::object::key::ObjectKey;
+use crate::domain::object::version::ObjectVersion;
+use crate::proto::DeleteResult;
 
 pub struct LocalStateMachineImpl<M: ObjectMetadataRepository, B: BlobRepository> {
     metadata_repository: M,
@@ -98,7 +102,7 @@ impl<M: ObjectMetadataRepository, B: BlobRepository> LocalStateMachineImpl<M, B>
 
 #[async_trait]
 impl<M: ObjectMetadataRepository, B: BlobRepository> LocalStateMachine
-    for LocalStateMachineImpl<M, B>
+for LocalStateMachineImpl<M, B>
 {
     async fn execute(&self, command: ObjectCommand) -> So3Result<CommandResult> {
         match command {

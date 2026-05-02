@@ -1,9 +1,9 @@
-use tracing::debug;
 use crate::domain::command::ObjectCommand;
 use crate::domain::consensus::journal::JournalMetadata;
 use crate::domain::consensus::transport::{PreAcceptRequest, PreAcceptResponse};
 use crate::domain::error::So3Result;
 use crate::use_case::inbound_consensus::use_case::InboundConsensusUseCaseImpl;
+use tracing::debug;
 
 impl InboundConsensusUseCaseImpl {
     pub async fn pre_accept_internal(

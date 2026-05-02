@@ -1,37 +1,31 @@
-use crate::domain::consensus::command_id::CommandId;
-use crate::domain::consensus::journal::{JournalEntry, JournalMetadata};
-use crate::domain::consensus::transport::RecoveryState;
+use crate::domain::clock::LogicalTimestamp;
+use crate::domain::command::CommandResult;
+use crate::domain::consensus::ballot::Ballot;
+use crate::domain::consensus::command_id::{CommandId, DependencySet};
+use crate::domain::consensus::journal::{JournalEntry, JournalState};
 use crate::domain::error::So3Result;
+use crate::domain::node::NodeId;
 use async_trait::async_trait;
 
 #[async_trait]
 pub trait ConsensusJournal {
     async fn load(&self, command_id: &CommandId) -> So3Result<Option<JournalEntry>>;
-    async fn list_by_state(&self, state: RecoveryState) -> So3Result<Vec<JournalEntry>>;
-    async fn next_sequence_for_origin(&self, origin_node_id: &str) -> So3Result<u64>;
+    async fn check_conflicts(&self, command_id: &CommandId) -> So3Result<Vec<CommandId>>;
+    async fn next_sequence(&self, node_id: &NodeId) -> So3Result<u64>;
     async fn record_pre_accepted(
         &self,
         command_id: &CommandId,
-        command: &[u8],
-        metadata: JournalMetadata,
-    ) -> So3Result<JournalEntry>;
+        timestamp_zero: &LogicalTimestamp,
+        deps: &DependencySet,
+    ) -> So3Result<()>;
     async fn record_accepted(
         &self,
         command_id: &CommandId,
-        command: &[u8],
-        metadata: JournalMetadata,
-    ) -> So3Result<JournalEntry>;
-    async fn record_committed(
-        &self,
-        command_id: &CommandId,
-        command: &[u8],
-        metadata: JournalMetadata,
-    ) -> So3Result<JournalEntry>;
-    async fn record_applied(
-        &self,
-        command_id: &CommandId,
-        command: &[u8],
-        result: &[u8],
-        metadata: JournalMetadata,
-    ) -> So3Result<JournalEntry>;
+        ballot: &Ballot,
+        timestamp: &LogicalTimestamp,
+    ) -> So3Result<()>;
+    async fn record_committed(&self, command_id: &CommandId) -> So3Result<()>;
+    async fn record_applied(&self, command_id: &CommandId, result: &CommandResult)
+                            -> So3Result<()>;
+    async fn list_by_state(&self, state: JournalState) -> So3Result<Vec<JournalEntry>>;
 }

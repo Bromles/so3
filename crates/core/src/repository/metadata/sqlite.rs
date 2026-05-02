@@ -11,6 +11,8 @@ use tokio::fs;
 use crate::domain::blobs::BlobMetadata;
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::object::{ObjectLastModified, ObjectMetadata};
+use crate::domain::object::key::ObjectKey;
+use crate::domain::object::version::ObjectVersion;
 use crate::domain::object_key::ObjectKey;
 use crate::domain::object_version::ObjectVersion;
 use crate::repository::metadata::interface::ObjectMetadataRepository;
@@ -240,14 +242,15 @@ fn content_length_to_i64(content_length: u64) -> So3Result<i64> {
 #[cfg(test)]
 mod tests {
     use tempfile::TempDir;
-
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use super::SqliteObjectMetadataRepository;
     use crate::domain::blobs::BlobMetadata;
     use crate::domain::error::So3Error;
     use crate::domain::object::{ObjectLastModified, ObjectMetadata};
+    use crate::domain::object::key::ObjectKey;
+    use crate::domain::object::version::ObjectVersion;
     use crate::domain::object_key::ObjectKey;
     use crate::domain::object_version::ObjectVersion;
-    use crate::repository::metadata::interface::ObjectMetadataRepository;
 
     const UNKNOWN_SCHEMA_VERSION: i64 = 99;
     const KEY_ALPHA: &str = "alpha";

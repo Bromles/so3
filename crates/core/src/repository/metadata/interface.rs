@@ -1,20 +1,20 @@
 use async_trait::async_trait;
 
 use crate::domain::error::So3Result;
-use crate::domain::object::ObjectMetadata;
-use crate::domain::object_key::ObjectKey;
+use crate::domain::object::key::ObjectKey;
+use crate::domain::object::metadata::ObjectMetadata;
 
 #[async_trait]
 pub trait ObjectMetadataRepository {
     /// # Errors
     ///
     /// Returns an error when metadata cannot be loaded from durable repository.
-    async fn read(&self, key: &ObjectKey) -> So3Result<Option<ObjectMetadata>>;
+    async fn load(&self, key: &ObjectKey) -> So3Result<Option<ObjectMetadata>>;
 
     /// # Errors
     ///
     /// Returns an error when metadata cannot be durably written.
-    async fn write(&self, metadata: &ObjectMetadata) -> So3Result<()>;
+    async fn store(&self, metadata: &ObjectMetadata) -> So3Result<()>;
 
     /// # Errors
     ///

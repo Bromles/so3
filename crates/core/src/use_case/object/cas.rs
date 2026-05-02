@@ -1,7 +1,10 @@
+use crate::domain::blob::payload::BlobPayload;
 use crate::domain::blobs::{BlobMetadata, BlobPayload};
 use crate::domain::command::{CasCommand, CasResult, CommandResult, ObjectCommand};
 use crate::domain::error::So3Result;
+use crate::domain::object::key::ObjectKey;
 use crate::domain::object::ObjectLastModified;
+use crate::domain::object::version::ObjectVersion;
 use crate::domain::object_key::ObjectKey;
 use crate::domain::object_version::ObjectVersion;
 use crate::repository::blob::BlobRepository;

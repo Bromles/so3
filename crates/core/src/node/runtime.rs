@@ -30,7 +30,7 @@ impl Node {
     pub async fn new(config: NodeConfig) -> So3Result<Self> {
         config.validate()?;
 
-       unimplemented!()
+        unimplemented!()
     }
 
     /// # Errors
@@ -146,12 +146,14 @@ mod tests {
     use super::{fail_fast_join, Node};
     use crate::domain::blobs::BlobMetadata;
     use crate::domain::command::{ObjectCommand, WriteCommand};
+    use crate::domain::consensus::journal::JournalState;
     use crate::domain::error::So3Error;
+    use crate::domain::object::key::ObjectKey;
     use crate::domain::object::ObjectLastModified;
     use crate::domain::object_key::ObjectKey;
     use crate::node::config::{ClusterConfig, NodeConfig};
-    use crate::repository::consensus_journal::ConsensusJournal;
     use crate::repository::consensus_journal::sqlite::SqliteConsensusJournal;
+    use crate::repository::consensus_journal::ConsensusJournal;
 
     const NODE_ID_NIL: Uuid = Uuid::nil();
     const METADATA_DIR_NAME: &str = "metadata";

@@ -1,10 +1,10 @@
-use tracing::debug;
 use crate::domain::consensus::journal::JournalMetadata;
 use crate::domain::consensus::transport::{
     AcceptRequest, AcceptResponse,
 };
 use crate::domain::error::So3Result;
 use crate::use_case::inbound_consensus::use_case::InboundConsensusUseCaseImpl;
+use tracing::debug;
 
 impl InboundConsensusUseCaseImpl {
     pub async fn accept_internal(&self, request: AcceptRequest) -> So3Result<AcceptResponse> {

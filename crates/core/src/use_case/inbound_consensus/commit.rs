@@ -1,11 +1,11 @@
-use tonic::Status;
-use tracing::{info, warn};
-use crate::domain::consensus::journal::JournalMetadata;
+use crate::domain::consensus::journal::{JournalMetadata, JournalState};
 use crate::domain::consensus::transport::{
     CommitRequest, CommitResponse,
 };
 use crate::domain::error::So3Result;
 use crate::use_case::inbound_consensus::use_case::InboundConsensusUseCaseImpl;
+use tonic::Status;
+use tracing::{info, warn};
 
 impl InboundConsensusUseCaseImpl {
     pub async fn commit_internal(&self, request: CommitRequest) -> So3Result<CommitResponse> {

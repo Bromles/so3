@@ -1,10 +1,10 @@
-use tracing::debug;
 use crate::domain::consensus::command_id::CommandId;
 use crate::domain::consensus::transport::{
     RecoverRequest, RecoverResponse,
 };
 use crate::domain::error::So3Result;
 use crate::use_case::inbound_consensus::use_case::InboundConsensusUseCaseImpl;
+use tracing::debug;
 
 impl InboundConsensusUseCaseImpl {
     pub async fn recover_internal(&self, request: RecoverRequest) -> So3Result<RecoverResponse> {

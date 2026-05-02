@@ -1,15 +1,15 @@
-use std::sync::Arc;
 use crate::api::rpc::consensus_transport_service::ConsensusTransportService;
 use crate::api::rpc::RpcApi;
 use crate::domain::error::{So3Error, So3Result};
 use crate::proto::consensus_transport_server::ConsensusTransportServer;
+use crate::use_case::inbound_consensus::InboundConsensusUseCase;
 use async_trait::async_trait;
+use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
 use tokio_util::sync::CancellationToken;
 use tonic::transport::Server;
 use tracing::info;
-use crate::use_case::inbound_consensus::InboundConsensusUseCase;
 
 pub struct TonicRpcServer {}
 

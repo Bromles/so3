@@ -1,5 +1,6 @@
 use crate::domain::command::{CommandResult, DeleteCommand, ObjectCommand};
 use crate::domain::error::So3Result;
+use crate::domain::object::key::ObjectKey;
 use crate::domain::object_key::ObjectKey;
 use crate::repository::blob::BlobRepository;
 use crate::use_case::object::use_case::ObjectUseCaseImpl;

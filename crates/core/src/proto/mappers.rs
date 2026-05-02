@@ -18,11 +18,11 @@ use crate::proto::{
     AcceptRequest as ProtoAcceptRequest, AcceptResponse as ProtoAcceptResponse, ApplyRequest as ProtoApplyRequest,
     ApplyResponse as ProtoApplyResponse, Ballot as ProtoBallot, CommandId as ProtoCommandId,
     CommitRequest as ProtoCommitRequest, CommitResponse as ProtoCommitResponse,
-    LogicalTimestamp as ProtoLogicalTimestamp,
-    PreAcceptResponse as ProtoPreAcceptResponse, RecoverRequest as ProtoRecoverRequest,
-    RecoverResponse as ProtoRecoverResponse, State as ProtoState,
     DependencySet as ProtoDependencySet,
-    PreAcceptRequest as ProtoPreAcceptRequest,
+    LogicalTimestamp as ProtoLogicalTimestamp, PreAcceptRequest as ProtoPreAcceptRequest,
+    PreAcceptResponse as ProtoPreAcceptResponse, RecoverRequest as ProtoRecoverRequest,
+    RecoverResponse as ProtoRecoverResponse,
+    State as ProtoState,
 };
 
 pub fn map_tonic_status(status: &tonic::Status) -> So3Error {

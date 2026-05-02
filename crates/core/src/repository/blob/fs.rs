@@ -14,6 +14,8 @@ use tokio::fs::File as TokioFile;
 use tokio::fs::ReadDir;
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
+use crate::domain::blob::checksum::Sha256Digest;
+use crate::domain::blob::payload::BlobPayload;
 
 // On-disk blob layout.
 const TEMP_BLOBS_DIR_NAME: &str = "tmp";
@@ -172,6 +174,7 @@ mod tests {
     use crate::repository::blob::interface::BlobRepository;
     use tempfile::TempDir;
     use tokio::fs;
+    use crate::domain::blob::payload::BlobPayload;
 
     const TEST_PAYLOAD: BlobPayload = b"blob-data".into();
     const STALE_TEMP_BLOB_NAME: &str = "stale.blob.tmp";

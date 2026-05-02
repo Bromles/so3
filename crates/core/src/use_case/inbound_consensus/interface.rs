@@ -7,9 +7,9 @@ use async_trait::async_trait;
 
 #[async_trait]
 pub trait InboundConsensusUseCase {
-    async fn pre_accept(&self, request: PreAcceptRequest) -> So3Result<PreAcceptResponse>;
-    async fn accept(&self, request: AcceptRequest) -> So3Result<AcceptResponse>;
-    async fn commit(&self, request: CommitRequest) -> So3Result<CommitResponse>;
-    async fn apply(&self, request: ApplyRequest) -> So3Result<ApplyResponse>;
-    async fn recover(&self, request: RecoverRequest) -> So3Result<RecoverResponse>;
+    async fn pre_accept(&self, req: PreAcceptRequest) -> So3Result<PreAcceptResponse>;
+    async fn accept(&self, req: AcceptRequest) -> So3Result<AcceptResponse>;
+    async fn commit(&self, req: CommitRequest) -> So3Result<CommitResponse>;
+    async fn apply(&self, req: ApplyRequest) -> So3Result<ApplyResponse>;
+    async fn recover(&self, req: RecoverRequest) -> So3Result<RecoverResponse>;
 }
