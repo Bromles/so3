@@ -1,4 +1,4 @@
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ObjectVersion(i64);
 
 impl ObjectVersion {

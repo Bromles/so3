@@ -1,10 +1,10 @@
 use crate::domain::error::So3Result;
+use crate::use_case::blob::BlobUseCase;
 use crate::use_case::inbound_consensus::InboundConsensusUseCase;
 use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
-use crate::use_case::blob::BlobUseCase;
 
 #[async_trait]
 pub trait RpcApi {

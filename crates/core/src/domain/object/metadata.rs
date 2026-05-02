@@ -5,7 +5,7 @@ use crate::domain::clock::LogicalTimestamp;
 use crate::domain::object::key::ObjectKey;
 use crate::domain::object::version::ObjectVersion;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ObjectMetadata {
     pub key: ObjectKey,
     pub version: ObjectVersion,

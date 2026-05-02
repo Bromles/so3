@@ -18,6 +18,5 @@ pub trait ConsensusPeerClient: Send + Sync + 'static {
 
 #[async_trait]
 pub trait BlobPeerClient: Send + Sync + 'static {
-    async fn new(endpoint: String) -> So3Result<Self>;
     async fn push(&self, peer: &NodeId, blob_id: BlobId, payload: &BlobPayload) -> So3Result<()>;
 }

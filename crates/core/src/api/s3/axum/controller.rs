@@ -66,9 +66,9 @@ impl<O: ObjectUseCase> ObjectApiController<O> {
             .object_use_case
             .read(&object_key)
             .await?
-            .ok_or(So3Error::NotFound)?;
+            .ok_or_else(|| So3Error::not_found(&object_key))?;
 
-        let mut response = stored_object.blob.as_bytes().into_response();
+        let mut response = stored_object.blob.as_bytes().clone().into_response();
 
         attach_s3_metadata_headers(response.headers_mut(), &stored_object.metadata)?;
 
@@ -85,7 +85,7 @@ impl<O: ObjectUseCase> ObjectApiController<O> {
             .object_use_case
             .head(&object_key)
             .await?
-            .ok_or(So3Error::NotFound)?;
+            .ok_or_else(|| So3Error::not_found(&object_key))?;
 
         let mut response = StatusCode::OK.into_response();
 

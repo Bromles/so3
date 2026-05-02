@@ -1,6 +1,6 @@
 use crate::domain::clock::LogicalTimestamp;
 use crate::domain::command::{CommandResult, ObjectCommand};
-use crate::domain::consensus::ballot::Ballot;
+pub(crate) use crate::domain::consensus::ballot::Ballot;
 use crate::domain::consensus::command_id::{AppliedSet, CommandId, DependencySet};
 use crate::domain::consensus::journal::JournalState;
 

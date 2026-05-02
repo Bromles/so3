@@ -28,7 +28,7 @@ impl<B: BlobUseCase> ProtoBlobService for BlobService<B> {
         todo!()
     }
 
-    type FetchBlobStream = Pin<Box<dyn Stream<Item = Result<FetchBlobResponse, Status>> + Send>>;
+    type FetchBlobStream = Pin<Box<dyn Stream<Item=Result<FetchBlobResponse, Status>> + Send>>;
 
     async fn fetch_blob(
         &self,

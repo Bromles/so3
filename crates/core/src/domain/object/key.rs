@@ -1,6 +1,6 @@
 use crate::domain::error::{So3Error, So3Result};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ObjectKey(String);
 
 impl ObjectKey {

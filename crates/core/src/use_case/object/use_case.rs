@@ -11,12 +11,13 @@ use crate::repository::consensus_journal::ConsensusJournalRepository;
 use crate::use_case::object::ObjectUseCase;
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 pub struct ObjectUseCaseImpl<CJ: ConsensusJournalRepository, BR: BlobRepository, BC: BlobPeerClient>
 {
     pub consensus_journal_repository: CJ,
     pub blob_repository: BR,
-    pub blob_client_map: HashMap<NodeId, BC>,
+    pub blob_client_map: HashMap<NodeId, Arc<BC>>,
 }
 
 impl<CJ, BR, BC> ObjectUseCaseImpl<CJ, BR, BC>
@@ -28,12 +29,12 @@ where
     pub fn new(
         consensus_journal_repository: CJ,
         blob_repository: BR,
-        peer_ids: Vec<(NodeId, String)>,
+        blob_client_map: HashMap<NodeId, Arc<BC>>,
     ) -> Self {
         Self {
             consensus_journal_repository,
             blob_repository,
-            blob_client_map: peer_ids.into_iter().map(|p| (p.0, BC::new(p.1))).collect(),
+            blob_client_map,
         }
     }
 
