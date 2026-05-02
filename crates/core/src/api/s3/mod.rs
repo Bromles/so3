@@ -1,6 +1,4 @@
-pub mod axum_server;
 mod interface;
-mod controller;
-mod error;
+pub mod axum;
 
 pub use interface::S3Api;

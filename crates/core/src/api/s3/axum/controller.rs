@@ -1,4 +1,4 @@
-use crate::api::s3::error::ApiError;
+use crate::api::s3::axum::error::ApiError;
 use crate::domain::blob::payload::BlobPayload;
 use crate::domain::error::So3Error;
 use crate::domain::object::key::ObjectKey;

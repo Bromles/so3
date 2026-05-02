@@ -1,4 +1,4 @@
-use crate::api::s3::controller::DEFAULT_ERROR_LABEL;
+use crate::api::s3::axum::controller::DEFAULT_ERROR_LABEL;
 use crate::domain::error::So3Error;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};

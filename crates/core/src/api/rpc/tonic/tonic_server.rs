@@ -1,5 +1,5 @@
-use crate::api::rpc::blob_service::BlobService;
-use crate::api::rpc::consensus_transport_service::ConsensusTransportService;
+use crate::api::rpc::tonic::blob_service::BlobService;
+use crate::api::rpc::tonic::consensus_transport_service::ConsensusTransportService;
 use crate::api::rpc::RpcApi;
 use crate::domain::error::{So3Error, So3Result};
 use crate::proto::blob::blob_service_server::BlobServiceServer;
