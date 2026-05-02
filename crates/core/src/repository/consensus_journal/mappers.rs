@@ -1,5 +1,5 @@
 use crate::domain::consensus::command_id::CommandId;
-use crate::domain::consensus::journal::{JournalEntry, JournalMetadata};
+use crate::domain::consensus::journal::JournalEntry;
 use crate::domain::error::{So3Error, So3Result};
 use sqlx::sqlite::SqliteRow;
 use sqlx::Row;

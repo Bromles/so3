@@ -4,13 +4,15 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
+use crate::use_case::blob::BlobUseCase;
 
 #[async_trait]
 pub trait RpcApi {
-    async fn start<I: InboundConsensusUseCase>(
+    async fn start<I: InboundConsensusUseCase, B: BlobUseCase>(
         self,
         listener: TcpListener,
         cancellation_token: CancellationToken,
         inbound_consensus_use_case: Arc<I>,
+        blob_use_case: Arc<B>,
     ) -> So3Result<()>;
 }

@@ -4,17 +4,16 @@ use crate::domain::consensus::command_id::{
 };
 use crate::domain::consensus::transport::{
     AcceptRequest as DomainAcceptRequest, AcceptResponse as DomainAcceptResponse,
-    ApplyHashes as DomainApplyHashes, ApplyRequest as DomainApplyRequest,
+    ApplyRequest as DomainApplyRequest,
     ApplyResponse as DomainApplyResponse, Ballot as DomainBallot,
-    CommandPayload as DomainCommandPayload, CommitRequest as DomainCommitRequest,
-    CommitResponse as DomainCommitResponse, LastApplied as DomainLastApplied,
+    CommitRequest as DomainCommitRequest,
+    CommitResponse as DomainCommitResponse,
     PreAcceptRequest as DomainPreAcceptRequest, PreAcceptResponse as DomainPreAcceptResponse,
     RecoverRequest as DomainRecoverRequest, RecoverResponse as DomainRecoverResponse,
-    RecoveryState as DomainRecoveryState,
 };
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::node::NodeId;
-use crate::proto::{
+use crate::proto::consensus::{
     AcceptRequest as ProtoAcceptRequest, AcceptResponse as ProtoAcceptResponse, ApplyRequest as ProtoApplyRequest,
     ApplyResponse as ProtoApplyResponse, Ballot as ProtoBallot, CommandId as ProtoCommandId,
     CommitRequest as ProtoCommitRequest, CommitResponse as ProtoCommitResponse,

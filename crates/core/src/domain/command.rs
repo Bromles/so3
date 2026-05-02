@@ -26,6 +26,7 @@ pub enum ObjectCommand {
     },
 }
 
+#[derive(Debug)]
 pub enum CommandResult {
     Read(ReadResult),
     Write(WriteResult),
@@ -33,15 +34,18 @@ pub enum CommandResult {
     Delete,
 }
 
+#[derive(Debug)]
 pub enum ReadResult {
     Found(ObjectMetadata),
     NotFound,
 }
 
+#[derive(Debug)]
 pub struct WriteResult {
     pub metadata: ObjectMetadata,
 }
 
+#[derive(Debug)]
 pub enum CasResult {
     Updated(ObjectMetadata),
     Conflict { current_version: ObjectVersion },

@@ -3,8 +3,8 @@ use std::fs::File as StdFile;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::domain::blobs::{BlobMetadata, BlobPayload};
-use crate::domain::checksum::Sha256Digest;
+use crate::domain::blob::checksum::Sha256Digest;
+use crate::domain::blob::payload::BlobPayload;
 use crate::domain::error::{So3Error, So3Result};
 use crate::repository::blob::interface::BlobRepository;
 use async_trait::async_trait;
@@ -14,8 +14,6 @@ use tokio::fs::File as TokioFile;
 use tokio::fs::ReadDir;
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
-use crate::domain::blob::checksum::Sha256Digest;
-use crate::domain::blob::payload::BlobPayload;
 
 // On-disk blob layout.
 const TEMP_BLOBS_DIR_NAME: &str = "tmp";
@@ -170,11 +168,11 @@ fn open_directory_for_sync(path: &Path) -> io::Result<StdFile> {
 #[cfg(test)]
 mod tests {
     use super::{FileSystemBlobRepository, COMMITTED_BLOBS_DIR_NAME, TEMP_BLOBS_DIR_NAME};
+    use crate::domain::blob::payload::BlobPayload;
     use crate::domain::blobs::BlobPayload;
     use crate::repository::blob::interface::BlobRepository;
     use tempfile::TempDir;
     use tokio::fs;
-    use crate::domain::blob::payload::BlobPayload;
 
     const TEST_PAYLOAD: BlobPayload = b"blob-data".into();
     const STALE_TEMP_BLOB_NAME: &str = "stale.blob.tmp";

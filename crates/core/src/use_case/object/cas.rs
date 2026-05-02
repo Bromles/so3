@@ -1,24 +1,28 @@
+use crate::client::interface::BlobPeerClient;
+use crate::domain::blob::id::BlobId;
 use crate::domain::blob::payload::BlobPayload;
-use crate::domain::blobs::{BlobMetadata, BlobPayload};
-use crate::domain::command::{CasCommand, CasResult, CommandResult, ObjectCommand};
+use crate::domain::command::{CasResult, CommandResult, ObjectCommand};
 use crate::domain::error::So3Result;
 use crate::domain::object::key::ObjectKey;
-use crate::domain::object::ObjectLastModified;
 use crate::domain::object::version::ObjectVersion;
-use crate::domain::object_key::ObjectKey;
-use crate::domain::object_version::ObjectVersion;
 use crate::repository::blob::BlobRepository;
+use crate::repository::consensus_journal::ConsensusJournalRepository;
 use crate::use_case::object::use_case::ObjectUseCaseImpl;
 
-impl<B: BlobRepository> ObjectUseCaseImpl<B> {
+impl<CJ, BR, BC> ObjectUseCaseImpl<CJ, BR, BC>
+where
+    CJ: ConsensusJournalRepository,
+    BR: BlobRepository,
+    BC: BlobPeerClient,
+{
     pub async fn cas_internal(
         &self,
         key: ObjectKey,
         expected_version: ObjectVersion,
-        value: BlobPayload,
+        payload: BlobPayload,
     ) -> So3Result<CasResult> {
-        let last_modified = ObjectLastModified::now()?;
-        let blob = self.blob_repository.store(value).await?;
+        let blob_id = BlobId::new();
+        self.blob_repository.store(&blob_id, payload).await?;
 
         match self
             .state_machine

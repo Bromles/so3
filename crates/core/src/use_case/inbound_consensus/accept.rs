@@ -1,4 +1,3 @@
-use crate::domain::consensus::journal::JournalMetadata;
 use crate::domain::consensus::transport::{
     AcceptRequest, AcceptResponse,
 };

@@ -10,7 +10,7 @@ pub struct InboundConsensusUseCaseImpl {}
 
 impl InboundConsensusUseCaseImpl {
     pub fn new() -> Self {
-        Self
+        Self {}
     }
 }
 

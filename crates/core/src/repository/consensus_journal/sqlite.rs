@@ -1,8 +1,7 @@
 use crate::domain::consensus::command_id::CommandId;
-use crate::domain::consensus::journal::{JournalEntry, JournalMetadata};
-use crate::domain::consensus::transport::RecoveryState;
+use crate::domain::consensus::journal::JournalEntry;
 use crate::domain::error::So3Result;
-use crate::repository::consensus_journal::ConsensusJournal;
+use crate::repository::consensus_journal::ConsensusJournalRepository;
 use async_trait::async_trait;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::SqlitePool;
@@ -40,7 +39,7 @@ impl SqliteConsensusJournal {
 }
 
 #[async_trait]
-impl ConsensusJournal for SqliteConsensusJournal {
+impl ConsensusJournalRepository for SqliteConsensusJournal {
     async fn load(&self, command_id: &CommandId) -> So3Result<Option<JournalEntry>> {
         /*let row = query(LOAD_COMMAND_SQL)
             .bind(command_id.origin_node_id())
@@ -69,10 +68,6 @@ impl ConsensusJournal for SqliteConsensusJournal {
         Ok(entries)*/
 
         unimplemented!()
-    }
-
-    async fn next_sequence_for_origin(&self, origin_node_id: &str) -> So3Result<u64> {
-        todo!()
     }
 
     async fn record_pre_accepted(&self, command_id: &CommandId, command: &[u8], metadata: JournalMetadata) -> So3Result<JournalEntry> {

@@ -4,14 +4,12 @@ use crate::domain::consensus::ballot::Ballot;
 use crate::domain::consensus::command_id::{CommandId, DependencySet};
 use crate::domain::consensus::journal::{JournalEntry, JournalState};
 use crate::domain::error::So3Result;
-use crate::domain::node::NodeId;
 use async_trait::async_trait;
 
 #[async_trait]
-pub trait ConsensusJournal {
+pub trait ConsensusJournalRepository: Send + Sync + 'static {
     async fn load(&self, command_id: &CommandId) -> So3Result<Option<JournalEntry>>;
     async fn check_conflicts(&self, command_id: &CommandId) -> So3Result<Vec<CommandId>>;
-    async fn next_sequence(&self, node_id: &NodeId) -> So3Result<u64>;
     async fn record_pre_accepted(
         &self,
         command_id: &CommandId,

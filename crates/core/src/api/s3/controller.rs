@@ -1,8 +1,8 @@
 use crate::api::s3::error::ApiError;
+use crate::domain::blob::payload::BlobPayload;
 use crate::domain::error::So3Error;
-use crate::domain::object::ObjectMetadata;
-use crate::domain::object_key::ObjectKey;
-use crate::repository::blob::BlobRepository;
+use crate::domain::object::key::ObjectKey;
+use crate::domain::object::metadata::ObjectMetadata;
 use crate::use_case::object::ObjectUseCase;
 use axum::extract::{Path, State};
 use axum::http::header::CONTENT_LENGTH;
@@ -15,7 +15,6 @@ use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
-use crate::domain::object::key::ObjectKey;
 
 pub const S3_OBJECT_ROUTE_PATH: &str = "/{bucket}/{*key}";
 pub const VERSION_HEADER: &str = "x-so3-version";
@@ -65,11 +64,11 @@ impl<O: ObjectUseCase> ObjectApiController<O> {
 
         let stored_object = state
             .object_use_case
-            .read(object_key)
+            .read(&object_key)
             .await?
             .ok_or(So3Error::NotFound)?;
 
-        let mut response = stored_object.blob.payload.into_response();
+        let mut response = stored_object.blob.as_bytes().into_response();
 
         attach_s3_metadata_headers(response.headers_mut(), &stored_object.metadata)?;
 
@@ -77,26 +76,26 @@ impl<O: ObjectUseCase> ObjectApiController<O> {
     }
 
     async fn handle_s3_head(
-        State(state): State<State<Arc<Self>>>,
+        State(state): State<Arc<Self>>,
         Path((bucket, key)): Path<(String, String)>,
     ) -> Result<Response, ApiError> {
         let object_key = s3_object_key(&bucket, &key)?;
 
-        let stored_object = state
+        let object_metadata = state
             .object_use_case
-            .read(object_key)
+            .head(&object_key)
             .await?
             .ok_or(So3Error::NotFound)?;
 
         let mut response = StatusCode::OK.into_response();
 
-        attach_s3_metadata_headers(response.headers_mut(), &stored_object.metadata)?;
+        attach_s3_metadata_headers(response.headers_mut(), &object_metadata)?;
 
         Ok(response)
     }
 
     async fn handle_s3_put(
-        State(state): State<State<Arc<Self>>>,
+        State(state): State<Arc<Self>>,
         Path((bucket, key)): Path<(String, String)>,
         body: Bytes,
     ) -> Result<Response, ApiError> {
@@ -104,7 +103,7 @@ impl<O: ObjectUseCase> ObjectApiController<O> {
 
         let metadata = state
             .object_use_case
-            .write(object_key, body.to_vec().into())
+            .write(object_key, BlobPayload::new(body))
             .await?;
 
         let mut response = StatusCode::OK.into_response();
@@ -115,12 +114,12 @@ impl<O: ObjectUseCase> ObjectApiController<O> {
     }
 
     async fn handle_s3_delete(
-        State(state): State<State<Arc<Self>>>,
+        State(state): State<Arc<Self>>,
         Path((bucket, key)): Path<(String, String)>,
     ) -> Result<Response, ApiError> {
         let object_key = s3_object_key(&bucket, &key)?;
 
-        state.object_use_case.delete(object_key).await?;
+        state.object_use_case.delete(&object_key).await?;
 
         Ok(StatusCode::NO_CONTENT.into_response())
     }
@@ -130,12 +129,12 @@ fn attach_s3_metadata_headers(
     headers: &mut axum::http::HeaderMap,
     metadata: &ObjectMetadata,
 ) -> Result<(), ApiError> {
-    insert_str_header(headers, S3_VERSION_ID_HEADER, &metadata.version.to_string())?;
     insert_str_header(
         headers,
-        S3_OBJECT_SIZE_HEADER,
-        &metadata.blob_metadata.content_length.to_string(),
+        S3_VERSION_ID_HEADER,
+        &metadata.version.get().to_string(),
     )?;
+    insert_str_header(headers, S3_OBJECT_SIZE_HEADER, &metadata.size.to_string())?;
     headers.insert(
         S3_STORAGE_CLASS_HEADER,
         HeaderValue::from_static("STANDARD"),
@@ -151,17 +150,13 @@ fn attach_common_object_headers(
     insert_str_header(
         headers,
         ETAG_HEADER,
-        &quoted_etag(&metadata.blob_metadata.checksum_sha256.to_hex()),
+        &quoted_etag(&metadata.sha256.to_hex()),
     )?;
-    insert_str_header(
-        headers,
-        CONTENT_LENGTH.as_str(),
-        &metadata.blob_metadata.content_length.to_string(),
-    )?;
+    insert_str_header(headers, CONTENT_LENGTH.as_str(), &metadata.size.to_string())?;
     insert_str_header(
         headers,
         LAST_MODIFIED_HEADER,
-        &http_last_modified(metadata.last_modified.unix_millis())?,
+        &http_last_modified(metadata.last_modified.physical_time_ms)?,
     )
 }
 
@@ -178,12 +173,7 @@ fn insert_str_header(
     Ok(())
 }
 
-fn http_last_modified(unix_millis: i64) -> Result<String, ApiError> {
-    let unix_millis = u64::try_from(unix_millis).map_err(|_| {
-        ApiError::from(So3Error::InvalidRequest(format!(
-            "last_modified_unix_millis cannot be negative: {unix_millis}"
-        )))
-    })?;
+fn http_last_modified(unix_millis: u64) -> Result<String, ApiError> {
     let system_time = UNIX_EPOCH
         .checked_add(Duration::from_millis(unix_millis))
         .ok_or_else(|| {

@@ -1,19 +1,13 @@
-use crate::domain::blobs::BlobMetadata;
-use crate::domain::command::{
-    CasResult, CommandResult, DeleteResult, ObjectCommand, ReadResult, WriteResult,
-};
 use crate::domain::error::So3Result;
-use crate::domain::object::{ObjectLastModified, ObjectMetadata};
-use crate::domain::object_key::ObjectKey;
-use crate::domain::object_version::ObjectVersion;
+use crate::domain::object::key::ObjectKey;
+use crate::domain::object::version::ObjectVersion;
+use crate::proto::{DeleteResult, ReadResult};
 use crate::repository::blob::BlobRepository;
 use crate::repository::metadata::ObjectMetadataRepository;
 use crate::service::local_state_machine::LocalStateMachine;
 use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use crate::domain::object::key::ObjectKey;
-use crate::domain::object::version::ObjectVersion;
-use crate::proto::DeleteResult;
+use crate::proto::consensus::{DeleteResult, ReadResult};
 
 pub struct LocalStateMachineImpl<M: ObjectMetadataRepository, B: BlobRepository> {
     metadata_repository: M,

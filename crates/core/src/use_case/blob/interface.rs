@@ -6,7 +6,7 @@ use bytes::Bytes;
 use tokio_stream::Stream;
 
 #[async_trait]
-pub trait BlobUseCase {
+pub trait BlobUseCase: Send + Sync + 'static {
     async fn store(
         &self,
         blob_id: BlobId,

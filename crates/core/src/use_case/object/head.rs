@@ -1,19 +1,12 @@
-use crate::client::interface::BlobPeerClient;
 use crate::domain::command::{CommandResult, ObjectCommand};
 use crate::domain::error::So3Result;
 use crate::domain::object::key::ObjectKey;
-use crate::domain::object::metadata::StoredObject;
+use crate::domain::object::metadata::{ObjectMetadata, StoredObject};
 use crate::repository::blob::BlobRepository;
-use crate::repository::consensus_journal::ConsensusJournalRepository;
 use crate::use_case::object::use_case::ObjectUseCaseImpl;
 
-impl<CJ, BR, BC> ObjectUseCaseImpl<CJ, BR, BC>
-where
-    CJ: ConsensusJournalRepository,
-    BR: BlobRepository,
-    BC: BlobPeerClient,
-{
-    pub async fn read_internal(&self, key: &ObjectKey) -> So3Result<Option<StoredObject>> {
+impl<B: BlobRepository> ObjectUseCaseImpl<B> {
+    pub async fn head_internal(&self, key: &ObjectKey) -> So3Result<Option<ObjectMetadata>> {
         match self
             .state_machine
             .execute(ObjectCommand::Read { key })

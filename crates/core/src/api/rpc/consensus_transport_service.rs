@@ -1,12 +1,12 @@
-use crate::proto::consensus_transport_server::ConsensusTransport;
+use crate::proto::consensus::consensus_transport_server::ConsensusTransport;
+use crate::proto::consensus::{
+    AcceptRequest, AcceptResponse, ApplyRequest, ApplyResponse, CommitRequest, CommitResponse,
+    PreAcceptRequest, PreAcceptResponse, RecoverRequest, RecoverResponse,
+};
 use crate::proto::mappers::{
     accept_req_to_domain, accept_res_to_proto, apply_req_to_domain, apply_res_to_proto,
     commit_req_to_domain, commit_res_to_proto, pre_accept_req_to_domain, pre_accept_res_to_proto,
     recover_req_to_domain, recover_res_to_proto,
-};
-use crate::proto::{
-    AcceptRequest, AcceptResponse, ApplyRequest, ApplyResponse, CommitRequest, CommitResponse,
-    PreAcceptRequest, PreAcceptResponse, RecoverRequest, RecoverResponse,
 };
 use crate::use_case::inbound_consensus::InboundConsensusUseCase;
 use async_trait::async_trait;

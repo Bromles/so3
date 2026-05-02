@@ -4,7 +4,7 @@ use crate::domain::error::So3Result;
 use async_trait::async_trait;
 
 #[async_trait]
-pub trait BlobRepository {
+pub trait BlobRepository: Send + Sync + 'static {
     /// # Errors
     ///
     /// Returns an error when blob bytes cannot be durably staged and committed.

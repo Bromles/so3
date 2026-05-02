@@ -6,8 +6,13 @@ mod generated {
         clippy::must_use_candidate,
         clippy::too_many_lines
     )]
+    pub mod consensus {
+        tonic::include_proto!("consensus");
+    }
 
-    tonic::include_proto!("consensus");
+    pub mod blob {
+        tonic::include_proto!("blob");
+    }
 }
 
 pub use generated::*;

@@ -4,7 +4,7 @@ use crate::domain::consensus::transport::{
     PreAcceptResponse, RecoverRequest, RecoverResponse,
 };
 use crate::domain::error::So3Result;
-use crate::proto::consensus_transport_client::ConsensusTransportClient;
+use crate::proto::consensus::consensus_transport_client::ConsensusTransportClient as ProtoClient;
 use crate::proto::mappers::{
     accept_req_to_proto, accept_res_to_domain, commit_req_to_proto, commit_res_to_domain,
     map_tonic_status, pre_accept_req_to_proto, pre_accept_res_to_domain, recover_req_to_proto,
@@ -14,24 +14,24 @@ use async_trait::async_trait;
 use tonic::transport::{Channel, Endpoint};
 use tonic::Response;
 
-pub struct TonicPeerClient {
+pub struct ConsensusTransportClient {
     channel: Channel,
 }
 
-impl TonicPeerClient {
+impl ConsensusTransportClient {
     pub async fn new(endpoint: String) -> So3Result<Self> {
         let channel = Endpoint::from_shared(endpoint)?.connect().await?;
 
         Ok(Self { channel })
     }
 
-    fn raw_client(&self) -> ConsensusTransportClient<Channel> {
-        ConsensusTransportClient::new(self.channel.clone())
+    fn raw_client(&self) -> ProtoClient<Channel> {
+        ProtoClient::new(self.channel.clone())
     }
 }
 
 #[async_trait]
-impl ConsensusPeerClient for TonicPeerClient {
+impl ConsensusPeerClient for ConsensusTransportClient {
     async fn pre_accept(&self, req: PreAcceptRequest) -> So3Result<PreAcceptResponse> {
         let mut client = self.raw_client();
 

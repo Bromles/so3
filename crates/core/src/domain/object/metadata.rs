@@ -5,6 +5,7 @@ use crate::domain::clock::LogicalTimestamp;
 use crate::domain::object::key::ObjectKey;
 use crate::domain::object::version::ObjectVersion;
 
+#[derive(Debug)]
 pub struct ObjectMetadata {
     pub key: ObjectKey,
     pub version: ObjectVersion,
@@ -16,5 +17,5 @@ pub struct ObjectMetadata {
 
 pub struct StoredObject {
     pub metadata: ObjectMetadata,
-    pub bytes: BlobPayload,
+    pub blob: BlobPayload,
 }

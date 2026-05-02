@@ -1,4 +1,4 @@
-use crate::domain::consensus::journal::{JournalMetadata, JournalState};
+use crate::domain::consensus::journal::JournalState;
 use crate::domain::consensus::transport::{
     CommitRequest, CommitResponse,
 };
