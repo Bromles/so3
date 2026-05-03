@@ -1,76 +1,71 @@
-use crate::domain::consensus::command_id::CommandId;
+use crate::client::interface::BlobPeerClient;
+use crate::domain::consensus::command_id::{CommandId, DependencySet};
+use crate::domain::consensus::journal::JournalState;
 use crate::domain::consensus::transport::{
-    RecoverRequest, RecoverResponse,
+    RecoverNack, RecoverRequest, RecoverResponse, RecoverSuccess,
 };
 use crate::domain::error::So3Result;
+use crate::repository::blob::BlobRepository;
+use crate::repository::consensus_journal::ConsensusJournalRepository;
+use crate::repository::metadata::ObjectMetadataRepository;
 use crate::use_case::inbound_consensus::use_case::InboundConsensusUseCaseImpl;
-use tracing::debug;
 
-impl InboundConsensusUseCaseImpl {
-    pub async fn recover_internal(&self, request: RecoverRequest) -> So3Result<RecoverResponse> {
-        let timestamp = self.observe_or_tick(request.timestamp_zero.as_ref()).await;
-        let Some(command_id) = request.command_id.as_ref() else {
-            return Ok(RecoverResponse {
-                local_state: State::Undefined.into(),
-                wait_for: Vec::new(),
-                superseding: false,
-                dependencies: Some(empty_dependencies()),
-                timestamp: Some(timestamp),
-                nack: None,
-            });
-        };
-        let command_id =
-            CommandId::try_from(command_id).map_err(|error| map_error(&error))?;
-        let entry = self
-            .journal
-            .load(&command_id)
-            .await
-            .map_err(|error| map_error(&error))?;
-        if let Some(nack) = recover_nack(entry.as_ref(), request.ballot.as_ref()) {
-            return Ok(RecoverResponse {
-                local_state: State::Undefined.into(),
-                wait_for: Vec::new(),
-                superseding: false,
-                dependencies: Some(empty_dependencies()),
-                timestamp: Some(timestamp),
-                nack: Some(nack),
-            });
+impl<CJR, OMR, BR, BPC> InboundConsensusUseCaseImpl<CJR, OMR, BR, BPC>
+where
+    CJR: ConsensusJournalRepository,
+    OMR: ObjectMetadataRepository,
+    BR: BlobRepository,
+    BPC: BlobPeerClient,
+{
+    pub(super) async fn recover_internal(&self, req: RecoverRequest) -> So3Result<RecoverResponse> {
+        let entry = self.journal.load(&req.command_id).await?;
+
+        // Nack if we have a superseding ballot
+        if let Some(ref e) = entry {
+            if let Some(ref stored) = e.ballot {
+                if *stored > req.ballot {
+                    return Ok(RecoverResponse::Nack(RecoverNack {
+                        superseding_ballot: stored.clone(),
+                    }));
+                }
+            }
         }
-        let (local_state, dependencies, response_timestamp) = entry.map_or(
-            (State::Undefined, empty_dependencies(), timestamp.clone()),
-            |entry| {
-                (
-                    journal_state_to_proto(entry.state),
-                    entry.metadata.dependencies,
-                    entry
-                        .metadata
-                        .timestamp
-                        .unwrap_or_else(|| timestamp.clone()),
-                )
-            },
-        );
-        let wait_for = wait_for_unapplied_dependencies(
-            &self.journal,
-            &dependencies,
-            Some(&response_timestamp),
-        )
-            .await
-            .map_err(|error| map_error(&error))?;
 
-        debug!(
-            node_id = %self.node_id,
-            command_origin = command_id.origin_node_id(),
-            local_state = local_state.as_str_name(),
-            "returning recover response from durable local command journal"
-        );
+        let timestamp = self.observe(&req.timestamp_zero).await;
 
-        Ok(RecoverResponse {
-            local_state: local_state.into(),
-            wait_for,
-            superseding: false,
-            dependencies: Some(dependencies),
-            timestamp: Some(response_timestamp),
-            nack: None,
-        })
+        match entry {
+            None => Ok(RecoverResponse::Success(RecoverSuccess {
+                local_state: JournalState::PreAccepted,
+                wait_for: vec![],
+                superseding: false,
+                dependencies: DependencySet(vec![]),
+                timestamp_zero: req.timestamp_zero,
+                timestamp,
+            })),
+            Some(e) => {
+                let wait_for = self.unapplied_deps(&e.dependencies).await?;
+                Ok(RecoverResponse::Success(RecoverSuccess {
+                    local_state: e.state,
+                    wait_for,
+                    superseding: false,
+                    dependencies: e.dependencies,
+                    timestamp_zero: e.timestamp_zero,
+                    timestamp: e.timestamp.unwrap_or(timestamp),
+                }))
+            }
+        }
+    }
+
+    async fn unapplied_deps(&self, deps: &DependencySet) -> So3Result<Vec<CommandId>> {
+        let mut unapplied = Vec::new();
+
+        for dep_id in &deps.0 {
+            match self.journal.load(dep_id).await? {
+                Some(e) if e.state == JournalState::Applied => {}
+                _ => unapplied.push(dep_id.clone()),
+            }
+        }
+
+        Ok(unapplied)
     }
 }

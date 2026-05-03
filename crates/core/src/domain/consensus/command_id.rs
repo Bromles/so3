@@ -1,5 +1,6 @@
 use crate::domain::node::NodeId;
 
+#[derive(Debug, Clone)]
 pub struct CommandId {
     pub origin_node_id: NodeId,
     pub sequence: u64,

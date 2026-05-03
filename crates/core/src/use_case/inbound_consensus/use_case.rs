@@ -1,38 +1,104 @@
+use crate::client::interface::BlobPeerClient;
+use crate::domain::blob::id::BlobId;
+use crate::domain::blob::payload::BlobPayload;
+use crate::domain::clock::{HybridLogicalClock, LogicalTimestamp};
 use crate::domain::consensus::transport::{
     AcceptRequest, AcceptResponse, ApplyRequest, ApplyResponse, CommitRequest, CommitResponse,
     PreAcceptRequest, PreAcceptResponse, RecoverRequest, RecoverResponse,
 };
-use crate::domain::error::So3Result;
+use crate::domain::error::{So3Error, So3Result};
+use crate::domain::node::NodeId;
+use crate::repository::blob::BlobRepository;
+use crate::repository::consensus_journal::ConsensusJournalRepository;
+use crate::repository::metadata::ObjectMetadataRepository;
 use crate::use_case::inbound_consensus::InboundConsensusUseCase;
 use async_trait::async_trait;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
-pub struct InboundConsensusUseCaseImpl {}
+pub struct InboundConsensusUseCaseImpl<CJR, OMR, BR, BPC>
+where
+    CJR: ConsensusJournalRepository,
+    OMR: ObjectMetadataRepository,
+    BR: BlobRepository,
+    BPC: BlobPeerClient,
+{
+    pub node_id: NodeId,
+    pub epoch: u64,
+    pub hlc: Mutex<HybridLogicalClock>,
+    pub journal: Arc<CJR>,
+    pub metadata_repo: Arc<OMR>,
+    pub blob_repo: Arc<BR>,
+    pub blob_clients: HashMap<NodeId, Arc<BPC>>,
+}
 
-impl InboundConsensusUseCaseImpl {
-    pub fn new() -> Self {
-        Self {}
+impl<CJR, OMR, BR, BPC> InboundConsensusUseCaseImpl<CJR, OMR, BR, BPC>
+where
+    CJR: ConsensusJournalRepository,
+    OMR: ObjectMetadataRepository,
+    BR: BlobRepository,
+    BPC: BlobPeerClient,
+{
+    pub fn new(
+        node_id: NodeId,
+        epoch: u64,
+        journal: Arc<CJR>,
+        metadata_repo: Arc<OMR>,
+        blob_repo: Arc<BR>,
+        blob_clients: HashMap<NodeId, Arc<BPC>>,
+    ) -> Self {
+        Self {
+            hlc: Mutex::new(HybridLogicalClock::new(node_id.clone())),
+            node_id,
+            epoch,
+            journal,
+            metadata_repo,
+            blob_repo,
+            blob_clients,
+        }
+    }
+
+    pub(super) async fn observe(&self, remote: &LogicalTimestamp) -> LogicalTimestamp {
+        self.hlc.lock().await.observe(self.epoch, remote)
+    }
+
+    pub(super) async fn fetch_blob_from_any_peer(
+        &self,
+        blob_id: &BlobId,
+    ) -> So3Result<BlobPayload> {
+        for client in self.blob_clients.values() {
+            if let Ok(payload) = client.fetch(blob_id).await {
+                return Ok(payload);
+            }
+        }
+        Err(So3Error::NotFound(format!(
+            "blob {blob_id} not available on any peer"
+        )))
     }
 }
 
 #[async_trait]
-impl InboundConsensusUseCase for InboundConsensusUseCaseImpl {
-    async fn pre_accept(&self, request: PreAcceptRequest) -> So3Result<PreAcceptResponse> {
-        self.pre_accept_internal(request).await
+impl<CJR, OMR, BR, BPC> InboundConsensusUseCase for InboundConsensusUseCaseImpl<CJR, OMR, BR, BPC>
+where
+    CJR: ConsensusJournalRepository,
+    OMR: ObjectMetadataRepository,
+    BR: BlobRepository,
+    BPC: BlobPeerClient,
+{
+    async fn pre_accept(&self, req: PreAcceptRequest) -> So3Result<PreAcceptResponse> {
+        self.pre_accept_internal(req).await
     }
-
-    async fn accept(&self, request: AcceptRequest) -> So3Result<AcceptResponse> {
-        self.accept_internal(request).await
+    async fn accept(&self, req: AcceptRequest) -> So3Result<AcceptResponse> {
+        self.accept_internal(req).await
     }
-
-    async fn commit(&self, request: CommitRequest) -> So3Result<CommitResponse> {
-        self.commit_internal(request).await
+    async fn commit(&self, req: CommitRequest) -> So3Result<CommitResponse> {
+        self.commit_internal(req).await
     }
-
-    async fn apply(&self, request: ApplyRequest) -> So3Result<ApplyResponse> {
-        self.apply_internal(request).await
+    async fn apply(&self, req: ApplyRequest) -> So3Result<ApplyResponse> {
+        self.apply_internal(req).await
     }
-
-    async fn recover(&self, request: RecoverRequest) -> So3Result<RecoverResponse> {
-        self.recover_internal(request).await
+    async fn recover(&self, req: RecoverRequest) -> So3Result<RecoverResponse> {
+        self.recover_internal(req).await
     }
 }

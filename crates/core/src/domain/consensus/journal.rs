@@ -15,6 +15,7 @@ pub struct JournalEntry {
     pub result: Option<CommandResult>,
 }
 
+#[derive(Debug, Eq, PartialEq)]
 pub enum JournalState {
     PreAccepted,
     Accepted,
