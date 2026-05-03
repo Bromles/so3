@@ -1,6 +1,6 @@
 use crate::client::interface::BlobPeerClient;
 use crate::domain::command::{CommandResult, ObjectCommand, ReadResult};
-use crate::domain::error::So3Result;
+use crate::domain::error::{So3Error, So3Result};
 use crate::domain::object::key::ObjectKey;
 use crate::domain::object::metadata::ObjectMetadata;
 use crate::repository::blob::BlobRepository;
@@ -18,22 +18,17 @@ where
     BC: BlobPeerClient,
 {
     pub async fn head_internal(&self, key: &ObjectKey) -> So3Result<Option<ObjectMetadata>> {
-        let command_id = self
+        let result = self
             .consensus_coordinator_service
             .coordinate(ObjectCommand::Read { key: key.clone() })
             .await?;
 
-        let metadata = self.object_metadata_repository.load(key).await?;
-
-        let result = match &metadata {
-            None => CommandResult::Read(ReadResult::NotFound),
-            Some(m) => CommandResult::Read(ReadResult::Found(m.clone())),
-        };
-
-        self.consensus_journal_repository
-            .record_applied(&command_id, &result)
-            .await?;
-
-        Ok(metadata)
+        match result {
+            CommandResult::Read(ReadResult::Found(m)) => Ok(Some(m)),
+            CommandResult::Read(ReadResult::NotFound) => Ok(None),
+            _ => Err(So3Error::Storage(
+                "unexpected result from Head coordinate".into(),
+            )),
+        }
     }
 }

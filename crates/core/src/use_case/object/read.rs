@@ -1,6 +1,6 @@
 use crate::client::interface::BlobPeerClient;
 use crate::domain::command::{CommandResult, ObjectCommand, ReadResult};
-use crate::domain::error::So3Result;
+use crate::domain::error::{So3Error, So3Result};
 use crate::domain::object::key::ObjectKey;
 use crate::domain::object::metadata::StoredObject;
 use crate::repository::blob::BlobRepository;
@@ -18,33 +18,23 @@ where
     BC: BlobPeerClient,
 {
     pub async fn read_internal(&self, key: &ObjectKey) -> So3Result<Option<StoredObject>> {
-        let command_id = self
+        let result = self
             .consensus_coordinator_service
             .coordinate(ObjectCommand::Read { key: key.clone() })
             .await?;
 
-        let metadata = self.object_metadata_repository.load(key).await?;
-
-        let Some(metadata) = metadata else {
-            self.consensus_journal_repository
-                .record_applied(&command_id, &CommandResult::Read(ReadResult::NotFound))
-                .await?;
-
-            return Ok(None);
+        let metadata = match result {
+            CommandResult::Read(ReadResult::Found(m)) => m,
+            CommandResult::Read(ReadResult::NotFound) => return Ok(None),
+            _ => {
+                return Err(So3Error::Storage(
+                    "unexpected result from Read coordinate".into(),
+                ));
+            }
         };
 
-        let payload = self.blob_repository.load(&metadata.blob_id).await?;
+        let blob = self.blob_repository.load(&metadata.blob_id).await?;
 
-        self.consensus_journal_repository
-            .record_applied(
-                &command_id,
-                &CommandResult::Read(ReadResult::Found(metadata.clone())),
-            )
-            .await?;
-
-        Ok(Some(StoredObject {
-            metadata,
-            blob: payload,
-        }))
+        Ok(Some(StoredObject { metadata, blob }))
     }
 }

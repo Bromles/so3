@@ -29,7 +29,30 @@ where
             }
         }
 
-        // Wait for dependencies
+        // Reorder buffer: wait until all committed commands with a strictly earlier timestamp
+        // have been applied. We register the Notified future *before* checking the buffer to
+        // avoid the TOCTOU race where an entry is removed between the check and the await.
+        // The deadline is a single shared budget across all iterations of the wait loop.
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(30);
+        loop {
+            let notified = self.apply_notify.notified();
+            {
+                let buf = self.reorder_buffer.lock().await;
+                if buf.range(..req.timestamp.clone()).next().is_none() {
+                    break;
+                }
+            }
+            tokio::time::timeout_at(deadline, notified)
+                .await
+                .map_err(|_| {
+                    So3Error::PeerUnavailable(
+                        "reorder buffer: deadline exceeded waiting for earlier committed command"
+                            .into(),
+                    )
+                })?;
+        }
+
+        // Wait for explicit dependencies
         for dep_id in &req.dependencies.0 {
             match self.journal.load(dep_id).await? {
                 Some(e) if e.state == JournalState::Applied => {}
@@ -44,10 +67,12 @@ where
 
         // Execute command inline
         let result = match req.command {
-            ObjectCommand::Read { ref key } => match self.object_metadata_repository.load(key).await? {
-                Some(m) => CommandResult::Read(ReadResult::Found(m)),
-                None => CommandResult::Read(ReadResult::NotFound),
-            },
+            ObjectCommand::Read { ref key } => {
+                match self.object_metadata_repository.load(key).await? {
+                    Some(m) => CommandResult::Read(ReadResult::Found(m)),
+                    None => CommandResult::Read(ReadResult::NotFound),
+                }
+            }
             ObjectCommand::Write {
                 ref key,
                 blob_id,
@@ -117,6 +142,9 @@ where
         self.journal
             .record_applied(&req.command_id, &result)
             .await?;
+
+        self.reorder_buffer.lock().await.remove(&req.timestamp);
+        self.apply_notify.notify_waiters();
 
         Ok(ApplyResponse { result })
     }

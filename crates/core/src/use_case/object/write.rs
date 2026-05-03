@@ -2,12 +2,10 @@ use crate::client::interface::BlobPeerClient;
 use crate::domain::blob::checksum::Sha256Digest;
 use crate::domain::blob::id::BlobId;
 use crate::domain::blob::payload::BlobPayload;
-use crate::domain::clock::physical_millis_now;
-use crate::domain::command::{CommandResult, ObjectCommand, WriteResult};
-use crate::domain::error::So3Result;
+use crate::domain::command::{CommandResult, ObjectCommand};
+use crate::domain::error::{So3Error, So3Result};
 use crate::domain::object::key::ObjectKey;
 use crate::domain::object::metadata::ObjectMetadata;
-use crate::domain::object::version::ObjectVersion;
 use crate::repository::blob::BlobRepository;
 use crate::repository::consensus_journal::ConsensusJournalRepository;
 use crate::repository::metadata::ObjectMetadataRepository;
@@ -38,49 +36,21 @@ where
             client.push(blob_id, &payload).await?;
         }
 
-        let command = ObjectCommand::Write {
-            key: key.clone(),
-            blob_id,
-            sha256,
-            size,
-        };
-
-        let command_id = self
+        let result = self
             .consensus_coordinator_service
-            .coordinate(command)
+            .coordinate(ObjectCommand::Write {
+                key,
+                blob_id,
+                sha256,
+                size,
+            })
             .await?;
 
-        let version = self
-            .object_metadata_repository
-            .load(&key)
-            .await?
-            .map(|m| m.version.next())
-            .unwrap_or_else(ObjectVersion::initial);
-
-        let last_modified_ms = physical_millis_now();
-
-        let metadata = ObjectMetadata {
-            key,
-            version,
-            blob_id,
-            sha256,
-            size,
-            last_modified_ms,
-        };
-
-        // TODO: metadata store and record_applied must be atomic — crash between them leaves
-        // the command as Committed in the journal, causing Accord recovery to re-apply and
-        // produce a duplicate version increment. Requires UoW or shared transaction.
-        self.object_metadata_repository.store(&metadata).await?;
-
-        let result = CommandResult::Write(WriteResult {
-            metadata: metadata.clone(),
-        });
-
-        self.consensus_journal_repository
-            .record_applied(&command_id, &result)
-            .await?;
-
-        Ok(metadata)
+        match result {
+            CommandResult::Write(r) => Ok(r.metadata),
+            _ => Err(So3Error::Storage(
+                "unexpected result from Write coordinate".into(),
+            )),
+        }
     }
 }

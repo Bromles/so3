@@ -2,6 +2,7 @@ use crate::client::interface::BlobPeerClient;
 use crate::domain::blob::id::BlobId;
 use crate::domain::blob::payload::BlobPayload;
 use crate::domain::clock::{HybridLogicalClock, LogicalTimestamp};
+use crate::domain::consensus::command_id::CommandId;
 use crate::domain::consensus::transport::{
     AcceptRequest, AcceptResponse, ApplyRequest, ApplyResponse, CommitRequest, CommitResponse,
     PreAcceptRequest, PreAcceptResponse, RecoverRequest, RecoverResponse,
@@ -13,10 +14,14 @@ use crate::repository::consensus_journal::ConsensusJournalRepository;
 use crate::repository::metadata::ObjectMetadataRepository;
 use crate::use_case::inbound_consensus::InboundConsensusUseCase;
 use async_trait::async_trait;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
+
+/// Committed commands not yet applied, keyed by commit timestamp.
+/// Apply gates execution on all earlier-timestamped entries being absent.
+type ReorderBuffer = BTreeMap<LogicalTimestamp, CommandId>;
 
 pub struct InboundConsensusUseCaseImpl<CJR, OMR, BR, BPC>
 where
@@ -32,6 +37,8 @@ where
     pub object_metadata_repository: Arc<OMR>,
     pub blob_repository: Arc<BR>,
     pub blob_clients: HashMap<NodeId, Arc<BPC>>,
+    pub(super) reorder_buffer: Mutex<ReorderBuffer>,
+    pub(super) apply_notify: Arc<Notify>,
 }
 
 impl<CJR, OMR, BR, BPC> InboundConsensusUseCaseImpl<CJR, OMR, BR, BPC>
@@ -57,6 +64,8 @@ where
             object_metadata_repository: metadata_repo,
             blob_repository: blob_repo,
             blob_clients,
+            reorder_buffer: Mutex::new(BTreeMap::new()),
+            apply_notify: Arc::new(Notify::new()),
         }
     }
 
@@ -65,7 +74,10 @@ where
     }
 
     pub(super) async fn observe(&self, remote: &LogicalTimestamp) -> LogicalTimestamp {
-        self.hlc.lock().await.observe(self.epoch.load(Ordering::Acquire), remote)
+        self.hlc
+            .lock()
+            .await
+            .observe(self.epoch.load(Ordering::Acquire), remote)
     }
 
     pub(super) async fn fetch_blob_from_any_peer(

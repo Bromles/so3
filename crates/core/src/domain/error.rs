@@ -3,9 +3,9 @@ use std::io::Error as IoError;
 use crate::domain::object::key::ObjectKey;
 use crate::domain::object::version::ObjectVersion;
 use postcard::Error as PostcardError;
-use uuid::Error as UuidError;
 use serde::Serialize;
 use thiserror::Error;
+use uuid::Error as UuidError;
 
 pub type So3Result<T> = Result<T, So3Error>;
 

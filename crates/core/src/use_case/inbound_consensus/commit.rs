@@ -18,6 +18,11 @@ where
 
         self.journal.record_committed(&req.command_id).await?;
 
+        self.reorder_buffer
+            .lock()
+            .await
+            .insert(req.timestamp, req.command_id);
+
         Ok(CommitResponse)
     }
 }

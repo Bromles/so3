@@ -43,6 +43,7 @@ pub struct CommitRequest {
 
 pub struct CommitResponse;
 
+#[derive(Clone)]
 pub struct ApplyRequest {
     pub command_id: CommandId,
     pub command: ObjectCommand,

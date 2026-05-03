@@ -1,14 +1,14 @@
 use crate::client::interface::ConsensusPeerClient;
 use crate::domain::consensus::transport::{
-    AcceptRequest, AcceptResponse, CommitRequest, CommitResponse, PreAcceptRequest,
-    PreAcceptResponse, RecoverRequest, RecoverResponse,
+    AcceptRequest, AcceptResponse, ApplyRequest, ApplyResponse, CommitRequest, CommitResponse,
+    PreAcceptRequest, PreAcceptResponse, RecoverRequest, RecoverResponse,
 };
 use crate::domain::error::So3Result;
 use crate::proto::consensus::consensus_transport_client::ConsensusTransportClient as ProtoClient;
 use crate::proto::mappers::{
-    accept_req_to_proto, accept_res_to_domain, commit_req_to_proto, commit_res_to_domain,
-    map_tonic_status, pre_accept_req_to_proto, pre_accept_res_to_domain, recover_req_to_proto,
-    recover_res_to_domain,
+    accept_req_to_proto, accept_res_to_domain, apply_req_to_proto, apply_res_to_domain,
+    commit_req_to_proto, commit_res_to_domain, map_tonic_status, pre_accept_req_to_proto,
+    pre_accept_res_to_domain, recover_req_to_proto, recover_res_to_domain,
 };
 use async_trait::async_trait;
 use tonic::transport::{Channel, Endpoint};
@@ -69,6 +69,19 @@ impl ConsensusPeerClient for ConsensusTransportClient {
             .map_err(map_tonic_status)
             .map(Response::into_inner)
             .map(commit_res_to_domain)?
+    }
+
+    async fn apply(&self, req: ApplyRequest) -> So3Result<ApplyResponse> {
+        let mut client = self.raw_client();
+
+        let req = apply_req_to_proto(req);
+
+        client
+            .apply(req)
+            .await
+            .map_err(map_tonic_status)
+            .map(Response::into_inner)
+            .map(apply_res_to_domain)?
     }
 
     async fn recover(&self, req: RecoverRequest) -> So3Result<RecoverResponse> {

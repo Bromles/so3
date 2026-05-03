@@ -143,9 +143,9 @@ async fn sync_directory(path: PathBuf) -> So3Result<()> {
         let directory = open_directory_for_sync(&path)?;
         directory.sync_all()
     })
-        .await
-        .map_err(|error| So3Error::Io(format!("directory sync task failed: {error}")))?
-        .map_err(So3Error::from)
+    .await
+    .map_err(|error| So3Error::Io(format!("directory sync task failed: {error}")))?
+    .map_err(So3Error::from)
 }
 
 #[cfg(windows)]

@@ -39,7 +39,6 @@ impl Node {
         config.object_api_addr = object_listener.local_addr()?;
         config.rpc_api_addr = rpc_listener.local_addr()?;
 
-
         unimplemented!()
     }
 

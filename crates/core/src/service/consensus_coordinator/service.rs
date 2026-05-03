@@ -1,13 +1,19 @@
-use crate::client::interface::ConsensusPeerClient;
-use crate::domain::clock::HybridLogicalClock;
-use crate::domain::command::ObjectCommand;
+use crate::client::interface::{BlobPeerClient, ConsensusPeerClient};
+use crate::domain::clock::{physical_millis_now, HybridLogicalClock};
+use crate::domain::command::{CasResult, CommandResult, ObjectCommand, ReadResult, WriteResult};
 use crate::domain::consensus::ballot::Ballot;
 use crate::domain::consensus::command_id::{AppliedSet, CommandId, DependencySet};
 use crate::domain::consensus::journal::JournalState;
-use crate::domain::consensus::transport::{AcceptRequest, CommitRequest, PreAcceptRequest};
+use crate::domain::consensus::transport::{
+    AcceptRequest, ApplyRequest, CommitRequest, PreAcceptRequest,
+};
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::node::NodeId;
+use crate::domain::object::metadata::ObjectMetadata;
+use crate::domain::object::version::ObjectVersion;
+use crate::repository::blob::BlobRepository;
 use crate::repository::consensus_journal::ConsensusJournalRepository;
+use crate::repository::metadata::ObjectMetadataRepository;
 use crate::service::consensus_coordinator::ConsensusCoordinatorService;
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -15,10 +21,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-pub struct AccordConsensusCoordinatorService<
+pub struct AccordConsensusCoordinatorService<CJR, CPC, OMR, BR, BPC>
+where
     CJR: ConsensusJournalRepository,
     CPC: ConsensusPeerClient,
-> {
+    OMR: ObjectMetadataRepository,
+    BR: BlobRepository,
+    BPC: BlobPeerClient,
+{
     node_id: NodeId,
     epoch: AtomicU64,
     hlc: Mutex<HybridLogicalClock>,
@@ -26,12 +36,18 @@ pub struct AccordConsensusCoordinatorService<
     network_skew_ms: u64,
     consensus_peer_client_map: HashMap<NodeId, Arc<CPC>>,
     consensus_journal_repository: Arc<CJR>,
+    object_metadata_repository: Arc<OMR>,
+    blob_repository: Arc<BR>,
+    blob_peer_clients: HashMap<NodeId, Arc<BPC>>,
 }
 
-impl<CJR, CPC> AccordConsensusCoordinatorService<CJR, CPC>
+impl<CJR, CPC, OMR, BR, BPC> AccordConsensusCoordinatorService<CJR, CPC, OMR, BR, BPC>
 where
     CJR: ConsensusJournalRepository,
     CPC: ConsensusPeerClient,
+    OMR: ObjectMetadataRepository,
+    BR: BlobRepository,
+    BPC: BlobPeerClient,
 {
     pub async fn new(
         node_id: NodeId,
@@ -39,6 +55,9 @@ where
         network_skew_ms: u64,
         consensus_peer_client_map: HashMap<NodeId, Arc<CPC>>,
         consensus_journal_repository: Arc<CJR>,
+        object_metadata_repository: Arc<OMR>,
+        blob_repository: Arc<BR>,
+        blob_peer_clients: HashMap<NodeId, Arc<BPC>>,
     ) -> So3Result<Self> {
         let initial_sequence = consensus_journal_repository
             .max_sequence(&node_id)
@@ -54,6 +73,9 @@ where
             network_skew_ms,
             consensus_peer_client_map,
             consensus_journal_repository,
+            object_metadata_repository,
+            blob_repository,
+            blob_peer_clients,
         })
     }
 
@@ -82,15 +104,139 @@ where
             entries.into_iter().map(|e| e.command_id).collect(),
         ))
     }
+
+    async fn fetch_blob_from_any_peer(
+        &self,
+        blob_id: &crate::domain::blob::id::BlobId,
+    ) -> So3Result<crate::domain::blob::payload::BlobPayload> {
+        for client in self.blob_peer_clients.values() {
+            if let Ok(payload) = client.fetch(blob_id).await {
+                return Ok(payload);
+            }
+        }
+        Err(So3Error::NotFound(format!(
+            "blob {blob_id} not available on any peer"
+        )))
+    }
+
+    async fn apply_local(&self, req: &ApplyRequest) -> So3Result<CommandResult> {
+        // Idempotency
+        if let Some(entry) = self
+            .consensus_journal_repository
+            .load(&req.command_id)
+            .await?
+        {
+            if entry.state == JournalState::Applied {
+                let result = entry
+                    .result
+                    .ok_or_else(|| So3Error::Storage("applied entry missing result".to_string()))?;
+                return Ok(result);
+            }
+        }
+
+        // Wait for explicit dependencies to be applied locally.
+        // TODO: add reorder-buffer + Notify here to avoid busy-poll.
+        for dep_id in &req.dependencies.0 {
+            match self.consensus_journal_repository.load(dep_id).await? {
+                Some(e) if e.state == JournalState::Applied => {}
+                _ => {
+                    return Err(So3Error::PeerUnavailable(format!(
+                        "dependency seq={} not yet applied locally",
+                        dep_id.sequence
+                    )));
+                }
+            }
+        }
+
+        let result = match &req.command {
+            ObjectCommand::Read { key } => match self.object_metadata_repository.load(key).await? {
+                Some(m) => CommandResult::Read(ReadResult::Found(m)),
+                None => CommandResult::Read(ReadResult::NotFound),
+            },
+            ObjectCommand::Write {
+                key,
+                blob_id,
+                sha256,
+                size,
+            } => {
+                if !self.blob_repository.exists(blob_id).await? {
+                    let payload = self.fetch_blob_from_any_peer(blob_id).await?;
+                    self.blob_repository.store(blob_id, &payload).await?;
+                }
+                let version = self
+                    .object_metadata_repository
+                    .load(key)
+                    .await?
+                    .map(|m| m.version.next())
+                    .unwrap_or_else(ObjectVersion::initial);
+                let metadata = ObjectMetadata {
+                    key: key.clone(),
+                    version,
+                    blob_id: blob_id.clone(),
+                    sha256: sha256.clone(),
+                    size: *size,
+                    last_modified_ms: physical_millis_now(),
+                };
+                self.object_metadata_repository.store(&metadata).await?;
+                CommandResult::Write(WriteResult { metadata })
+            }
+            ObjectCommand::Delete { key } => {
+                self.object_metadata_repository.delete(key).await?;
+                CommandResult::Delete
+            }
+            ObjectCommand::Cas {
+                key,
+                expected_version,
+                blob_id,
+                sha256,
+                size,
+            } => {
+                if !self.blob_repository.exists(blob_id).await? {
+                    let payload = self.fetch_blob_from_any_peer(blob_id).await?;
+                    self.blob_repository.store(blob_id, &payload).await?;
+                }
+                match self.object_metadata_repository.load(key).await? {
+                    Some(meta) if meta.version == *expected_version => {
+                        let new_meta = ObjectMetadata {
+                            key: key.clone(),
+                            version: meta.version.next(),
+                            blob_id: blob_id.clone(),
+                            sha256: sha256.clone(),
+                            size: *size,
+                            last_modified_ms: physical_millis_now(),
+                        };
+                        self.object_metadata_repository.store(&new_meta).await?;
+                        CommandResult::Cas(CasResult::Updated(new_meta))
+                    }
+                    Some(meta) => CommandResult::Cas(CasResult::Conflict {
+                        current_version: meta.version,
+                    }),
+                    None => CommandResult::Cas(CasResult::Conflict {
+                        current_version: ObjectVersion::initial(),
+                    }),
+                }
+            }
+        };
+
+        self.consensus_journal_repository
+            .record_applied(&req.command_id, &result)
+            .await?;
+
+        Ok(result)
+    }
 }
 
 #[async_trait]
-impl<CJR, CPC> ConsensusCoordinatorService for AccordConsensusCoordinatorService<CJR, CPC>
+impl<CJR, CPC, OMR, BR, BPC> ConsensusCoordinatorService
+    for AccordConsensusCoordinatorService<CJR, CPC, OMR, BR, BPC>
 where
     CJR: ConsensusJournalRepository,
     CPC: ConsensusPeerClient,
+    OMR: ObjectMetadataRepository,
+    BR: BlobRepository,
+    BPC: BlobPeerClient,
 {
-    async fn coordinate(&self, command: ObjectCommand) -> So3Result<CommandId> {
+    async fn coordinate(&self, command: ObjectCommand) -> So3Result<CommandResult> {
         let command_id = self.next_command_id();
         let ballot = Ballot::initial(self.node_id.clone());
         let timestamp_zero = self
@@ -226,14 +372,9 @@ where
             .record_committed(&command_id)
             .await?;
 
-        // Commit must reach a quorum before we return — this is the fix for CASSANDRA-18365.
-        // Accept quorum makes the decision final, but if the coordinator crashes before Commit
-        // reaches f+1 nodes, recovery quorum may not see any Committed state and will
-        // incorrectly re-run Accept with different deps, violating linearizability.
-        //
-        // We do NOT fail on quorum miss — Accept already persisted the decision, so returning
-        // an error would cause the client to retry and create a duplicate command. Instead we
-        // retry Commit until quorum is reached (TODO: parallelize, add bounded back-off).
+        // Commit must reach a quorum before we proceed — fix for CASSANDRA-18365.
+        // We never return an error here: Accept already made the decision final,
+        // failing would cause the client to retry with a new CommandId (duplicate).
         let commit_req = CommitRequest {
             command_id: command_id.clone(),
             command,
@@ -242,10 +383,6 @@ where
             dependencies: DependencySet(commit_deps),
         };
 
-        // Bounded retry with exponential back-off capped at 1 s.
-        // We never return an error here — Accept already made the decision final;
-        // failing would cause the client to retry with a new CommandId (duplicate).
-        // Remaining nodes will eventually be caught up by the recovery coordinator.
         const MAX_COMMIT_ATTEMPTS: u32 = 10;
         let mut delay_ms = 10u64;
         for _ in 0..MAX_COMMIT_ATTEMPTS {
@@ -255,16 +392,34 @@ where
                     commit_ok += 1;
                 }
             }
-
             if commit_ok >= quorum {
                 break;
             }
-
             tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
-
             delay_ms = (delay_ms * 2).min(1_000);
         }
 
-        Ok(command_id)
+        // --- Apply ---
+        // Apply locally to produce the CommandResult returned to the client.
+        // Peers receive Apply fire-and-forget — they apply independently once their
+        // reorder buffer and dependency checks pass.
+        let apply_req = ApplyRequest {
+            command_id: command_id.clone(),
+            command: commit_req.command.clone(),
+            timestamp_zero: commit_req.timestamp_zero.clone(),
+            timestamp: commit_req.timestamp.clone(),
+            dependencies: commit_req.dependencies.clone(),
+        };
+
+        let result = self.apply_local(&apply_req).await?;
+
+        for peer in peers {
+            let req = apply_req.clone();
+            tokio::spawn(async move {
+                let _ = peer.apply(req).await;
+            });
+        }
+
+        Ok(result)
     }
 }

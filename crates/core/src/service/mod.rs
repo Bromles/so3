@@ -1,3 +1,3 @@
-pub mod registry;
 pub mod consensus_coordinator;
+pub mod registry;
 
