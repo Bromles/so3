@@ -8,31 +8,46 @@ use crate::domain::object::metadata::{ObjectMetadata, StoredObject};
 use crate::domain::object::version::ObjectVersion;
 use crate::repository::blob::BlobRepository;
 use crate::repository::consensus_journal::ConsensusJournalRepository;
+use crate::repository::metadata::ObjectMetadataRepository;
+use crate::service::consensus_coordinator::ConsensusCoordinatorService;
 use crate::use_case::object::ObjectUseCase;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-pub struct ObjectUseCaseImpl<CJ: ConsensusJournalRepository, BR: BlobRepository, BC: BlobPeerClient>
-{
-    pub consensus_journal_repository: CJ,
-    pub blob_repository: BR,
+pub struct ObjectUseCaseImpl<
+    CCS: ConsensusCoordinatorService,
+    CJR: ConsensusJournalRepository,
+    OMR: ObjectMetadataRepository,
+    BR: BlobRepository,
+    BC: BlobPeerClient,
+> {
+    pub consensus_coordinator_service: CCS,
+    pub consensus_journal_repository: Arc<CJR>,
+    pub object_metadata_repository: Arc<OMR>,
+    pub blob_repository: Arc<BR>,
     pub blob_client_map: HashMap<NodeId, Arc<BC>>,
 }
 
-impl<CJ, BR, BC> ObjectUseCaseImpl<CJ, BR, BC>
+impl<CCS, CJR, OMR, BR, BC> ObjectUseCaseImpl<CCS, CJR, OMR, BR, BC>
 where
-    CJ: ConsensusJournalRepository,
+    CCS: ConsensusCoordinatorService,
+    CJR: ConsensusJournalRepository,
+    OMR: ObjectMetadataRepository,
     BR: BlobRepository,
     BC: BlobPeerClient,
 {
     pub fn new(
-        consensus_journal_repository: CJ,
-        blob_repository: BR,
+        consensus_coordinator_service: CCS,
+        consensus_journal_repository: Arc<CJR>,
+        object_metadata_repository: Arc<OMR>,
+        blob_repository: Arc<BR>,
         blob_client_map: HashMap<NodeId, Arc<BC>>,
     ) -> Self {
         Self {
+            consensus_coordinator_service,
             consensus_journal_repository,
+            object_metadata_repository,
             blob_repository,
             blob_client_map,
         }
@@ -46,9 +61,11 @@ where
 }
 
 #[async_trait]
-impl<CJ, BR, BC> ObjectUseCase for ObjectUseCaseImpl<CJ, BR, BC>
+impl<CCS, CJR, OMR, BR, BC> ObjectUseCase for ObjectUseCaseImpl<CCS, CJR, OMR, BR, BC>
 where
-    CJ: ConsensusJournalRepository,
+    CCS: ConsensusCoordinatorService,
+    CJR: ConsensusJournalRepository,
+    OMR: ObjectMetadataRepository,
     BR: BlobRepository,
     BC: BlobPeerClient,
 {

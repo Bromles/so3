@@ -8,7 +8,7 @@ pub trait BlobRepository: Send + Sync + 'static {
     /// # Errors
     ///
     /// Returns an error when blob bytes cannot be durably staged and committed.
-    async fn store(&self, blob_id: &BlobId, payload: BlobPayload) -> So3Result<()>;
+    async fn store(&self, blob_id: &BlobId, payload: &BlobPayload) -> So3Result<()>;
 
     /// # Errors
     ///

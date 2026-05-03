@@ -1,4 +1,4 @@
 pub mod registry;
-pub mod consensus;
+pub mod consensus_coordinator;
 pub mod local_state_machine;
 

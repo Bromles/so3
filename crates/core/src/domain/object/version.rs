@@ -1,6 +1,6 @@
 use crate::domain::error::So3Error;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ObjectVersion(i64);
 
 impl ObjectVersion {

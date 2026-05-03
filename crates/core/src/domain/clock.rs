@@ -94,7 +94,7 @@ impl HybridLogicalClock {
     }
 }
 
-fn physical_millis_now() -> u64 {
+pub fn physical_millis_now() -> u64 {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::ZERO)

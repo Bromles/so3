@@ -45,7 +45,7 @@ pub struct WriteResult {
     pub metadata: ObjectMetadata,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum CasResult {
     Updated(ObjectMetadata),
     Conflict { current_version: ObjectVersion },
