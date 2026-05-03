@@ -48,11 +48,27 @@ pub enum RequestBody {
         rpc: ConsensusRpc,
         payload: Vec<u8>,
     },
+    BlobPush {
+        msg_id: u64,
+        blob_id: String,
+        payload: Vec<u8>,
+    },
+    BlobFetch {
+        msg_id: u64,
+        blob_id: String,
+    },
     ForwardOk {
         in_reply_to: u64,
         response: ResponseBody,
     },
     ConsensusOk {
+        in_reply_to: u64,
+        payload: Vec<u8>,
+    },
+    BlobPushOk {
+        in_reply_to: u64,
+    },
+    BlobFetchOk {
         in_reply_to: u64,
         payload: Vec<u8>,
     },
@@ -69,6 +85,7 @@ pub enum ConsensusRpc {
     PreAccept,
     Accept,
     Commit,
+    Apply,
     Recover,
 }
 

@@ -138,10 +138,11 @@ in this document.
 - The adapter stores state under `SO3_MAELSTROM_DATA_DIR` or `./var/so3-maelstrom` by default.
 - The helper scripts create a fresh temporary `SO3_MAELSTROM_DATA_DIR` for each run unless you
   provide one explicitly.
-- Each Maelstrom node gets its own subdirectory keyed by `node_id`.
+- Each Maelstrom node gets isolated durable storage keyed by `node_id`: metadata/journal under
+  `metadata/<node_id>` and blobs under `blobs/<node_id>`.
 - The current adapter persists each node independently and uses Maelstrom messages for forwarding
-  and consensus transport. It is useful for protocol and semantics validation before the normal
-  TCP/gRPC `so3` node path is used for Jepsen runs.
+  plus consensus/blob transport. It is useful for protocol and semantics validation before the
+  normal TCP/gRPC `so3` node path is used for Jepsen runs.
 - On Windows, Maelstrom needs permission to create symbolic links for `store/current`. If that
   fails, run the script from an elevated shell or enable Windows Developer Mode first.
 - On WSL, prefer building a Linux `so3-maelstrom` binary inside WSL. Running the Windows `.exe`
