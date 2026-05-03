@@ -2,7 +2,8 @@ use crate::domain::blob::checksum::Sha256Digest;
 use crate::domain::clock::LogicalTimestamp as DomainLogicalTimestamp;
 use crate::domain::command::{
     CasResult as DomainCasResult, CommandResult as DomainCommandResult,
-    ObjectCommand as DomainObjectCommand, ReadResult, WriteResult as DomainWriteResult,
+    ObjectCommand as DomainObjectCommand, ReadResult as DomainReadResult,
+    WriteResult as DomainWriteResult,
 };
 use crate::domain::consensus::command_id::{
     AppliedSet as DomainAppliedSet, CommandId as DomainCommandId,
@@ -14,8 +15,9 @@ use crate::domain::consensus::transport::{
     ApplyRequest as DomainApplyRequest, ApplyResponse as DomainApplyResponse,
     Ballot as DomainBallot, CommitRequest as DomainCommitRequest,
     CommitResponse as DomainCommitResponse, PreAcceptRequest as DomainPreAcceptRequest,
-    PreAcceptResponse as DomainPreAcceptResponse, RecoverRequest as DomainRecoverRequest,
-    RecoverResponse as DomainRecoverResponse,
+    PreAcceptResponse as DomainPreAcceptResponse, RecoverNack as DomainRecoverNack,
+    RecoverRequest as DomainRecoverRequest, RecoverResponse as DomainRecoverResponse,
+    RecoverSuccess as DomainRecoverSuccess,
 };
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::node::NodeId;
@@ -25,6 +27,7 @@ use crate::proto::consensus::cas_result::Outcome as ProtoCasOutcome;
 use crate::proto::consensus::command_result::Result as ProtoResult;
 use crate::proto::consensus::object_command::Op as ProtoOp;
 use crate::proto::consensus::read_result::Outcome as ProtoReadOutcome;
+use crate::proto::consensus::recover_response::Outcome as ProtoRecoverOutcome;
 use crate::proto::consensus::{
     AcceptRequest as ProtoAcceptRequest, AcceptResponse as ProtoAcceptResponse,
     AppliedSet as ProtoAppliedSet, ApplyRequest as ProtoApplyRequest,
@@ -37,8 +40,9 @@ use crate::proto::consensus::{
     NotFound as ProtoNotFound, ObjectCommand as ProtoObjectCommand,
     ObjectMetadata as ProtoObjectMetadata, PreAcceptRequest as ProtoPreAcceptRequest,
     PreAcceptResponse as ProtoPreAcceptResponse, ReadOp as ProtoReadOp,
-    ReadResult as ProtoReadResult, RecoverRequest as ProtoRecoverRequest,
-    RecoverResponse as ProtoRecoverResponse, State as ProtoState, WriteOp as ProtoWriteOp,
+    ReadResult as ProtoReadResult, RecoverNack as ProtoRecoverNack,
+    RecoverRequest as ProtoRecoverRequest, RecoverResponse as ProtoRecoverResponse,
+    RecoverSuccess as ProtoRecoverSuccess, State as ProtoState, WriteOp as ProtoWriteOp,
     WriteResult as ProtoWriteResult,
 };
 
@@ -241,14 +245,14 @@ pub fn object_command_to_domain(command: ProtoObjectCommand) -> So3Result<Domain
 pub fn command_result_to_proto(res: DomainCommandResult) -> ProtoCommandResult {
     match res {
         DomainCommandResult::Read(result) => match result {
-            ReadResult::Found(metadata) => ProtoCommandResult {
+            DomainReadResult::Found(metadata) => ProtoCommandResult {
                 result: Some(ProtoResult::Read(ProtoReadResult {
                     outcome: Some(ProtoReadOutcome::Metadata(object_metadata_to_proto(
                         metadata,
                     ))),
                 })),
             },
-            ReadResult::NotFound => ProtoCommandResult {
+            DomainReadResult::NotFound => ProtoCommandResult {
                 result: Some(ProtoResult::Read(ProtoReadResult {
                     outcome: Some(ProtoReadOutcome::NotFound(ProtoNotFound {})),
                 })),
@@ -286,10 +290,44 @@ pub fn command_result_to_domain(res: ProtoCommandResult) -> So3Result<DomainComm
         .result
         .ok_or_else(|| So3Error::InvalidRequest("empty command result".to_string()))?
     {
-        ProtoResult::Read(ProtoReadResult { outcome }) => {}
-        ProtoResult::Write(ProtoWriteResult { metadata }) => {}
-        ProtoResult::Cas(ProtoCasResult { outcome }) => {}
-        ProtoResult::Delete(ProtoDeleteResult {}) => {}
+        ProtoResult::Read(ProtoReadResult { outcome }) => {
+            match outcome
+                .ok_or_else(|| So3Error::InvalidRequest("empty read command outcome".to_string()))?
+            {
+                ProtoReadOutcome::Metadata(metadata) => Ok(DomainCommandResult::Read(
+                    DomainReadResult::Found(object_metadata_to_domain(metadata)?),
+                )),
+                ProtoReadOutcome::NotFound(_) => {
+                    Ok(DomainCommandResult::Read(DomainReadResult::NotFound))
+                }
+            }
+        }
+        ProtoResult::Write(ProtoWriteResult { metadata }) => {
+            Ok(DomainCommandResult::Write(DomainWriteResult {
+                metadata: object_metadata_to_domain(metadata.ok_or_else(|| {
+                    So3Error::InvalidRequest("empty write command metadata".to_string())
+                })?)?,
+            }))
+        }
+        ProtoResult::Cas(ProtoCasResult { outcome }) => {
+            match outcome
+                .ok_or_else(|| So3Error::InvalidRequest("empty cas command outcome".to_string()))?
+            {
+                ProtoCasOutcome::Success(ProtoCasSuccess { metadata }) => {
+                    Ok(DomainCommandResult::Cas(DomainCasResult::Updated(
+                        object_metadata_to_domain(metadata.ok_or_else(|| {
+                            So3Error::InvalidRequest("empty cas command metadata".to_string())
+                        })?)?,
+                    )))
+                }
+                ProtoCasOutcome::Conflict(ProtoCasConflict { current_version }) => {
+                    Ok(DomainCommandResult::Cas(DomainCasResult::Conflict {
+                        current_version: current_version.try_into()?,
+                    }))
+                }
+            }
+        }
+        ProtoResult::Delete(ProtoDeleteResult {}) => Ok(DomainCommandResult::Delete),
     }
 }
 
@@ -549,28 +587,69 @@ pub fn recover_req_to_domain(req: ProtoRecoverRequest) -> So3Result<DomainRecove
 }
 
 pub fn recover_res_to_domain(res: ProtoRecoverResponse) -> So3Result<DomainRecoverResponse> {
-    Ok(DomainRecoverResponse {
-        local_state: ProtoState::try_from(res.local_state)
-            .map_err(So3Error::InvalidRequest)?
-            .map(recovery_state_to_domain)?,
-        wait_for: res.wait_for.iter().map(command_id_to_domain).collect(),
-        superseding: res.superseding,
-        dependencies: dependency_set_to_domain(
-            res.dependencies.ok_or_else(So3Error::InvalidRequest)?,
-        ),
-        timestamp: logical_timestamp_to_domain(res.timestamp.ok_or_else(So3Error::InvalidRequest)?),
-        nack: ballot_to_domain(res.nack.ok_or_else(So3Error::InvalidRequest)?),
-    })
+    match res
+        .outcome
+        .ok_or_else(|| So3Error::InvalidRequest("empty recover response outcome".to_string()))?
+    {
+        ProtoRecoverOutcome::Success(ProtoRecoverSuccess {
+            local_state,
+            wait_for,
+            superseding,
+            dependencies,
+            timestamp_zero,
+            timestamp,
+        }) => Ok(DomainRecoverResponse::Success(DomainRecoverSuccess {
+            local_state: local_state.try_into()?,
+            wait_for: wait_for.iter().map(command_id_to_domain).collect(),
+            superseding,
+            dependencies: dependency_set_to_domain(
+                dependencies
+                    .ok_or_else(|| So3Error::InvalidRequest("empty dependencies".to_string()))?,
+            ),
+            timestamp_zero: logical_timestamp_to_domain(
+                timestamp_zero
+                    .ok_or_else(|| So3Error::InvalidRequest("empty timestamp zero".to_string()))?,
+            ),
+            timestamp: logical_timestamp_to_domain(
+                timestamp.ok_or_else(|| So3Error::InvalidRequest("empty timestamp".to_string()))?,
+            ),
+        })),
+        ProtoRecoverOutcome::Nack(ProtoRecoverNack { superseding_ballot }) => {
+            Ok(DomainRecoverResponse::Nack(DomainRecoverNack {
+                superseding_ballot: ballot_to_domain(
+                    superseding_ballot
+                        .ok_or_else(|| So3Error::InvalidRequest("empty ballot".to_string()))?,
+                ),
+            }))
+        }
+    }
 }
 
 pub fn recover_res_to_proto(res: DomainRecoverResponse) -> ProtoRecoverResponse {
-    ProtoRecoverResponse {
-        outcome: None,
-        local_state: res.local_state.to_i32(),
-        wait_for: res.wait_for.iter().map(command_id_to_proto).collect(),
-        superseding: res.superseding,
-        dependencies: Some(dependency_set_to_proto(res.dependencies)),
-        timestamp: Some(logical_timestamp_to_proto(res.timestamp)),
-        nack: Some(ballot_to_proto(res.nack)),
+    match res {
+        DomainRecoverResponse::Success(DomainRecoverSuccess {
+            local_state,
+            wait_for,
+            superseding,
+            dependencies,
+            timestamp_zero,
+            timestamp,
+        }) => ProtoRecoverResponse {
+            outcome: Some(ProtoRecoverOutcome::Success(ProtoRecoverSuccess {
+                local_state: local_state.as_i32(),
+                wait_for: wait_for.iter().map(command_id_to_proto).collect(),
+                superseding,
+                dependencies: Some(dependency_set_to_proto(dependencies)),
+                timestamp_zero: Some(logical_timestamp_to_proto(timestamp_zero)),
+                timestamp: Some(logical_timestamp_to_proto(timestamp)),
+            })),
+        },
+        DomainRecoverResponse::Nack(DomainRecoverNack { superseding_ballot }) => {
+            ProtoRecoverResponse {
+                outcome: Some(ProtoRecoverOutcome::Nack(ProtoRecoverNack {
+                    superseding_ballot: Some(ballot_to_proto(superseding_ballot)),
+                })),
+            }
+        }
     }
 }
