@@ -5,7 +5,6 @@ use crate::domain::consensus::transport::{
     PreAcceptResponse, RecoverRequest, RecoverResponse,
 };
 use crate::domain::error::So3Result;
-use crate::domain::node::NodeId;
 use async_trait::async_trait;
 
 #[async_trait]
@@ -18,5 +17,6 @@ pub trait ConsensusPeerClient: Send + Sync + 'static {
 
 #[async_trait]
 pub trait BlobPeerClient: Send + Sync + 'static {
-    async fn push(&self, peer: &NodeId, blob_id: BlobId, payload: &BlobPayload) -> So3Result<()>;
+    async fn push(&self, blob_id: BlobId, payload: &BlobPayload) -> So3Result<()>;
+    async fn fetch(&self, blob_id: &BlobId) -> So3Result<BlobPayload>;
 }
