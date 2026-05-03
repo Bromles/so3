@@ -2,7 +2,6 @@ use crate::domain::error::So3Result;
 use crate::domain::object::key::ObjectKey;
 use crate::domain::object::version::ObjectVersion;
 use crate::proto::consensus::{DeleteResult, ReadResult};
-use crate::proto::{DeleteResult, ReadResult};
 use crate::repository::blob::BlobRepository;
 use crate::repository::metadata::ObjectMetadataRepository;
 use crate::service::local_state_machine::LocalStateMachine;

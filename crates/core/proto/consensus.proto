@@ -72,7 +72,7 @@ message ObjectMetadata {
   string blob_id = 3;
   bytes sha256 = 4;
   uint64 size = 5;
-  int64 last_modified_ms = 6;
+  uint64 last_modified_ms = 6;
 }
 
 message CommandResult {

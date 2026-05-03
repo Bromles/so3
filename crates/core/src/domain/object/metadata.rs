@@ -12,7 +12,7 @@ pub struct ObjectMetadata {
     pub blob_id: BlobId,
     pub sha256: Sha256Digest,
     pub size: u64,
-    pub last_modified: LogicalTimestamp,
+    pub last_modified_ms: u64,
 }
 
 pub struct StoredObject {

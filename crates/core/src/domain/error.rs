@@ -3,6 +3,7 @@ use std::io::Error as IoError;
 use crate::domain::object::key::ObjectKey;
 use crate::domain::object::version::ObjectVersion;
 use postcard::Error as PostcardError;
+use uuid::Error as UuidError;
 use serde::Serialize;
 use thiserror::Error;
 
@@ -61,5 +62,11 @@ impl From<IoError> for So3Error {
 impl From<PostcardError> for So3Error {
     fn from(value: PostcardError) -> Self {
         Self::Serialization(value.to_string())
+    }
+}
+
+impl From<UuidError> for So3Error {
+    fn from(value: UuidError) -> Self {
+        Self::Io(value.to_string())
     }
 }

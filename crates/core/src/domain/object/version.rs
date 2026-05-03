@@ -1,3 +1,5 @@
+use crate::domain::error::So3Error;
+
 #[derive(Debug, Clone)]
 pub struct ObjectVersion(i64);
 
@@ -12,3 +14,16 @@ impl ObjectVersion {
         self.0
     }
 }
+
+impl TryFrom<i64> for ObjectVersion {
+    type Error = So3Error;
+
+    fn try_from(value: i64) -> Result<Self, Self::Error> {
+        if value < 1 {
+            Err(So3Error::InvalidVersion(value))
+        } else {
+            Ok(Self(value))
+        }
+    }
+}
+
