@@ -34,8 +34,9 @@ where
 
         self.blob_repository.store(&blob_id, &payload).await?;
 
-        for (peer_id, client) in &self.blob_client_map {
-            client.push(peer_id, blob_id, &payload).await?;
+        for client in self.blob_client_map.values() {
+            // TODO make parallel
+            client.push(blob_id, &payload).await?;
         }
 
         let command_id = self
