@@ -11,8 +11,8 @@ use crate::proto::mappers::{
     pre_accept_res_to_domain, recover_req_to_proto, recover_res_to_domain,
 };
 use async_trait::async_trait;
-use tonic::transport::{Channel, Endpoint};
 use tonic::Response;
+use tonic::transport::{Channel, Endpoint};
 
 pub struct ConsensusTransportClient {
     channel: Channel,

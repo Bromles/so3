@@ -1,5 +1,5 @@
 use crate::client::interface::{BlobPeerClient, ConsensusPeerClient};
-use crate::domain::clock::{physical_millis_now, HybridLogicalClock};
+use crate::domain::clock::{HybridLogicalClock, physical_millis_now};
 use crate::domain::command::{CasResult, CommandResult, ObjectCommand, ReadResult, WriteResult};
 use crate::domain::consensus::ballot::Ballot;
 use crate::domain::consensus::command_id::{AppliedSet, CommandId, DependencySet};
@@ -17,8 +17,8 @@ use crate::repository::metadata::ObjectMetadataRepository;
 use crate::service::consensus_coordinator::ConsensusCoordinatorService;
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::Mutex;
 
 pub struct AccordConsensusCoordinatorService<CJR, CPC, OMR, BR, BPC>

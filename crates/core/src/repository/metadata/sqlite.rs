@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow, SqliteSynchronous,
 };
-use sqlx::{query, Row, SqlitePool};
+use sqlx::{Row, SqlitePool, query};
 use std::path::Path;
 use std::time::Duration;
 use tokio::fs;

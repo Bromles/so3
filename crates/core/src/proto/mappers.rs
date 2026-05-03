@@ -1,4 +1,3 @@
-use crate::domain::blob::checksum::Sha256Digest;
 use crate::domain::clock::LogicalTimestamp as DomainLogicalTimestamp;
 use crate::domain::command::{
     CasResult as DomainCasResult, CommandResult as DomainCommandResult,
