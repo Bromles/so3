@@ -1,9 +1,7 @@
 use tokio::net::TcpListener;
 use tokio::pin;
-use tokio::spawn;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
 
 use crate::domain::error::{So3Error, So3Result};
 use crate::node::config::NodeConfig;
@@ -59,35 +57,8 @@ impl BoundNode {
     /// # Errors
     ///
     /// Returns an error if either bound server exits with an error.
-    pub async fn run(self, cancellation_token: CancellationToken) -> So3Result<()> {
-        info!(
-            node_id = %self.config.node_id,
-            object_api_addr = %self.config.object_api_addr,
-            rpc_api_addr = %self.config.rpc_api_addr,
-            metadata_dir = %self.config.metadata_dir.display(),
-            blob_dir = %self.config.blob_dir.display(),
-            peer_count = self.config.cluster.peers.len(),
-            "node started"
-        );
-
-        let object_token = cancellation_token.child_token();
-        let rpc_token = cancellation_token.child_token();
-
-        let config = self.config.clone();
-        let object_server = self.object_server;
-        let rpc_server = self.rpc_server;
-        let object_service = self.object_service.clone();
-        let object_listener = self.object_listener;
-        let rpc_listener = self.rpc_listener;
-
-        let object_task = spawn(async move {
-            object_server
-                .run(object_listener, &config, object_service, object_token)
-                .await
-        });
-        let rpc_task = spawn(async move { rpc_server.run(rpc_listener, rpc_token).await });
-
-        fail_fast_join(cancellation_token, object_task, rpc_task).await
+    pub async fn run(self, _cancellation_token: CancellationToken) -> So3Result<()> {
+        unimplemented!("node wiring not yet complete")
     }
 }
 

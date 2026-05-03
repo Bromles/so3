@@ -1,6 +1,7 @@
 use crate::domain::error::So3Error;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ObjectVersion(i64);
 
 impl ObjectVersion {

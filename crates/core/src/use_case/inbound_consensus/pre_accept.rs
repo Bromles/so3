@@ -20,7 +20,10 @@ where
     ) -> So3Result<PreAcceptResponse> {
         let timestamp = self.observe(&req.timestamp_zero).await;
 
-        let conflicting = self.journal.check_conflicts(&req.command_id).await?;
+        let conflicting = self
+            .journal
+            .check_conflicts(&req.command_id, &req.command)
+            .await?;
         let dependencies = DependencySet(conflicting);
 
         self.journal

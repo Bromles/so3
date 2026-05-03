@@ -4,7 +4,7 @@ use crate::domain::blob::payload::BlobPayload;
 use crate::domain::object::key::ObjectKey;
 use crate::domain::object::version::ObjectVersion;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ObjectMetadata {
     pub key: ObjectKey,
     pub version: ObjectVersion,

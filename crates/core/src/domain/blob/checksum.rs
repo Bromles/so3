@@ -1,8 +1,9 @@
 use crate::domain::error::So3Error;
 use bytes::Bytes;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Sha256Digest([u8; 32]);
 
 impl Sha256Digest {
@@ -10,6 +11,10 @@ impl Sha256Digest {
         let digest = Sha256::digest(data);
         let bytes: [u8; 32] = digest.into();
 
+        Self(bytes)
+    }
+
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
 

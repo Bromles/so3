@@ -249,7 +249,7 @@ where
         // Coordinator is also a replica — check local conflicts and record locally.
         let local_deps = self
             .consensus_journal_repository
-            .check_conflicts(&command_id)
+            .check_conflicts(&command_id, &command)
             .await?;
         self.consensus_journal_repository
             .record_pre_accepted(

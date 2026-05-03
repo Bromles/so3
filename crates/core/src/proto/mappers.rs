@@ -222,7 +222,7 @@ pub fn object_command_to_domain(command: ProtoObjectCommand) -> So3Result<Domain
         }) => Ok(DomainObjectCommand::Write {
             key: ObjectKey::new(key)?,
             blob_id: blob_id.as_str().try_into()?,
-            sha256: Sha256Digest::compute(sha256.as_ref()),
+            sha256: sha256.try_into()?,
             size,
         }),
         ProtoOp::Cas(ProtoCasOp {
@@ -235,7 +235,7 @@ pub fn object_command_to_domain(command: ProtoObjectCommand) -> So3Result<Domain
             key: ObjectKey::new(key)?,
             expected_version: expected_version.try_into()?,
             blob_id: blob_id.as_str().try_into()?,
-            sha256: Sha256Digest::compute(sha256.as_ref()),
+            sha256: sha256.try_into()?,
             size,
         }),
         ProtoOp::Delete(ProtoDeleteOp { key }) => Ok(DomainObjectCommand::Delete {

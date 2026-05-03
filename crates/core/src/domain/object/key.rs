@@ -1,6 +1,7 @@
 use crate::domain::error::{So3Error, So3Result};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObjectKey(String);
 
 impl ObjectKey {

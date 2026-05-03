@@ -3,8 +3,9 @@ use crate::domain::blob::id::BlobId;
 use crate::domain::object::key::ObjectKey;
 use crate::domain::object::metadata::ObjectMetadata;
 use crate::domain::object::version::ObjectVersion;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ObjectCommand {
     Read {
         key: ObjectKey,
@@ -27,7 +28,7 @@ pub enum ObjectCommand {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum CommandResult {
     Read(ReadResult),
     Write(WriteResult),
@@ -35,18 +36,18 @@ pub enum CommandResult {
     Delete,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum ReadResult {
     Found(ObjectMetadata),
     NotFound,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct WriteResult {
     pub metadata: ObjectMetadata,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CasResult {
     Updated(ObjectMetadata),
     Conflict { current_version: ObjectVersion },

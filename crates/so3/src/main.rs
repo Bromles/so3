@@ -1,8 +1,7 @@
 #![warn(clippy::pedantic)]
 #![forbid(unsafe_code)]
-use signal::unix::signal;
 use std::process::exit;
-use tokio::signal::ctrl_c;
+
 use tokio::{select, signal, spawn};
 use tokio_util::sync::CancellationToken;
 use tracing::error;
@@ -47,23 +46,21 @@ async fn run() -> So3Result<()> {
 
 async fn shutdown_signal() -> So3Result<()> {
     let ctrl_c = async {
-        signal::ctrl_c().await?;
+        let _ = signal::ctrl_c().await;
     };
 
     #[cfg(unix)]
     let terminate = async {
-        signal(signal::unix::SignalKind::terminate())?.recv().await;
+        use tokio::signal::unix::SignalKind;
+        let _ = tokio::signal::unix::signal(SignalKind::terminate())
+            .map(|mut s| async move { s.recv().await });
     };
 
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
 
     select! {
-        _ = ctrl_c => {
-            Ok(())
-        },
-        _ = terminate => {
-            Ok(())
-        },
+        _ = ctrl_c => Ok(()),
+        _ = terminate => Ok(()),
     }
 }
