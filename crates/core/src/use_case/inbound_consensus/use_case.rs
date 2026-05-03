@@ -14,6 +14,7 @@ use crate::repository::metadata::ObjectMetadataRepository;
 use crate::use_case::inbound_consensus::InboundConsensusUseCase;
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -25,11 +26,11 @@ where
     BPC: BlobPeerClient,
 {
     pub node_id: NodeId,
-    pub epoch: u64,
+    pub epoch: AtomicU64,
     pub hlc: Mutex<HybridLogicalClock>,
     pub journal: Arc<CJR>,
-    pub metadata_repo: Arc<OMR>,
-    pub blob_repo: Arc<BR>,
+    pub object_metadata_repository: Arc<OMR>,
+    pub blob_repository: Arc<BR>,
     pub blob_clients: HashMap<NodeId, Arc<BPC>>,
 }
 
@@ -51,16 +52,20 @@ where
         Self {
             hlc: Mutex::new(HybridLogicalClock::new(node_id.clone())),
             node_id,
-            epoch,
+            epoch: AtomicU64::new(epoch),
             journal,
-            metadata_repo,
-            blob_repo,
+            object_metadata_repository: metadata_repo,
+            blob_repository: blob_repo,
             blob_clients,
         }
     }
 
+    pub fn set_epoch(&self, epoch: u64) {
+        self.epoch.store(epoch, Ordering::Release);
+    }
+
     pub(super) async fn observe(&self, remote: &LogicalTimestamp) -> LogicalTimestamp {
-        self.hlc.lock().await.observe(self.epoch, remote)
+        self.hlc.lock().await.observe(self.epoch.load(Ordering::Acquire), remote)
     }
 
     pub(super) async fn fetch_blob_from_any_peer(

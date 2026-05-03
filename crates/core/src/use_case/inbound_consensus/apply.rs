@@ -44,7 +44,7 @@ where
 
         // Execute command inline
         let result = match req.command {
-            ObjectCommand::Read { ref key } => match self.metadata_repo.load(key).await? {
+            ObjectCommand::Read { ref key } => match self.object_metadata_repository.load(key).await? {
                 Some(m) => CommandResult::Read(ReadResult::Found(m)),
                 None => CommandResult::Read(ReadResult::NotFound),
             },
@@ -54,12 +54,12 @@ where
                 sha256,
                 size,
             } => {
-                if !self.blob_repo.exists(&blob_id).await? {
+                if !self.blob_repository.exists(&blob_id).await? {
                     let payload = self.fetch_blob_from_any_peer(&blob_id).await?;
-                    self.blob_repo.store(&blob_id, &payload).await?;
+                    self.blob_repository.store(&blob_id, &payload).await?;
                 }
                 let version = self
-                    .metadata_repo
+                    .object_metadata_repository
                     .load(key)
                     .await?
                     .map(|m| m.version.next())
@@ -72,11 +72,11 @@ where
                     size,
                     last_modified_ms: physical_millis_now(),
                 };
-                self.metadata_repo.store(&metadata).await?;
+                self.object_metadata_repository.store(&metadata).await?;
                 CommandResult::Write(WriteResult { metadata })
             }
             ObjectCommand::Delete { ref key } => {
-                self.metadata_repo.delete(key).await?;
+                self.object_metadata_repository.delete(key).await?;
                 CommandResult::Delete
             }
             ObjectCommand::Cas {
@@ -86,11 +86,11 @@ where
                 sha256,
                 size,
             } => {
-                if !self.blob_repo.exists(&blob_id).await? {
+                if !self.blob_repository.exists(&blob_id).await? {
                     let payload = self.fetch_blob_from_any_peer(&blob_id).await?;
-                    self.blob_repo.store(&blob_id, &payload).await?;
+                    self.blob_repository.store(&blob_id, &payload).await?;
                 }
-                match self.metadata_repo.load(key).await? {
+                match self.object_metadata_repository.load(key).await? {
                     Some(meta) if meta.version == *expected_version => {
                         let new_meta = ObjectMetadata {
                             key: key.clone(),
@@ -100,7 +100,7 @@ where
                             size,
                             last_modified_ms: physical_millis_now(),
                         };
-                        self.metadata_repo.store(&new_meta).await?;
+                        self.object_metadata_repository.store(&new_meta).await?;
                         CommandResult::Cas(CasResult::Updated(new_meta))
                     }
                     Some(meta) => CommandResult::Cas(CasResult::Conflict {

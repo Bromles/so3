@@ -6,6 +6,8 @@ pub struct CommandId {
     pub sequence: u64,
 }
 
+#[derive(Clone)]
 pub struct DependencySet(pub Vec<CommandId>);
 
+#[derive(Clone)]
 pub struct AppliedSet(pub Vec<CommandId>);

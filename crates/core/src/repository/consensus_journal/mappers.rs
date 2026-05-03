@@ -1,5 +1,6 @@
-use crate::domain::consensus::command_id::CommandId;
-use crate::domain::consensus::journal::JournalEntry;
+use crate::domain::clock::LogicalTimestamp;
+use crate::domain::consensus::command_id::{CommandId, DependencySet};
+use crate::domain::consensus::journal::{JournalEntry, JournalState};
 use crate::domain::error::{So3Error, So3Result};
 use sqlx::sqlite::SqliteRow;
 use sqlx::Row;
@@ -23,16 +24,13 @@ pub fn row_to_entry(row: &SqliteRow) -> So3Result<JournalEntry> {
     let command = row.try_get::<Vec<u8>, _>("command")?;
 
     Ok(JournalEntry {
-        command_id: CommandId::new(
-            row.try_get("origin_node_id")?,
-            i64_to_u64_sequence(sequence)?,
-        ),
-        state: parse_state(state)?,
-        metadata: JournalMetadata {
-            timestamp_zero: decode_optional_proto(&row.try_get::<Vec<u8>, _>("timestamp_zero")?)?,
-            timestamp: decode_optional_proto(&row.try_get::<Vec<u8>, _>("timestamp")?)?,
-            dependencies: decode_dependencies(&row.try_get::<Vec<u8>, _>("dependencies")?)?,
-            ballot: decode_optional_proto(&row.try_get::<Vec<u8>, _>("ballot")?)?,
-        },
+        command_id: CommandId {},
+        command: (),
+        state: JournalState::PreAccepted,
+        timestamp_zero: LogicalTimestamp {},
+        timestamp: None,
+        dependencies: DependencySet(),
+        ballot: None,
+        result: None,
     })
 }

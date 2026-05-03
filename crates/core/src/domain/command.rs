@@ -4,6 +4,7 @@ use crate::domain::object::key::ObjectKey;
 use crate::domain::object::metadata::ObjectMetadata;
 use crate::domain::object::version::ObjectVersion;
 
+#[derive(Clone, Debug)]
 pub enum ObjectCommand {
     Read {
         key: ObjectKey,

@@ -1,6 +1,10 @@
-use crate::domain::consensus::command_id::CommandId;
-use crate::domain::consensus::journal::JournalEntry;
+use crate::domain::clock::LogicalTimestamp;
+use crate::domain::command::{CommandResult, ObjectCommand};
+use crate::domain::consensus::ballot::Ballot;
+use crate::domain::consensus::command_id::{CommandId, DependencySet};
+use crate::domain::consensus::journal::{JournalEntry, JournalState};
 use crate::domain::error::So3Result;
+use crate::domain::node::NodeId;
 use crate::repository::consensus_journal::ConsensusJournalRepository;
 use async_trait::async_trait;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
@@ -40,49 +44,50 @@ impl SqliteConsensusJournal {
 
 #[async_trait]
 impl ConsensusJournalRepository for SqliteConsensusJournal {
-    async fn load(&self, command_id: &CommandId) -> So3Result<Option<JournalEntry>> {
-        /*let row = query(LOAD_COMMAND_SQL)
-            .bind(command_id.origin_node_id())
-            .bind(sequence_to_i64(command_id.sequence())?)
-            .fetch_optional(&self.pool)
-            .await?;
-
-        match row {
-            Some(row) => row_to_entry(&row).map(Some),
-            None => Ok(None),
-        }*/
-
-        unimplemented!()
-    }
-
-    async fn list_by_state(&self, state: RecoveryState) -> So3Result<Vec<JournalEntry>> {
-        /*let rows = query(LIST_COMMANDS_BY_STATE_SQL)
-            .bind(state.as_sql())
-            .fetch_all(&self.pool)
-            .await?;
-
-        let mut entries = Vec::with_capacity(rows.len());
-        for row in rows {
-            entries.push(row_to_entry(&row)?);
-        }
-        Ok(entries)*/
-
-        unimplemented!()
-    }
-
-    async fn record_pre_accepted(&self, command_id: &CommandId, command: &[u8], metadata: JournalMetadata) -> So3Result<JournalEntry> {
+    async fn load(&self, _command_id: &CommandId) -> So3Result<Option<JournalEntry>> {
         todo!()
     }
 
-    async fn record_accepted(&self, command_id: &CommandId, command: &[u8], metadata: JournalMetadata) -> So3Result<JournalEntry> {
+    async fn check_conflicts(&self, _command_id: &CommandId) -> So3Result<Vec<CommandId>> {
         todo!()
     }
 
-    async fn record_committed(&self, command_id: &CommandId, command: &[u8], metadata: JournalMetadata) -> So3Result<JournalEntry> {
+    async fn record_pre_accepted(
+        &self,
+        _command_id: &CommandId,
+        _command: &ObjectCommand,
+        _timestamp_zero: &LogicalTimestamp,
+        _deps: &DependencySet,
+    ) -> So3Result<()> {
         todo!()
     }
 
-    async fn record_applied(&self, command_id: &CommandId, command: &[u8], result: &[u8], metadata: JournalMetadata) -> So3Result<JournalEntry> {
+    async fn record_accepted(
+        &self,
+        _command_id: &CommandId,
+        _ballot: &Ballot,
+        _timestamp: &LogicalTimestamp,
+    ) -> So3Result<()> {
+        todo!()
+    }
+
+    async fn record_committed(&self, _command_id: &CommandId) -> So3Result<()> {
+        todo!()
+    }
+
+    async fn record_applied(
+        &self,
+        _command_id: &CommandId,
+        _result: &CommandResult,
+    ) -> So3Result<()> {
+        todo!()
+    }
+
+    async fn list_by_state(&self, _state: JournalState) -> So3Result<Vec<JournalEntry>> {
+        todo!()
+    }
+
+    async fn max_sequence(&self, _node_id: &NodeId) -> So3Result<u64> {
         todo!()
     }
 }

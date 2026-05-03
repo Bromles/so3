@@ -24,7 +24,7 @@ where
         let dependencies = DependencySet(conflicting);
 
         self.journal
-            .record_pre_accepted(&req.command_id, &req.timestamp_zero, &dependencies)
+            .record_pre_accepted(&req.command_id, &req.command, &req.timestamp_zero, &dependencies)
             .await?;
 
         Ok(PreAcceptResponse {
