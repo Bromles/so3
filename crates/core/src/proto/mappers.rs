@@ -46,7 +46,7 @@ use crate::proto::consensus::{
     WriteResult as ProtoWriteResult,
 };
 
-pub fn map_tonic_status(status: &tonic::Status) -> So3Error {
+pub fn map_tonic_status(status: tonic::Status) -> So3Error {
     match status.code() {
         tonic::Code::Unavailable | tonic::Code::DeadlineExceeded => So3Error::PeerUnavailable(
             format!("peer returned {}: {}", status.code(), status.message()),

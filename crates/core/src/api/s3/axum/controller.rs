@@ -156,7 +156,7 @@ fn attach_common_object_headers(
     insert_str_header(
         headers,
         LAST_MODIFIED_HEADER,
-        &http_last_modified(metadata.last_modified.physical_time_ms)?,
+        &http_last_modified(metadata.last_modified_ms)?,
     )
 }
 

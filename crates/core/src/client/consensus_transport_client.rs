@@ -42,7 +42,7 @@ impl ConsensusPeerClient for ConsensusTransportClient {
             .await
             .map_err(map_tonic_status)
             .map(Response::into_inner)
-            .map(pre_accept_res_to_domain)
+            .map(pre_accept_res_to_domain)?
     }
 
     async fn accept(&self, req: AcceptRequest) -> So3Result<AcceptResponse> {
@@ -55,7 +55,7 @@ impl ConsensusPeerClient for ConsensusTransportClient {
             .await
             .map_err(map_tonic_status)
             .map(Response::into_inner)
-            .map(accept_res_to_domain)
+            .map(accept_res_to_domain)?
     }
 
     async fn commit(&self, req: CommitRequest) -> So3Result<CommitResponse> {
@@ -68,7 +68,7 @@ impl ConsensusPeerClient for ConsensusTransportClient {
             .await
             .map_err(map_tonic_status)
             .map(Response::into_inner)
-            .map(commit_res_to_domain)
+            .map(commit_res_to_domain)?
     }
 
     async fn recover(&self, req: RecoverRequest) -> So3Result<RecoverResponse> {
@@ -81,6 +81,6 @@ impl ConsensusPeerClient for ConsensusTransportClient {
             .await
             .map_err(map_tonic_status)
             .map(Response::into_inner)
-            .map(recover_res_to_domain)
+            .map(recover_res_to_domain)?
     }
 }
