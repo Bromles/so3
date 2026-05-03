@@ -102,7 +102,8 @@ pub fn command_id_to_domain(command_id: &ProtoCommandId) -> DomainCommandId {
 pub fn logical_timestamp_to_proto(timestamp: DomainLogicalTimestamp) -> ProtoLogicalTimestamp {
     ProtoLogicalTimestamp {
         epoch: timestamp.epoch,
-        counter: timestamp.counter,
+        physical_millis: timestamp.physical_millis,
+        logical: timestamp.logical,
         node_id: node_id_to_proto(timestamp.node_id),
     }
 }
@@ -110,7 +111,8 @@ pub fn logical_timestamp_to_proto(timestamp: DomainLogicalTimestamp) -> ProtoLog
 pub fn logical_timestamp_to_domain(timestamp: ProtoLogicalTimestamp) -> DomainLogicalTimestamp {
     DomainLogicalTimestamp {
         epoch: timestamp.epoch,
-        counter: timestamp.counter,
+        physical_millis: timestamp.physical_millis,
+        logical: timestamp.logical,
         node_id: NodeId::new(timestamp.node_id),
     }
 }

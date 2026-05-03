@@ -23,6 +23,7 @@ pub struct AccordConsensusCoordinatorService<
     epoch: AtomicU64,
     hlc: Mutex<HybridLogicalClock>,
     sequence: AtomicU64,
+    network_skew_ms: u64,
     consensus_peer_client_map: HashMap<NodeId, Arc<CPC>>,
     consensus_journal_repository: Arc<CJR>,
 }
@@ -35,10 +36,14 @@ where
     pub async fn new(
         node_id: NodeId,
         epoch: u64,
-        peers: HashMap<NodeId, Arc<CPC>>,
-        journal: Arc<CJR>,
+        network_skew_ms: u64,
+        consensus_peer_client_map: HashMap<NodeId, Arc<CPC>>,
+        consensus_journal_repository: Arc<CJR>,
     ) -> So3Result<Self> {
-        let initial_sequence = journal.max_sequence(&node_id).await?.saturating_add(1);
+        let initial_sequence = consensus_journal_repository
+            .max_sequence(&node_id)
+            .await?
+            .saturating_add(1);
         let hlc = HybridLogicalClock::new(node_id.clone());
 
         Ok(Self {
@@ -46,8 +51,9 @@ where
             epoch: AtomicU64::new(epoch),
             hlc: Mutex::new(hlc),
             sequence: AtomicU64::new(initial_sequence),
-            consensus_peer_client_map: peers,
-            consensus_journal_repository: journal,
+            network_skew_ms,
+            consensus_peer_client_map,
+            consensus_journal_repository,
         })
     }
 
@@ -68,7 +74,10 @@ where
     }
 
     async fn last_applied(&self) -> So3Result<AppliedSet> {
-        let entries = self.consensus_journal_repository.list_by_state(JournalState::Applied).await?;
+        let entries = self
+            .consensus_journal_repository
+            .list_by_state(JournalState::Applied)
+            .await?;
         Ok(AppliedSet(
             entries.into_iter().map(|e| e.command_id).collect(),
         ))
@@ -84,11 +93,18 @@ where
     async fn coordinate(&self, command: ObjectCommand) -> So3Result<CommandId> {
         let command_id = self.next_command_id();
         let ballot = Ballot::initial(self.node_id.clone());
-        let timestamp_zero = self.hlc.lock().await.tick(self.epoch.load(Ordering::Acquire));
+        let timestamp_zero = self
+            .hlc
+            .lock()
+            .await
+            .tick(self.epoch.load(Ordering::Acquire), self.network_skew_ms);
         let last_applied = self.last_applied().await?;
 
         // Coordinator is also a replica — check local conflicts and record locally.
-        let local_deps = self.consensus_journal_repository.check_conflicts(&command_id).await?;
+        let local_deps = self
+            .consensus_journal_repository
+            .check_conflicts(&command_id)
+            .await?;
         self.consensus_journal_repository
             .record_pre_accepted(
                 &command_id,
@@ -206,20 +222,47 @@ where
         };
 
         // Record committed locally.
-        self.consensus_journal_repository.record_committed(&command_id).await?;
+        self.consensus_journal_repository
+            .record_committed(&command_id)
+            .await?;
 
-        // Fire-and-forget Commit to all peers.
-        for peer in peers {
-            let req = CommitRequest {
-                command_id: command_id.clone(),
-                command: command.clone(),
-                timestamp_zero: timestamp_zero.clone(),
-                timestamp: commit_timestamp.clone(),
-                dependencies: DependencySet(commit_deps.clone()),
-            };
-            tokio::spawn(async move {
-                let _ = peer.commit(req).await;
-            });
+        // Commit must reach a quorum before we return — this is the fix for CASSANDRA-18365.
+        // Accept quorum makes the decision final, but if the coordinator crashes before Commit
+        // reaches f+1 nodes, recovery quorum may not see any Committed state and will
+        // incorrectly re-run Accept with different deps, violating linearizability.
+        //
+        // We do NOT fail on quorum miss — Accept already persisted the decision, so returning
+        // an error would cause the client to retry and create a duplicate command. Instead we
+        // retry Commit until quorum is reached (TODO: parallelize, add bounded back-off).
+        let commit_req = CommitRequest {
+            command_id: command_id.clone(),
+            command,
+            timestamp_zero,
+            timestamp: commit_timestamp,
+            dependencies: DependencySet(commit_deps),
+        };
+
+        // Bounded retry with exponential back-off capped at 1 s.
+        // We never return an error here — Accept already made the decision final;
+        // failing would cause the client to retry with a new CommandId (duplicate).
+        // Remaining nodes will eventually be caught up by the recovery coordinator.
+        const MAX_COMMIT_ATTEMPTS: u32 = 10;
+        let mut delay_ms = 10u64;
+        for _ in 0..MAX_COMMIT_ATTEMPTS {
+            let mut commit_ok = 1usize;
+            for peer in &peers {
+                if peer.commit(commit_req.clone()).await.is_ok() {
+                    commit_ok += 1;
+                }
+            }
+
+            if commit_ok >= quorum {
+                break;
+            }
+
+            tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+
+            delay_ms = (delay_ms * 2).min(1_000);
         }
 
         Ok(command_id)

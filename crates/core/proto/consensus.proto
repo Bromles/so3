@@ -30,8 +30,9 @@ message Ballot {
 
 message LogicalTimestamp {
   uint64 epoch = 1;
-  uint64 counter = 2;
-  string node_id = 3;
+  uint64 physical_millis = 2;
+  uint64 logical = 3;
+  string node_id = 4;
 }
 
 message ObjectCommand {

@@ -32,6 +32,7 @@ pub struct AcceptResponse {
     pub nack: bool,
 }
 
+#[derive(Clone)]
 pub struct CommitRequest {
     pub command_id: CommandId,
     pub command: ObjectCommand,

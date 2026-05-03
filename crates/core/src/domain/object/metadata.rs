@@ -1,7 +1,6 @@
 use crate::domain::blob::checksum::Sha256Digest;
 use crate::domain::blob::id::BlobId;
 use crate::domain::blob::payload::BlobPayload;
-use crate::domain::clock::LogicalTimestamp;
 use crate::domain::object::key::ObjectKey;
 use crate::domain::object::version::ObjectVersion;
 
