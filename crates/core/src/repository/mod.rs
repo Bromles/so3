@@ -4,6 +4,7 @@ use sqlx::Error as SqlxError;
 pub mod blob;
 pub mod consensus_journal;
 pub mod metadata;
+pub mod node_identity;
 pub mod registry;
 
 impl From<SqlxError> for So3Error {

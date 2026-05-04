@@ -8,7 +8,7 @@ use crate::domain::error::{So3Error, So3Result};
 
 #[derive(Clone, Debug)]
 pub struct NodeConfig {
-    pub node_id: Uuid,
+    pub node_id: Option<Uuid>,
     pub object_api_addr: SocketAddr,
     pub rpc_api_addr: SocketAddr,
     pub object_request_timeout: Duration,
@@ -59,7 +59,7 @@ mod tests {
 
     fn test_config() -> NodeConfig {
         NodeConfig {
-            node_id: Uuid::nil(),
+            node_id: Some(Uuid::nil()),
             object_api_addr: EPHEMERAL_LOOPBACK_ADDR.parse().unwrap(),
             rpc_api_addr: "127.0.0.1:4000".parse().unwrap(),
             object_request_timeout: Duration::from_secs(REQUEST_TIMEOUT_SECS),

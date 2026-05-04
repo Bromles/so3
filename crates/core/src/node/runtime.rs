@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use crate::api::rpc::RpcApi;
 use crate::api::rpc::tonic::tonic_server::TonicRpcServer;
-use crate::api::s3::S3Api;
+use crate::api::rpc::RpcApi;
 use crate::api::s3::axum::axum_server::AxumS3Server;
+use crate::api::s3::S3Api;
 use crate::client::blob_client::BlobClient;
 use crate::client::consensus_transport_client::ConsensusTransportClient;
 use tokio::net::TcpListener;
@@ -19,10 +19,13 @@ use crate::node::config::NodeConfig;
 use crate::repository::blob::fs::FileSystemBlobRepository;
 use crate::repository::consensus_journal::sqlite::SqliteConsensusJournal;
 use crate::repository::metadata::sqlite::SqliteObjectMetadataRepository;
+use crate::repository::node_identity::fs::FileSystemNodeIdentityRepository;
 use crate::repository::registry::RepositoryRegistry;
 use crate::service::consensus_coordinator::service::AccordConsensusCoordinatorService;
 use crate::use_case::blob::use_case::BlobUseCaseImpl;
 use crate::use_case::inbound_consensus::use_case::InboundConsensusUseCaseImpl;
+use crate::use_case::node_identity::use_case::NodeIdentityUseCaseImpl;
+use crate::use_case::node_identity::NodeIdentityUseCase;
 use crate::use_case::object::use_case::ObjectUseCaseImpl;
 
 type Journal = SqliteConsensusJournal;
@@ -83,7 +86,15 @@ impl Node {
             blob_clients.insert(peer_id, Arc::new(BlobClient::new(endpoint).await?));
         }
 
-        let node_id = NodeId::new(config.node_id.to_string());
+        let node_uuid = {
+            let repo = Arc::new(
+                FileSystemNodeIdentityRepository::new(&config.metadata_dir).await?,
+            );
+            NodeIdentityUseCaseImpl::new(repo)
+                .ensure(config.node_id)
+                .await?
+        };
+        let node_id = NodeId::new(node_uuid.to_string());
         let apply_notify = Arc::new(tokio::sync::Notify::new());
         let coordinator = AccordConsensusCoordinatorService::new(
             node_id.clone(),
@@ -245,7 +256,7 @@ mod tests {
     async fn node_new_and_bind_builds_runtime_components() {
         let temp_dir = TempDir::new().unwrap();
         let config = NodeConfig {
-            node_id: Uuid::nil(),
+            node_id: Some(Uuid::nil()),
             object_api_addr: "127.0.0.1:0".parse().unwrap(),
             rpc_api_addr: "127.0.0.1:0".parse().unwrap(),
             object_request_timeout: Duration::from_secs(1),

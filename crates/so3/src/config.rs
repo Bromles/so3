@@ -183,12 +183,14 @@ fn pick_uuid(
     get_var: &impl Fn(&str) -> Option<String>,
     env_name: &str,
     file_value: Option<&str>,
-) -> So3Result<Uuid> {
+) -> So3Result<Option<Uuid>> {
     match get_var(env_name).or_else(|| file_value.map(ToOwned::to_owned)) {
-        Some(value) => Uuid::parse_str(&value).map_err(|error| {
-            So3Error::InvalidRequest(format!("failed to parse {env_name}={value}: {error}"))
-        }),
-        None => Ok(Uuid::new_v4()),
+        Some(value) => Uuid::parse_str(&value)
+            .map(Some)
+            .map_err(|error| {
+                So3Error::InvalidRequest(format!("failed to parse {env_name}={value}: {error}"))
+            }),
+        None => Ok(None),
     }
 }
 
@@ -325,7 +327,7 @@ mod tests {
         );
         assert_eq!(config.metadata_dir.to_string_lossy(), OVERRIDE_METADATA_DIR);
         assert_eq!(config.blob_dir.to_string_lossy(), OVERRIDE_BLOB_DIR);
-        assert_eq!(config.node_id.to_string(), FIXED_NODE_ID);
+        assert_eq!(config.node_id.unwrap().to_string(), FIXED_NODE_ID);
         assert_eq!(config.cluster.peers.len(), 2);
         assert_eq!(config.cluster.peers[0].to_string(), PEER_ONE_ADDR);
         assert_eq!(config.cluster.peers[1].to_string(), PEER_TWO_ADDR);
@@ -414,6 +416,6 @@ mod tests {
         let file_config = super::parse_config_file(&config_path).unwrap();
         let config = super::build_node_config(Some(&file_config), |_| None).unwrap();
 
-        assert_eq!(config.node_id.to_string(), FIXED_NODE_ID);
+        assert_eq!(config.node_id.unwrap().to_string(), FIXED_NODE_ID);
     }
 }
