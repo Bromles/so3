@@ -20,6 +20,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{Mutex, Notify};
+use tokio::time::{Duration, Instant, sleep, timeout_at};
 
 pub struct AccordConsensusCoordinatorService<CJR, CPC, OMR, BR, BPC>
 where
@@ -140,7 +141,7 @@ where
         // Wait for all explicit dependencies to be applied locally.
         // Register the Notify future before checking state to avoid the TOCTOU where a dep
         // gets applied between the check and the await.
-        let dep_deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(30);
+        let dep_deadline = Instant::now() + Duration::from_secs(30);
         loop {
             let notified = self.apply_notify.notified();
             let mut pending = None;
@@ -156,13 +157,11 @@ where
             match pending {
                 None => break,
                 Some(seq) => {
-                    tokio::time::timeout_at(dep_deadline, notified)
-                        .await
-                        .map_err(|_| {
-                            So3Error::PeerUnavailable(format!(
-                                "dependency seq={seq} not applied within deadline"
-                            ))
-                        })?;
+                    timeout_at(dep_deadline, notified).await.map_err(|_| {
+                        So3Error::PeerUnavailable(format!(
+                            "dependency seq={seq} not applied within deadline"
+                        ))
+                    })?;
                 }
             }
         }
@@ -284,7 +283,7 @@ where
                 commit_reached_quorum = true;
                 break;
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+            sleep(Duration::from_millis(delay_ms)).await;
             delay_ms = (delay_ms * 2).min(1_000);
         }
         if !commit_reached_quorum {
@@ -308,6 +307,33 @@ where
             });
         }
         Ok(result)
+    }
+
+    async fn wait_for_applied(&self, deps: &[CommandId]) -> So3Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let notified = self.apply_notify.notified();
+            let mut pending = None;
+            for dep_id in deps {
+                match self.consensus_journal_repository.load(dep_id).await? {
+                    Some(e) if e.state == JournalState::Applied => {}
+                    _ => {
+                        pending = Some(dep_id.sequence);
+                        break;
+                    }
+                }
+            }
+            match pending {
+                None => return Ok(()),
+                Some(seq) => {
+                    timeout_at(deadline, notified).await.map_err(|_| {
+                        So3Error::PeerUnavailable(format!(
+                            "recovery wait_for dep seq={seq} not applied within deadline"
+                        ))
+                    })?;
+                }
+            }
+        }
     }
 
     async fn recover_and_complete(
@@ -347,6 +373,14 @@ where
                 "recovery quorum not reached".into(),
             ));
         }
+
+        // Wait for all deps that peers report as unapplied before we proceed.
+        // Without this, we might commit the recovered command before its deps are applied.
+        let wait_for: Vec<CommandId> = successes
+            .iter()
+            .flat_map(|s| s.wait_for.iter().cloned())
+            .collect();
+        self.wait_for_applied(&wait_for).await?;
 
         // If any peer has already committed, use that decision directly.
         if let Some(done) = successes.iter().find(|s| {
@@ -619,7 +653,7 @@ where
                 commit_reached_quorum = true;
                 break;
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+            sleep(Duration::from_millis(delay_ms)).await;
             delay_ms = (delay_ms * 2).min(1_000);
         }
 

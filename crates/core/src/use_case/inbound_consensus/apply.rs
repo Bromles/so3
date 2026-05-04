@@ -10,6 +10,7 @@ use crate::repository::blob::BlobRepository;
 use crate::repository::consensus_journal::ConsensusJournalRepository;
 use crate::repository::metadata::ObjectMetadataRepository;
 use crate::use_case::inbound_consensus::use_case::InboundConsensusUseCaseImpl;
+use tokio::time::{Duration, Instant, timeout_at};
 
 impl<CJR, OMR, BR, BPC> InboundConsensusUseCaseImpl<CJR, OMR, BR, BPC>
 where
@@ -43,7 +44,7 @@ where
         // have been applied. We register the Notified future *before* checking the buffer to
         // avoid the TOCTOU race where an entry is removed between the check and the await.
         // The deadline is a single shared budget across all iterations of the wait loop.
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(30);
+        let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             let notified = self.apply_notify.notified();
             {
@@ -52,14 +53,12 @@ where
                     break;
                 }
             }
-            tokio::time::timeout_at(deadline, notified)
-                .await
-                .map_err(|_| {
-                    So3Error::PeerUnavailable(
-                        "reorder buffer: deadline exceeded waiting for earlier committed command"
-                            .into(),
-                    )
-                })?;
+            timeout_at(deadline, notified).await.map_err(|_| {
+                So3Error::PeerUnavailable(
+                    "reorder buffer: deadline exceeded waiting for earlier committed command"
+                        .into(),
+                )
+            })?;
         }
 
         // Wait for explicit dependencies to be applied.
@@ -80,13 +79,11 @@ where
             match pending {
                 None => break,
                 Some(seq) => {
-                    tokio::time::timeout_at(deadline, notified)
-                        .await
-                        .map_err(|_| {
-                            So3Error::PeerUnavailable(format!(
-                                "dependency seq={seq} not applied within deadline"
-                            ))
-                        })?;
+                    timeout_at(deadline, notified).await.map_err(|_| {
+                        So3Error::PeerUnavailable(format!(
+                            "dependency seq={seq} not applied within deadline"
+                        ))
+                    })?;
                 }
             }
         }

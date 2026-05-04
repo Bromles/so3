@@ -46,7 +46,7 @@ operational risks that current tests do not cover.
 
 ## Medium Risk
 
-8. Recovery responses expose `wait_for`, but the coordinator ignores it.
+8. (FIXED) Recovery responses expose `wait_for`, but the coordinator ignores it.
    `recover_internal` computes unapplied dependencies and returns `wait_for`, but `recover_and_complete` only collects
    successes and dependencies (`crates/core/src/use_case/inbound_consensus/recover.rs`,
    `crates/core/src/service/consensus_coordinator/service.rs`). If `wait_for` is intended to drive Accord recovery
