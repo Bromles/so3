@@ -16,7 +16,7 @@ operational risks that current tests do not cover.
    `crates/core/src/node/runtime.rs`). This can deadlock cluster bootstrap: a node cannot start while its peers are
    still down or starting.
 
-3. Inbound `Commit`/`Apply` cannot handle a missing journal row.
+3. (FIXED) Inbound `Commit`/`Apply` cannot handle a missing journal row.
    `commit_internal` calls `record_committed`, and SQLite only performs `UPDATE` with a `rows_affected == 1` check (
    `crates/core/src/use_case/inbound_consensus/commit.rs`, `crates/core/src/repository/consensus_journal/sqlite.rs`). If
    a replica missed PreAccept/Accept but receives Commit, it rejects the committed decision instead of synthesizing and

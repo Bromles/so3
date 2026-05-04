@@ -19,14 +19,24 @@ where
     BPC: BlobPeerClient,
 {
     pub(super) async fn apply_internal(&self, req: ApplyRequest) -> So3Result<ApplyResponse> {
-        // Idempotency
-        if let Some(entry) = self.journal.load(&req.command_id).await? {
-            if entry.state == JournalState::Applied {
-                let result = entry
+        // Idempotency; synthesize row if we missed PreAccept/Accept/Commit entirely.
+        match self.journal.load(&req.command_id).await? {
+            Some(e) if e.state == JournalState::Applied => {
+                let result = e
                     .result
                     .ok_or_else(|| So3Error::Storage("applied entry missing result".to_string()))?;
                 return Ok(ApplyResponse { result });
             }
+            None => {
+                self.journal
+                    .check_conflicts_and_record_pre_accepted(
+                        &req.command_id,
+                        &req.command,
+                        &req.timestamp_zero,
+                    )
+                    .await?;
+            }
+            Some(_) => {}
         }
 
         // Reorder buffer: wait until all committed commands with a strictly earlier timestamp
