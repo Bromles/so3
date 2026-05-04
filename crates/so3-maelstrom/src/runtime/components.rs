@@ -67,15 +67,18 @@ pub(super) async fn build_components(
     )
     .await?;
 
-    let local_handler = Arc::new(InboundConsensusUseCaseImpl::new(
-        NodeId::new(node_id.to_owned()),
-        0,
-        Arc::clone(&journal),
-        Arc::clone(&meta),
-        Arc::clone(&blobs),
-        blob_clients.clone(),
-        apply_notify,
-    ));
+    let local_handler = Arc::new(
+        InboundConsensusUseCaseImpl::new(
+            NodeId::new(node_id.to_owned()),
+            0,
+            Arc::clone(&journal),
+            Arc::clone(&meta),
+            Arc::clone(&blobs),
+            blob_clients.clone(),
+            apply_notify,
+        )
+        .await?,
+    );
 
     let object_uc = ObjectUseCaseImpl::new(
         coordinator,

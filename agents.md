@@ -34,7 +34,7 @@ operational risks that current tests do not cover.
    `crates/core/src/use_case/inbound_consensus/apply.rs`, `crates/core/src/service/consensus_coordinator/service.rs`). A
    crash in that window can make replay apply Write/CAS/Delete again and return a different result.
 
-6. The committed reorder buffer is only in memory.
+6.  (FIXED) The committed reorder buffer is only in memory.
    `commit_internal` durably records the command as Committed, then inserts its timestamp into an in-memory
    `reorder_buffer` (`crates/core/src/use_case/inbound_consensus/commit.rs`). After restart, committed-but-not-applied
    commands are not restored into the buffer, so later Apply requests can bypass earlier committed commands.

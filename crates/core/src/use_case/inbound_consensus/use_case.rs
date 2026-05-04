@@ -3,6 +3,7 @@ use crate::domain::blob::id::BlobId;
 use crate::domain::blob::payload::BlobPayload;
 use crate::domain::clock::{HybridLogicalClock, LogicalTimestamp};
 use crate::domain::consensus::command_id::CommandId;
+use crate::domain::consensus::journal::JournalState;
 use crate::domain::consensus::transport::{
     AcceptRequest, AcceptResponse, ApplyRequest, ApplyResponse, CommitRequest, CommitResponse,
     PreAcceptRequest, PreAcceptResponse, RecoverRequest, RecoverResponse,
@@ -48,7 +49,7 @@ where
     BR: BlobRepository,
     BPC: BlobPeerClient,
 {
-    pub fn new(
+    pub async fn new(
         node_id: NodeId,
         epoch: u64,
         journal: Arc<CJR>,
@@ -56,8 +57,14 @@ where
         blob_repo: Arc<BR>,
         blob_clients: HashMap<NodeId, Arc<BPC>>,
         apply_notify: Arc<Notify>,
-    ) -> Self {
-        Self {
+    ) -> So3Result<Self> {
+        let committed = journal.list_by_state(JournalState::Committed).await?;
+        let reorder_buffer: BTreeMap<LogicalTimestamp, CommandId> = committed
+            .into_iter()
+            .filter_map(|e| e.timestamp.map(|ts| (ts, e.command_id)))
+            .collect();
+
+        Ok(Self {
             hlc: Mutex::new(HybridLogicalClock::new(node_id.clone())),
             node_id,
             epoch: AtomicU64::new(epoch),
@@ -65,9 +72,9 @@ where
             object_metadata_repository: metadata_repo,
             blob_repository: blob_repo,
             blob_clients,
-            reorder_buffer: Mutex::new(BTreeMap::new()),
+            reorder_buffer: Mutex::new(reorder_buffer),
             apply_notify,
-        }
+        })
     }
 
     pub fn set_epoch(&self, epoch: u64) {

@@ -112,15 +112,18 @@ impl Node {
             Arc::clone(&apply_notify),
         )
         .await?;
-        let inbound_consensus_use_case = Arc::new(InboundConsensusUseCaseImpl::new(
-            node_id,
-            0,
-            Arc::clone(&consensus_journal),
-            Arc::clone(&metadata_repository),
-            Arc::clone(&blob_repository),
-            blob_clients.clone(),
-            apply_notify,
-        ));
+        let inbound_consensus_use_case = Arc::new(
+            InboundConsensusUseCaseImpl::new(
+                node_id,
+                0,
+                Arc::clone(&consensus_journal),
+                Arc::clone(&metadata_repository),
+                Arc::clone(&blob_repository),
+                blob_clients.clone(),
+                apply_notify,
+            )
+            .await?,
+        );
         let object_use_case = Arc::new(ObjectUseCaseImpl::new(
             coordinator,
             Arc::clone(&consensus_journal),
