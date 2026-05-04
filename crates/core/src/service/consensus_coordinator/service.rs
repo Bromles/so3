@@ -359,11 +359,6 @@ where
             (final_timestamp, refined_deps)
         };
 
-        // Record committed locally.
-        self.consensus_journal_repository
-            .record_committed(&command_id)
-            .await?;
-
         let commit_req = CommitRequest {
             command_id: command_id.clone(),
             command,
@@ -371,6 +366,11 @@ where
             timestamp: commit_timestamp,
             dependencies: DependencySet(commit_deps),
         };
+
+        // Record committed locally with the final timestamp and deps.
+        self.consensus_journal_repository
+            .record_committed(&command_id, &commit_req.timestamp, &commit_req.dependencies)
+            .await?;
 
         // Commit must reach a quorum before applying — CASSANDRA-18365.
         const MAX_COMMIT_ATTEMPTS: u32 = 10;

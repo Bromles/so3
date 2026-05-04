@@ -13,7 +13,7 @@ Current status: `cargo test --workspace` passes, and `cargo clippy --workspace -
 3. (FIXED) Journal state transitions can acknowledge missing rows.
    `accept_internal` can call `record_accepted` after `load(None)`, and SQLite `UPDATE` calls in `record_accepted`, `record_committed`, and `record_applied` do not check `rows_affected`.
 
-4. Commit does not durably store the full final decision.
+4. (FIXED) Commit does not durably store the full final decision.
    `CommitRequest` includes final `timestamp` and `dependencies`, but `record_committed` only receives `command_id` and updates state. Slow-path final deps/timestamp can be lost before recovery.
 
 ## High Risk

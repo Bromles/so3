@@ -22,7 +22,12 @@ pub trait ConsensusJournalRepository: Send + Sync + 'static {
         ballot: &Ballot,
         timestamp: &LogicalTimestamp,
     ) -> So3Result<()>;
-    async fn record_committed(&self, command_id: &CommandId) -> So3Result<()>;
+    async fn record_committed(
+        &self,
+        command_id: &CommandId,
+        timestamp: &LogicalTimestamp,
+        deps: &DependencySet,
+    ) -> So3Result<()>;
     async fn record_applied(&self, command_id: &CommandId, result: &CommandResult)
     -> So3Result<()>;
     async fn list_by_state(&self, state: JournalState) -> So3Result<Vec<JournalEntry>>;

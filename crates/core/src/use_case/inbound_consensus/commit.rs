@@ -16,7 +16,9 @@ where
     pub(super) async fn commit_internal(&self, req: CommitRequest) -> So3Result<CommitResponse> {
         self.observe(&req.timestamp).await;
 
-        self.journal.record_committed(&req.command_id).await?;
+        self.journal
+            .record_committed(&req.command_id, &req.timestamp, &req.dependencies)
+            .await?;
 
         self.reorder_buffer
             .lock()

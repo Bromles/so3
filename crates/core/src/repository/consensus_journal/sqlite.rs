@@ -202,25 +202,37 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
         Ok(())
     }
 
-    async fn record_committed(&self, command_id: &CommandId) -> So3Result<()> {
+    async fn record_committed(
+        &self,
+        command_id: &CommandId,
+        timestamp: &LogicalTimestamp,
+        deps: &DependencySet,
+    ) -> So3Result<()> {
         let seq = sequence_to_i64(command_id.sequence)?;
+        let (t_epoch, t_physical, t_logical) = Self::ts_to_i64s(timestamp)?;
         let n = query(
-            "UPDATE consensus_journal SET state = ? \
+            "UPDATE consensus_journal \
+             SET state = ?, \
+                 t_epoch = ?, t_physical_ms = ?, t_logical = ?, t_node_id = ?, \
+                 deps = ? \
              WHERE origin_node_id = ? AND sequence = ?",
         )
         .bind(JournalState::Committed.as_i32())
+        .bind(t_epoch)
+        .bind(t_physical)
+        .bind(t_logical)
+        .bind(timestamp.node_id.as_ref())
+        .bind(encode_deps(&deps.0)?)
         .bind(command_id.origin_node_id.as_ref())
         .bind(seq)
         .execute(&self.pool)
         .await?
         .rows_affected();
-        
         if n != 1 {
             return Err(So3Error::Storage(format!(
                 "record_committed: expected 1 row, got {n} for {command_id:?}"
             )));
         }
-        
         Ok(())
     }
 
