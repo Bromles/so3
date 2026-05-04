@@ -7,7 +7,7 @@ Current status: `cargo test --workspace` passes, and `cargo clippy --workspace -
 1. (FIXED) Concurrent commands on the same key can miss each other during dependency discovery.
    `coordinate` runs `check_conflicts` and then separately calls `record_pre_accepted` (`crates/core/src/service/consensus_coordinator/service.rs`). Maelstrom handlers spawn requests concurrently, so two commands can both see no conflict before either is written to the journal.
 
-2. Commit quorum is not enforced.
+2. (FIXED) Commit quorum is not enforced.
    The coordinator retries Commit up to `MAX_COMMIT_ATTEMPTS`, but after the loop it proceeds to local Apply even if quorum was never reached.
 
 3. Journal state transitions can acknowledge missing rows.

@@ -364,9 +364,6 @@ where
             .record_committed(&command_id)
             .await?;
 
-        // Commit must reach a quorum before we proceed — fix for CASSANDRA-18365.
-        // We never return an error here: Accept already made the decision final,
-        // failing would cause the client to retry with a new CommandId (duplicate).
         let commit_req = CommitRequest {
             command_id: command_id.clone(),
             command,
@@ -375,8 +372,10 @@ where
             dependencies: DependencySet(commit_deps),
         };
 
+        // Commit must reach a quorum before applying — CASSANDRA-18365.
         const MAX_COMMIT_ATTEMPTS: u32 = 10;
         let mut delay_ms = 10u64;
+        let mut commit_reached_quorum = false;
         for _ in 0..MAX_COMMIT_ATTEMPTS {
             let mut commit_ok = 1usize;
             for peer in &peers {
@@ -385,10 +384,17 @@ where
                 }
             }
             if commit_ok >= quorum {
+                commit_reached_quorum = true;
                 break;
             }
             tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
             delay_ms = (delay_ms * 2).min(1_000);
+        }
+
+        if !commit_reached_quorum {
+            return Err(So3Error::PeerUnavailable(format!(
+                "commit quorum not reached after {MAX_COMMIT_ATTEMPTS} attempts"
+            )));
         }
 
         // --- Apply ---
