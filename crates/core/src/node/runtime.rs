@@ -81,9 +81,9 @@ impl Node {
             let endpoint = rpc_endpoint(*peer_addr);
             consensus_clients.insert(
                 peer_id.clone(),
-                Arc::new(ConsensusTransportClient::new(endpoint.clone()).await?),
+                Arc::new(ConsensusTransportClient::new(endpoint.clone())?),
             );
-            blob_clients.insert(peer_id, Arc::new(BlobClient::new(endpoint).await?));
+            blob_clients.insert(peer_id, Arc::new(BlobClient::new(endpoint)?));
         }
 
         let node_uuid = {

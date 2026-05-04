@@ -11,7 +11,7 @@ operational risks that current tests do not cover.
    A restarted node can come back with a different `NodeId`, so `max_sequence` no longer resumes the old command stream
    and durable consensus state is effectively orphaned.
 
-2. Production node startup eagerly connects to every peer.
+2. (FIXED) Production node startup eagerly connects to every peer.
    `Node::new` constructs `ConsensusTransportClient` and `BlobClient` with `connect().await` for every configured peer (
    `crates/core/src/node/runtime.rs`). This can deadlock cluster bootstrap: a node cannot start while its peers are
    still down or starting.

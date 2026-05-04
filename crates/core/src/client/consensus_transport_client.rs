@@ -19,9 +19,8 @@ pub struct ConsensusTransportClient {
 }
 
 impl ConsensusTransportClient {
-    pub async fn new(endpoint: String) -> So3Result<Self> {
-        let channel = Endpoint::from_shared(endpoint)?.connect().await?;
-
+    pub fn new(endpoint: String) -> So3Result<Self> {
+        let channel = Endpoint::from_shared(endpoint)?.connect_lazy();
         Ok(Self { channel })
     }
 

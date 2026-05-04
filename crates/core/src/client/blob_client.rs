@@ -20,13 +20,10 @@ pub struct BlobClient {
 }
 
 impl BlobClient {
-    pub async fn new(endpoint: String) -> So3Result<Self> {
+    pub fn new(endpoint: String) -> So3Result<Self> {
         let channel = Endpoint::from_shared(endpoint)
             .map_err(|e| So3Error::InvalidRequest(e.to_string()))?
-            .connect()
-            .await
-            .map_err(|e| So3Error::Io(e.to_string()))?;
-
+            .connect_lazy();
         Ok(Self { channel })
     }
 
