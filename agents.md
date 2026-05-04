@@ -29,9 +29,9 @@ Current status: `cargo test --workspace` passes, and `cargo clippy --workspace -
 
 ## Medium Risk
 
-8. Recovery is still mostly nominal.
+8. (FIXED) Recovery is still mostly nominal.
    Missing entries are reported as synthetic `PreAccepted`, `superseding` is always false, recovery ballots are not recorded, and coordinator NACK handling returns an error instead of retrying through recovery.
 
-9. Production node runtime is still unfinished.
+9. (FIXED) Production node runtime is still unfinished.
    `Node::new`, `Node::bind`, and `BoundNode::run` contain `unimplemented!`, so the production node path is not usable even though maelstrom and config tests pass.
 

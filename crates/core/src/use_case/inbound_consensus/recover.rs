@@ -20,7 +20,7 @@ where
     pub(super) async fn recover_internal(&self, req: RecoverRequest) -> So3Result<RecoverResponse> {
         let entry = self.journal.load(&req.command_id).await?;
 
-        // Nack if we have a superseding ballot
+        // Nack if we already have a higher ballot.
         if let Some(ref e) = entry {
             if let Some(ref stored) = e.ballot {
                 if *stored > req.ballot {
@@ -34,20 +34,48 @@ where
         let timestamp = self.observe(&req.timestamp_zero).await;
 
         match entry {
-            None => Ok(RecoverResponse::Success(RecoverSuccess {
-                local_state: JournalState::PreAccepted,
-                wait_for: vec![],
-                superseding: false,
-                dependencies: DependencySet(vec![]),
-                timestamp_zero: req.timestamp_zero,
-                timestamp,
-            })),
+            None => {
+                // Never heard about this command: discover actual conflicts, record it,
+                // then stamp it with the recovery ballot so no lower-ballot coordinator
+                // can overwrite us.
+                let deps = self
+                    .journal
+                    .check_conflicts_and_record_pre_accepted(
+                        &req.command_id,
+                        &req.command,
+                        &req.timestamp_zero,
+                    )
+                    .await?;
+                self.journal
+                    .record_ballot(&req.command_id, &req.ballot)
+                    .await?;
+                let wait_for = self.unapplied_deps(&deps).await?;
+                Ok(RecoverResponse::Success(RecoverSuccess {
+                    local_state: JournalState::PreAccepted,
+                    wait_for,
+                    superseding: false,
+                    dependencies: deps,
+                    timestamp_zero: req.timestamp_zero,
+                    timestamp,
+                }))
+            }
             Some(e) => {
+                // Stamp the recovery ballot to block lower-ballot coordinators.
+                self.journal
+                    .record_ballot(&req.command_id, &req.ballot)
+                    .await?;
                 let wait_for = self.unapplied_deps(&e.dependencies).await?;
+                // superseding = true when this replica has voted to accept a specific
+                // timestamp (state >= Accepted), meaning the recovery coordinator must
+                // use the slow path and honour this node's data.
+                let superseding = matches!(
+                    e.state,
+                    JournalState::Accepted | JournalState::Committed | JournalState::Applied
+                );
                 Ok(RecoverResponse::Success(RecoverSuccess {
                     local_state: e.state,
                     wait_for,
-                    superseding: false,
+                    superseding,
                     dependencies: e.dependencies,
                     timestamp_zero: e.timestamp_zero,
                     timestamp: e.timestamp.unwrap_or(timestamp),

@@ -56,6 +56,7 @@ pub struct ApplyResponse {
     pub result: CommandResult,
 }
 
+#[derive(Clone)]
 pub struct RecoverRequest {
     pub command_id: CommandId,
     pub ballot: Ballot,

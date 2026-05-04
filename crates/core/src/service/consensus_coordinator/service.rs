@@ -1,11 +1,11 @@
 use crate::client::interface::{BlobPeerClient, ConsensusPeerClient};
-use crate::domain::clock::{HybridLogicalClock, physical_millis_now};
+use crate::domain::clock::{HybridLogicalClock, LogicalTimestamp, physical_millis_now};
 use crate::domain::command::{CasResult, CommandResult, ObjectCommand, ReadResult, WriteResult};
 use crate::domain::consensus::ballot::Ballot;
 use crate::domain::consensus::command_id::{AppliedSet, CommandId, DependencySet};
 use crate::domain::consensus::journal::JournalState;
 use crate::domain::consensus::transport::{
-    AcceptRequest, ApplyRequest, CommitRequest, PreAcceptRequest,
+    AcceptRequest, ApplyRequest, CommitRequest, PreAcceptRequest, RecoverRequest, RecoverResponse,
 };
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::node::NodeId;
@@ -245,6 +245,184 @@ where
 
         Ok(result)
     }
+
+    async fn complete_from_commit(
+        &self,
+        commit_req: CommitRequest,
+        peers: &[Arc<CPC>],
+        quorum: usize,
+    ) -> So3Result<CommandResult> {
+        self.consensus_journal_repository
+            .record_committed(
+                &commit_req.command_id,
+                &commit_req.timestamp,
+                &commit_req.dependencies,
+            )
+            .await?;
+
+        const MAX_COMMIT_ATTEMPTS: u32 = 10;
+        let mut delay_ms = 10u64;
+        let mut commit_reached_quorum = false;
+        for _ in 0..MAX_COMMIT_ATTEMPTS {
+            let mut commit_ok = 1usize;
+            for peer in peers {
+                if peer.commit(commit_req.clone()).await.is_ok() {
+                    commit_ok += 1;
+                }
+            }
+            if commit_ok >= quorum {
+                commit_reached_quorum = true;
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+            delay_ms = (delay_ms * 2).min(1_000);
+        }
+        if !commit_reached_quorum {
+            return Err(So3Error::PeerUnavailable(format!(
+                "commit quorum not reached after {MAX_COMMIT_ATTEMPTS} attempts"
+            )));
+        }
+
+        let apply_req = ApplyRequest {
+            command_id: commit_req.command_id.clone(),
+            command: commit_req.command.clone(),
+            timestamp_zero: commit_req.timestamp_zero.clone(),
+            timestamp: commit_req.timestamp.clone(),
+            dependencies: commit_req.dependencies.clone(),
+        };
+        let result = self.apply_local(&apply_req).await?;
+        for peer in peers.iter().cloned() {
+            let req = apply_req.clone();
+            tokio::spawn(async move {
+                let _ = peer.apply(req).await;
+            });
+        }
+        Ok(result)
+    }
+
+    async fn recover_and_complete(
+        &self,
+        command_id: &CommandId,
+        command: &ObjectCommand,
+        timestamp_zero: &LogicalTimestamp,
+        ballot: &Ballot,
+        peers: &[Arc<CPC>],
+        quorum: usize,
+        last_applied: &AppliedSet,
+    ) -> So3Result<CommandResult> {
+        let recovery_ballot = ballot.next(self.node_id.clone());
+
+        self.consensus_journal_repository
+            .record_ballot(command_id, &recovery_ballot)
+            .await?;
+
+        let mut successes = vec![];
+        for peer in peers {
+            if let Ok(RecoverResponse::Success(s)) = peer
+                .recover(RecoverRequest {
+                    command_id: command_id.clone(),
+                    ballot: recovery_ballot.clone(),
+                    command: command.clone(),
+                    timestamp_zero: timestamp_zero.clone(),
+                })
+                .await
+            {
+                successes.push(s);
+            }
+        }
+
+        // +1 for self (we recorded locally above).
+        if successes.len() + 1 < quorum {
+            return Err(So3Error::PeerUnavailable(
+                "recovery quorum not reached".into(),
+            ));
+        }
+
+        // If any peer has already committed, use that decision directly.
+        if let Some(done) = successes.iter().find(|s| {
+            matches!(
+                s.local_state,
+                JournalState::Committed | JournalState::Applied
+            )
+        }) {
+            return self
+                .complete_from_commit(
+                    CommitRequest {
+                        command_id: command_id.clone(),
+                        command: command.clone(),
+                        timestamp_zero: timestamp_zero.clone(),
+                        timestamp: done.timestamp.clone(),
+                        dependencies: done.dependencies.clone(),
+                    },
+                    peers,
+                    quorum,
+                )
+                .await;
+        }
+
+        // Determine final timestamp and deps from recovery responses.
+        // If any peer is superseding (Accepted), we must use its data.
+        let (final_timestamp, final_deps) = {
+            let mut deps: Vec<CommandId> = vec![];
+            let mut ts = timestamp_zero.clone();
+            for s in &successes {
+                if s.superseding && s.timestamp > ts {
+                    ts = s.timestamp.clone();
+                }
+                deps.extend(s.dependencies.0.iter().cloned());
+            }
+            (ts, deps)
+        };
+
+        // Accept phase with recovery ballot.
+        self.consensus_journal_repository
+            .record_accepted(command_id, &recovery_ballot, &final_timestamp)
+            .await?;
+
+        let mut accept_ok = 0usize;
+        let mut refined_deps = final_deps.clone();
+        for peer in peers {
+            match peer
+                .accept(AcceptRequest {
+                    command_id: command_id.clone(),
+                    ballot: recovery_ballot.clone(),
+                    command: command.clone(),
+                    timestamp_zero: timestamp_zero.clone(),
+                    timestamp: final_timestamp.clone(),
+                    dependencies: DependencySet(final_deps.clone()),
+                    last_applied: last_applied.clone(),
+                })
+                .await
+            {
+                Ok(r) if !r.nack => {
+                    accept_ok += 1;
+                    refined_deps.extend(r.dependencies.0);
+                }
+                _ => {}
+            }
+        }
+
+        if accept_ok + 1 < quorum {
+            return Err(So3Error::PeerUnavailable(format!(
+                "recovery accept quorum not reached: {}/{}",
+                accept_ok + 1,
+                quorum,
+            )));
+        }
+
+        self.complete_from_commit(
+            CommitRequest {
+                command_id: command_id.clone(),
+                command: command.clone(),
+                timestamp_zero: timestamp_zero.clone(),
+                timestamp: final_timestamp,
+                dependencies: DependencySet(refined_deps),
+            },
+            peers,
+            quorum,
+        )
+        .await
+    }
 }
 
 #[async_trait]
@@ -293,11 +471,17 @@ where
             {
                 Ok(r) if !r.nack => pre_ok.push(r),
                 Ok(_) => {
-                    // Nack means a recovery coordinator has already superseded this ballot.
-                    // TODO: retry with incremented ballot via recovery path.
-                    return Err(So3Error::PeerUnavailable(
-                        "pre-accept nacked: ballot superseded by recovery".to_owned(),
-                    ));
+                    return self
+                        .recover_and_complete(
+                            &command_id,
+                            &command,
+                            &timestamp_zero,
+                            &ballot,
+                            &peers,
+                            quorum,
+                            &last_applied,
+                        )
+                        .await;
                 }
                 Err(_) => pre_failures += 1,
             }
@@ -360,10 +544,17 @@ where
                         refined_deps.extend(r.dependencies.0);
                     }
                     Ok(_) => {
-                        // TODO: retry with higher ballot via recovery path.
-                        return Err(So3Error::PeerUnavailable(
-                            "accept nacked: ballot superseded".to_owned(),
-                        ));
+                        return self
+                            .recover_and_complete(
+                                &command_id,
+                                &command,
+                                &timestamp_zero,
+                                &ballot,
+                                &peers,
+                                quorum,
+                                &last_applied,
+                            )
+                            .await;
                     }
                     Err(_) => {}
                 }

@@ -16,6 +16,9 @@ pub trait ConsensusJournalRepository: Send + Sync + 'static {
         command: &ObjectCommand,
         timestamp_zero: &LogicalTimestamp,
     ) -> So3Result<DependencySet>;
+    /// Records a recovery ballot on an existing entry without changing its state.
+    /// Prevents any coordinator with a lower ballot from overwriting this entry.
+    async fn record_ballot(&self, command_id: &CommandId, ballot: &Ballot) -> So3Result<()>;
     async fn record_accepted(
         &self,
         command_id: &CommandId,

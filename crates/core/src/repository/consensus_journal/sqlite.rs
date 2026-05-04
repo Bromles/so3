@@ -164,6 +164,30 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
         Ok(DependencySet(deps))
     }
 
+    async fn record_ballot(&self, command_id: &CommandId, ballot: &Ballot) -> So3Result<()> {
+        let seq = sequence_to_i64(command_id.sequence)?;
+        let ballot_round = i64::try_from(ballot.round)
+            .map_err(|_| So3Error::Storage("ballot round overflow".into()))?;
+        let n = query(
+            "UPDATE consensus_journal \
+             SET ballot_round = ?, ballot_node_id = ? \
+             WHERE origin_node_id = ? AND sequence = ?",
+        )
+        .bind(ballot_round)
+        .bind(ballot.node_id.as_ref())
+        .bind(command_id.origin_node_id.as_ref())
+        .bind(seq)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        if n != 1 {
+            return Err(So3Error::Storage(format!(
+                "record_ballot: expected 1 row, got {n} for {command_id:?}"
+            )));
+        }
+        Ok(())
+    }
+
     async fn record_accepted(
         &self,
         command_id: &CommandId,
