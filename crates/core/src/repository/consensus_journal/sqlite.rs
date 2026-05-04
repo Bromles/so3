@@ -142,7 +142,7 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
             .collect::<So3Result<_>>()?;
 
         query(
-            "INSERT OR REPLACE INTO consensus_journal \
+            "INSERT OR IGNORE INTO consensus_journal \
              (origin_node_id, sequence, state, key, command, deps, \
               t0_epoch, t0_physical_ms, t0_logical, t0_node_id) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",

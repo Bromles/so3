@@ -18,7 +18,7 @@ Current status: `cargo test --workspace` passes, and `cargo clippy --workspace -
 
 ## High Risk
 
-5. `record_pre_accepted` uses `INSERT OR REPLACE`.
+5. (FIXED) `record_pre_accepted` uses `INSERT OR REPLACE`.
    A late or duplicate PreAccept can replace an Accepted/Committed/Applied row and drop ballot, timestamp, dependencies, or result data.
 
 6. Apply failures after a committed decision are returned as regular errors.
