@@ -52,15 +52,31 @@ where
                 })?;
         }
 
-        // Wait for explicit dependencies
-        for dep_id in &req.dependencies.0 {
-            match self.journal.load(dep_id).await? {
-                Some(e) if e.state == JournalState::Applied => {}
-                _ => {
-                    return Err(So3Error::PeerUnavailable(format!(
-                        "dependency seq={} not yet applied",
-                        dep_id.sequence
-                    )));
+        // Wait for explicit dependencies to be applied.
+        // Register Notify before checking to avoid the TOCTOU where a dep is applied
+        // between the check and the await. Reuses the same deadline as the reorder buffer.
+        loop {
+            let notified = self.apply_notify.notified();
+            let mut pending = None;
+            for dep_id in &req.dependencies.0 {
+                match self.journal.load(dep_id).await? {
+                    Some(e) if e.state == JournalState::Applied => {}
+                    _ => {
+                        pending = Some(dep_id.sequence);
+                        break;
+                    }
+                }
+            }
+            match pending {
+                None => break,
+                Some(seq) => {
+                    tokio::time::timeout_at(deadline, notified)
+                        .await
+                        .map_err(|_| {
+                            So3Error::PeerUnavailable(format!(
+                                "dependency seq={seq} not applied within deadline"
+                            ))
+                        })?;
                 }
             }
         }

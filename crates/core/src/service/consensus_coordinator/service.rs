@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 pub struct AccordConsensusCoordinatorService<CJR, CPC, OMR, BR, BPC>
 where
@@ -39,6 +39,7 @@ where
     object_metadata_repository: Arc<OMR>,
     blob_repository: Arc<BR>,
     blob_peer_clients: HashMap<NodeId, Arc<BPC>>,
+    apply_notify: Arc<Notify>,
 }
 
 impl<CJR, CPC, OMR, BR, BPC> AccordConsensusCoordinatorService<CJR, CPC, OMR, BR, BPC>
@@ -58,6 +59,7 @@ where
         object_metadata_repository: Arc<OMR>,
         blob_repository: Arc<BR>,
         blob_peer_clients: HashMap<NodeId, Arc<BPC>>,
+        apply_notify: Arc<Notify>,
     ) -> So3Result<Self> {
         let initial_sequence = consensus_journal_repository
             .max_sequence(&node_id)
@@ -76,6 +78,7 @@ where
             object_metadata_repository,
             blob_repository,
             blob_peer_clients,
+            apply_notify,
         })
     }
 
@@ -134,16 +137,32 @@ where
             }
         }
 
-        // Wait for explicit dependencies to be applied locally.
-        // TODO: add reorder-buffer + Notify here to avoid busy-poll.
-        for dep_id in &req.dependencies.0 {
-            match self.consensus_journal_repository.load(dep_id).await? {
-                Some(e) if e.state == JournalState::Applied => {}
-                _ => {
-                    return Err(So3Error::PeerUnavailable(format!(
-                        "dependency seq={} not yet applied locally",
-                        dep_id.sequence
-                    )));
+        // Wait for all explicit dependencies to be applied locally.
+        // Register the Notify future before checking state to avoid the TOCTOU where a dep
+        // gets applied between the check and the await.
+        let dep_deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(30);
+        loop {
+            let notified = self.apply_notify.notified();
+            let mut pending = None;
+            for dep_id in &req.dependencies.0 {
+                match self.consensus_journal_repository.load(dep_id).await? {
+                    Some(e) if e.state == JournalState::Applied => {}
+                    _ => {
+                        pending = Some(dep_id.sequence);
+                        break;
+                    }
+                }
+            }
+            match pending {
+                None => break,
+                Some(seq) => {
+                    tokio::time::timeout_at(dep_deadline, notified)
+                        .await
+                        .map_err(|_| {
+                            So3Error::PeerUnavailable(format!(
+                                "dependency seq={seq} not applied within deadline"
+                            ))
+                        })?;
                 }
             }
         }
@@ -221,6 +240,8 @@ where
         self.consensus_journal_repository
             .record_applied(&req.command_id, &result)
             .await?;
+
+        self.apply_notify.notify_waiters();
 
         Ok(result)
     }

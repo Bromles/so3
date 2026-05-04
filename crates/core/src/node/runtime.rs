@@ -84,6 +84,7 @@ impl Node {
         }
 
         let node_id = NodeId::new(config.node_id.to_string());
+        let apply_notify = Arc::new(tokio::sync::Notify::new());
         let coordinator = AccordConsensusCoordinatorService::new(
             node_id.clone(),
             0,
@@ -93,6 +94,7 @@ impl Node {
             Arc::clone(&metadata_repository),
             Arc::clone(&blob_repository),
             blob_clients.clone(),
+            Arc::clone(&apply_notify),
         )
         .await?;
         let inbound_consensus_use_case = Arc::new(InboundConsensusUseCaseImpl::new(
@@ -102,6 +104,7 @@ impl Node {
             Arc::clone(&metadata_repository),
             Arc::clone(&blob_repository),
             blob_clients.clone(),
+            apply_notify,
         ));
         let object_use_case = Arc::new(ObjectUseCaseImpl::new(
             coordinator,

@@ -55,6 +55,7 @@ where
         metadata_repo: Arc<OMR>,
         blob_repo: Arc<BR>,
         blob_clients: HashMap<NodeId, Arc<BPC>>,
+        apply_notify: Arc<Notify>,
     ) -> Self {
         Self {
             hlc: Mutex::new(HybridLogicalClock::new(node_id.clone())),
@@ -65,7 +66,7 @@ where
             blob_repository: blob_repo,
             blob_clients,
             reorder_buffer: Mutex::new(BTreeMap::new()),
-            apply_notify: Arc::new(Notify::new()),
+            apply_notify,
         }
     }
 

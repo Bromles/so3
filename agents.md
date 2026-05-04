@@ -21,7 +21,7 @@ Current status: `cargo test --workspace` passes, and `cargo clippy --workspace -
 5. (FIXED) `record_pre_accepted` uses `INSERT OR REPLACE`.
    A late or duplicate PreAccept can replace an Accepted/Committed/Applied row and drop ballot, timestamp, dependencies, or result data.
 
-6. Apply failures after a committed decision are returned as regular errors.
+6. (FIXED) Apply failures after a committed decision are returned as regular errors.
    Local and inbound Apply return `PeerUnavailable` when dependencies are not yet applied. After a decision is committed, this can make clients retry and create duplicate commands instead of driving recovery/apply completion.
 
 7. Blob replication requires every peer before consensus.

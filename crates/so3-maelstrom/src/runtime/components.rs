@@ -53,6 +53,7 @@ pub(super) async fn build_components(
         })
         .collect();
 
+    let apply_notify = Arc::new(tokio::sync::Notify::new());
     let coordinator = AccordConsensusCoordinatorService::new(
         NodeId::new(node_id.to_owned()),
         0,
@@ -62,6 +63,7 @@ pub(super) async fn build_components(
         Arc::clone(&meta),
         Arc::clone(&blobs),
         blob_clients.clone(),
+        Arc::clone(&apply_notify),
     )
     .await?;
 
@@ -72,6 +74,7 @@ pub(super) async fn build_components(
         Arc::clone(&meta),
         Arc::clone(&blobs),
         blob_clients.clone(),
+        apply_notify,
     ));
 
     let object_uc = ObjectUseCaseImpl::new(
