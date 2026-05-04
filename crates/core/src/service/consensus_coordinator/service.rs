@@ -246,18 +246,10 @@ where
             .tick(self.epoch.load(Ordering::Acquire), self.network_skew_ms);
         let last_applied = self.last_applied().await?;
 
-        // Coordinator is also a replica — check local conflicts and record locally.
-        let local_deps = self
+        // Coordinator is also a replica — atomically check local conflicts and record locally.
+        let DependencySet(local_deps) = self
             .consensus_journal_repository
-            .check_conflicts(&command_id, &command)
-            .await?;
-        self.consensus_journal_repository
-            .record_pre_accepted(
-                &command_id,
-                &command,
-                &timestamp_zero,
-                &DependencySet(local_deps.clone()),
-            )
+            .check_conflicts_and_record_pre_accepted(&command_id, &command, &timestamp_zero)
             .await?;
 
         // --- PreAccept (TODO: parallelize) ---

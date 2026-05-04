@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
-use sqlx::{Row, SqlitePool, query, query_scalar};
+use sqlx::{query, query_scalar, Row, SqlitePool};
 use std::path::Path;
 use std::time::Duration;
 use tokio::fs;
@@ -12,11 +12,11 @@ use crate::domain::consensus::command_id::{CommandId, DependencySet};
 use crate::domain::consensus::journal::{JournalEntry, JournalState};
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::node::NodeId;
-use crate::repository::consensus_journal::ConsensusJournalRepository;
 use crate::repository::consensus_journal::mappers::{
     command_key, encode_command, encode_deps, encode_result, i64_to_u64, row_to_entry,
     sequence_to_i64,
 };
+use crate::repository::consensus_journal::ConsensusJournalRepository;
 
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SQLITE_MAX_CONNECTIONS: u32 = 1;
@@ -103,12 +103,20 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
         row.as_ref().map(row_to_entry).transpose()
     }
 
-    async fn check_conflicts(
+    async fn check_conflicts_and_record_pre_accepted(
         &self,
         command_id: &CommandId,
         command: &ObjectCommand,
-    ) -> So3Result<Vec<CommandId>> {
+        timestamp_zero: &LogicalTimestamp,
+    ) -> So3Result<DependencySet> {
         let seq = sequence_to_i64(command_id.sequence)?;
+        let (t0_epoch, t0_physical, t0_logical) = Self::ts_to_i64s(timestamp_zero)?;
+
+        // BEGIN IMMEDIATE acquires the write lock before we read, so two concurrent
+        // coordinators cannot both complete the conflict check before either inserts.
+        // Transaction rolls back automatically on drop if not committed.
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+
         let rows = query(
             "SELECT origin_node_id, sequence FROM consensus_journal \
              WHERE key = ? AND state < ? \
@@ -118,10 +126,11 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
         .bind(JournalState::Applied.as_i32())
         .bind(command_id.origin_node_id.as_ref())
         .bind(seq)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await?;
 
-        rows.iter()
+        let deps: Vec<CommandId> = rows
+            .iter()
             .map(|r| {
                 let node_id: String = r.try_get("origin_node_id")?;
                 let s: i64 = r.try_get("sequence")?;
@@ -130,18 +139,7 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
                     sequence: i64_to_u64(s, "sequence")?,
                 })
             })
-            .collect()
-    }
-
-    async fn record_pre_accepted(
-        &self,
-        command_id: &CommandId,
-        command: &ObjectCommand,
-        timestamp_zero: &LogicalTimestamp,
-        deps: &DependencySet,
-    ) -> So3Result<()> {
-        let seq = sequence_to_i64(command_id.sequence)?;
-        let (t0_epoch, t0_physical, t0_logical) = Self::ts_to_i64s(timestamp_zero)?;
+            .collect::<So3Result<_>>()?;
 
         query(
             "INSERT OR REPLACE INTO consensus_journal \
@@ -154,15 +152,16 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
         .bind(JournalState::PreAccepted.as_i32())
         .bind(command_key(command))
         .bind(encode_command(command)?)
-        .bind(encode_deps(&deps.0)?)
+        .bind(encode_deps(&deps)?)
         .bind(t0_epoch)
         .bind(t0_physical)
         .bind(t0_logical)
         .bind(timestamp_zero.node_id.as_ref())
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
 
-        Ok(())
+        tx.commit().await?;
+        Ok(DependencySet(deps))
     }
 
     async fn record_accepted(

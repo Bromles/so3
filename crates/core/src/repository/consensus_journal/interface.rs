@@ -10,18 +10,12 @@ use async_trait::async_trait;
 #[async_trait]
 pub trait ConsensusJournalRepository: Send + Sync + 'static {
     async fn load(&self, command_id: &CommandId) -> So3Result<Option<JournalEntry>>;
-    async fn check_conflicts(
-        &self,
-        command_id: &CommandId,
-        command: &ObjectCommand,
-    ) -> So3Result<Vec<CommandId>>;
-    async fn record_pre_accepted(
+    async fn check_conflicts_and_record_pre_accepted(
         &self,
         command_id: &CommandId,
         command: &ObjectCommand,
         timestamp_zero: &LogicalTimestamp,
-        deps: &DependencySet,
-    ) -> So3Result<()>;
+    ) -> So3Result<DependencySet>;
     async fn record_accepted(
         &self,
         command_id: &CommandId,

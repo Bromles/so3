@@ -1,5 +1,4 @@
 use crate::client::interface::BlobPeerClient;
-use crate::domain::consensus::command_id::DependencySet;
 use crate::domain::consensus::transport::{PreAcceptRequest, PreAcceptResponse};
 use crate::domain::error::So3Result;
 use crate::repository::blob::BlobRepository;
@@ -20,18 +19,12 @@ where
     ) -> So3Result<PreAcceptResponse> {
         let timestamp = self.observe(&req.timestamp_zero).await;
 
-        let conflicting = self
+        let dependencies = self
             .journal
-            .check_conflicts(&req.command_id, &req.command)
-            .await?;
-        let dependencies = DependencySet(conflicting);
-
-        self.journal
-            .record_pre_accepted(
+            .check_conflicts_and_record_pre_accepted(
                 &req.command_id,
                 &req.command,
                 &req.timestamp_zero,
-                &dependencies,
             )
             .await?;
 

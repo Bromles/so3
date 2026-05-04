@@ -4,7 +4,7 @@ Current status: `cargo test --workspace` passes, and `cargo clippy --workspace -
 
 ## Critical
 
-1. Concurrent commands on the same key can miss each other during dependency discovery.
+1. (FIXED) Concurrent commands on the same key can miss each other during dependency discovery.
    `coordinate` runs `check_conflicts` and then separately calls `record_pre_accepted` (`crates/core/src/service/consensus_coordinator/service.rs`). Maelstrom handlers spawn requests concurrently, so two commands can both see no conflict before either is written to the journal.
 
 2. Commit quorum is not enforced.
