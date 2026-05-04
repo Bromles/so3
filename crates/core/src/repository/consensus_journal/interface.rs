@@ -24,6 +24,7 @@ pub trait ConsensusJournalRepository: Send + Sync + 'static {
         command_id: &CommandId,
         ballot: &Ballot,
         timestamp: &LogicalTimestamp,
+        deps: &DependencySet,
     ) -> So3Result<()>;
     async fn record_committed(
         &self,

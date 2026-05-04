@@ -24,7 +24,7 @@ operational risks that current tests do not cover.
 
 ## High Risk
 
-4. Accepted dependency sets are not durably stored.
+4. (FIXED) Accepted dependency sets are not durably stored.
    `accept_internal` returns `req.dependencies`, but `record_accepted` only persists state, ballot, and timestamp (
    `crates/core/src/use_case/inbound_consensus/accept.rs`, `crates/core/src/repository/consensus_journal/sqlite.rs`).
    After a crash, recovery can observe an Accepted row with stale PreAccept dependencies.

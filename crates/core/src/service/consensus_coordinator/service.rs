@@ -376,7 +376,7 @@ where
 
         // Accept phase with recovery ballot.
         self.consensus_journal_repository
-            .record_accepted(command_id, &recovery_ballot, &final_timestamp)
+            .record_accepted(command_id, &recovery_ballot, &final_timestamp, &DependencySet(final_deps.clone()))
             .await?;
 
         let mut accept_ok = 0usize;
@@ -520,7 +520,7 @@ where
         } else {
             // --- Slow path: Accept (TODO: parallelize) ---
             self.consensus_journal_repository
-                .record_accepted(&command_id, &ballot, &final_timestamp)
+                .record_accepted(&command_id, &ballot, &final_timestamp, &DependencySet(all_deps.clone()))
                 .await?;
 
             let mut accept_ok = 0usize;

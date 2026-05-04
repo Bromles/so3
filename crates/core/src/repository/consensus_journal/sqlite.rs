@@ -193,6 +193,7 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
         command_id: &CommandId,
         ballot: &Ballot,
         timestamp: &LogicalTimestamp,
+        deps: &DependencySet,
     ) -> So3Result<()> {
         let seq = sequence_to_i64(command_id.sequence)?;
         let (t_epoch, t_physical, t_logical) = Self::ts_to_i64s(timestamp)?;
@@ -203,7 +204,8 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
             "UPDATE consensus_journal \
              SET state = ?, \
                  t_epoch = ?, t_physical_ms = ?, t_logical = ?, t_node_id = ?, \
-                 ballot_round = ?, ballot_node_id = ? \
+                 ballot_round = ?, ballot_node_id = ?, \
+                 deps = ? \
              WHERE origin_node_id = ? AND sequence = ?",
         )
         .bind(JournalState::Accepted.as_i32())
@@ -213,6 +215,7 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
         .bind(timestamp.node_id.as_ref())
         .bind(ballot_round)
         .bind(ballot.node_id.as_ref())
+        .bind(encode_deps(&deps.0)?)
         .bind(command_id.origin_node_id.as_ref())
         .bind(seq)
         .execute(&self.pool)
