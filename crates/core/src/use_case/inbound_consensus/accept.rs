@@ -15,14 +15,26 @@ where
     BPC: BlobPeerClient,
 {
     pub(super) async fn accept_internal(&self, req: AcceptRequest) -> So3Result<AcceptResponse> {
-        if let Some(entry) = self.journal.load(&req.command_id).await? {
-            if let Some(stored_ballot) = entry.ballot {
-                if stored_ballot > req.ballot {
+        match self.journal.load(&req.command_id).await? {
+            Some(entry) => {
+                if let Some(stored_ballot) = entry.ballot
+                    && stored_ballot > req.ballot
+                {
                     return Ok(AcceptResponse {
                         dependencies: DependencySet(vec![]),
                         nack: true,
                     });
                 }
+            }
+            None => {
+                // PreAccept was missed; synthesize the row so record_accepted has a row to UPDATE.
+                self.journal
+                    .check_conflicts_and_record_pre_accepted(
+                        &req.command_id,
+                        &req.command,
+                        &req.timestamp_zero,
+                    )
+                    .await?;
             }
         }
 

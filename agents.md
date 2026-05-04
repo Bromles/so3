@@ -10,7 +10,7 @@ Current status: `cargo test --workspace` passes, and `cargo clippy --workspace -
 2. (FIXED) Commit quorum is not enforced.
    The coordinator retries Commit up to `MAX_COMMIT_ATTEMPTS`, but after the loop it proceeds to local Apply even if quorum was never reached.
 
-3. Journal state transitions can acknowledge missing rows.
+3. (FIXED) Journal state transitions can acknowledge missing rows.
    `accept_internal` can call `record_accepted` after `load(None)`, and SQLite `UPDATE` calls in `record_accepted`, `record_committed`, and `record_applied` do not check `rows_affected`.
 
 4. Commit does not durably store the full final decision.

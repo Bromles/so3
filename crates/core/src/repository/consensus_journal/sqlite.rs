@@ -175,7 +175,7 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
         let ballot_round = i64::try_from(ballot.round)
             .map_err(|_| So3Error::Storage("ballot round overflow".into()))?;
 
-        query(
+        let n = query(
             "UPDATE consensus_journal \
              SET state = ?, \
                  t_epoch = ?, t_physical_ms = ?, t_logical = ?, t_node_id = ?, \
@@ -192,13 +192,19 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
         .bind(command_id.origin_node_id.as_ref())
         .bind(seq)
         .execute(&self.pool)
-        .await?;
+        .await?
+        .rows_affected();
+        if n != 1 {
+            return Err(So3Error::Storage(format!(
+                "record_accepted: expected 1 row, got {n} for {command_id:?}"
+            )));
+        }
         Ok(())
     }
 
     async fn record_committed(&self, command_id: &CommandId) -> So3Result<()> {
         let seq = sequence_to_i64(command_id.sequence)?;
-        query(
+        let n = query(
             "UPDATE consensus_journal SET state = ? \
              WHERE origin_node_id = ? AND sequence = ?",
         )
@@ -206,7 +212,15 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
         .bind(command_id.origin_node_id.as_ref())
         .bind(seq)
         .execute(&self.pool)
-        .await?;
+        .await?
+        .rows_affected();
+        
+        if n != 1 {
+            return Err(So3Error::Storage(format!(
+                "record_committed: expected 1 row, got {n} for {command_id:?}"
+            )));
+        }
+        
         Ok(())
     }
 
@@ -216,7 +230,7 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
         result: &CommandResult,
     ) -> So3Result<()> {
         let seq = sequence_to_i64(command_id.sequence)?;
-        query(
+        let n = query(
             "UPDATE consensus_journal SET state = ?, result = ? \
              WHERE origin_node_id = ? AND sequence = ?",
         )
@@ -225,7 +239,15 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
         .bind(command_id.origin_node_id.as_ref())
         .bind(seq)
         .execute(&self.pool)
-        .await?;
+        .await?
+        .rows_affected();
+        
+        if n != 1 {
+            return Err(So3Error::Storage(format!(
+                "record_applied: expected 1 row, got {n} for {command_id:?}"
+            )));
+        }
+        
         Ok(())
     }
 
