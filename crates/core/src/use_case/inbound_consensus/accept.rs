@@ -41,7 +41,12 @@ where
         self.observe(&req.timestamp).await;
 
         self.journal
-            .record_accepted(&req.command_id, &req.ballot, &req.timestamp, &req.dependencies)
+            .record_accepted(
+                &req.command_id,
+                &req.ballot,
+                &req.timestamp,
+                &req.dependencies,
+            )
             .await?;
 
         Ok(AcceptResponse {

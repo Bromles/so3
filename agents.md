@@ -29,7 +29,7 @@ operational risks that current tests do not cover.
    `crates/core/src/use_case/inbound_consensus/accept.rs`, `crates/core/src/repository/consensus_journal/sqlite.rs`).
    After a crash, recovery can observe an Accepted row with stale PreAccept dependencies.
 
-5. Command execution and `Applied` journaling are not atomic.
+5. (FIXED) Command execution and `Applied` journaling are not atomic.
    Both inbound apply and coordinator local apply mutate object metadata before calling `record_applied` (
    `crates/core/src/use_case/inbound_consensus/apply.rs`, `crates/core/src/service/consensus_coordinator/service.rs`). A
    crash in that window can make replay apply Write/CAS/Delete again and return a different result.

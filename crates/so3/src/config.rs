@@ -185,11 +185,9 @@ fn pick_uuid(
     file_value: Option<&str>,
 ) -> So3Result<Option<Uuid>> {
     match get_var(env_name).or_else(|| file_value.map(ToOwned::to_owned)) {
-        Some(value) => Uuid::parse_str(&value)
-            .map(Some)
-            .map_err(|error| {
-                So3Error::InvalidRequest(format!("failed to parse {env_name}={value}: {error}"))
-            }),
+        Some(value) => Uuid::parse_str(&value).map(Some).map_err(|error| {
+            So3Error::InvalidRequest(format!("failed to parse {env_name}={value}: {error}"))
+        }),
         None => Ok(None),
     }
 }

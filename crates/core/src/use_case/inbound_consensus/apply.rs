@@ -91,23 +91,22 @@ where
             }
         }
 
-        // Execute command inline
-        let result = match req.command {
-            ObjectCommand::Read { ref key } => {
-                match self.object_metadata_repository.load(key).await? {
-                    Some(m) => CommandResult::Read(ReadResult::Found(m)),
-                    None => CommandResult::Read(ReadResult::NotFound),
-                }
-            }
+        // Compute result — blob I/O is safe here (idempotent), but object metadata is NOT
+        // mutated yet. Separating computation from persistence lets us journal-first below.
+        let result = match &req.command {
+            ObjectCommand::Read { key } => match self.object_metadata_repository.load(key).await? {
+                Some(m) => CommandResult::Read(ReadResult::Found(m)),
+                None => CommandResult::Read(ReadResult::NotFound),
+            },
             ObjectCommand::Write {
-                ref key,
+                key,
                 blob_id,
                 sha256,
                 size,
             } => {
-                if !self.blob_repository.exists(&blob_id).await? {
-                    let payload = self.fetch_blob_from_any_peer(&blob_id).await?;
-                    self.blob_repository.store(&blob_id, &payload).await?;
+                if !self.blob_repository.exists(blob_id).await? {
+                    let payload = self.fetch_blob_from_any_peer(blob_id).await?;
+                    self.blob_repository.store(blob_id, &payload).await?;
                 }
                 let version = self
                     .object_metadata_repository
@@ -115,44 +114,39 @@ where
                     .await?
                     .map(|m| m.version.next())
                     .unwrap_or_else(ObjectVersion::initial);
-                let metadata = ObjectMetadata {
-                    key: key.clone(),
-                    version,
-                    blob_id,
-                    sha256,
-                    size,
-                    last_modified_ms: physical_millis_now(),
-                };
-                self.object_metadata_repository.store(&metadata).await?;
-                CommandResult::Write(WriteResult { metadata })
+                CommandResult::Write(WriteResult {
+                    metadata: ObjectMetadata {
+                        key: key.clone(),
+                        version,
+                        blob_id: blob_id.clone(),
+                        sha256: sha256.clone(),
+                        size: *size,
+                        last_modified_ms: physical_millis_now(),
+                    },
+                })
             }
-            ObjectCommand::Delete { ref key } => {
-                self.object_metadata_repository.delete(key).await?;
-                CommandResult::Delete
-            }
+            ObjectCommand::Delete { .. } => CommandResult::Delete,
             ObjectCommand::Cas {
-                ref key,
-                ref expected_version,
+                key,
+                expected_version,
                 blob_id,
                 sha256,
                 size,
             } => {
-                if !self.blob_repository.exists(&blob_id).await? {
-                    let payload = self.fetch_blob_from_any_peer(&blob_id).await?;
-                    self.blob_repository.store(&blob_id, &payload).await?;
+                if !self.blob_repository.exists(blob_id).await? {
+                    let payload = self.fetch_blob_from_any_peer(blob_id).await?;
+                    self.blob_repository.store(blob_id, &payload).await?;
                 }
                 match self.object_metadata_repository.load(key).await? {
                     Some(meta) if meta.version == *expected_version => {
-                        let new_meta = ObjectMetadata {
+                        CommandResult::Cas(CasResult::Updated(ObjectMetadata {
                             key: key.clone(),
                             version: meta.version.next(),
-                            blob_id,
-                            sha256,
-                            size,
+                            blob_id: blob_id.clone(),
+                            sha256: sha256.clone(),
+                            size: *size,
                             last_modified_ms: physical_millis_now(),
-                        };
-                        self.object_metadata_repository.store(&new_meta).await?;
-                        CommandResult::Cas(CasResult::Updated(new_meta))
+                        }))
                     }
                     Some(meta) => CommandResult::Cas(CasResult::Conflict {
                         current_version: meta.version,
@@ -164,10 +158,26 @@ where
             }
         };
 
-        // TODO: metadata store and record_applied must be atomic — same crash window as object use case.
+        // Journal-first: persist the result before mutating object metadata.
+        // On a crash after this line the idempotency check above returns the stored result;
+        // the startup reconciliation pass in Node::new re-applies any missing metadata changes.
         self.journal
             .record_applied(&req.command_id, &result)
             .await?;
+
+        // Apply object metadata side effects.
+        match (&req.command, &result) {
+            (ObjectCommand::Write { .. }, CommandResult::Write(WriteResult { metadata })) => {
+                self.object_metadata_repository.store(metadata).await?;
+            }
+            (ObjectCommand::Delete { key }, CommandResult::Delete) => {
+                self.object_metadata_repository.delete(key).await?;
+            }
+            (ObjectCommand::Cas { .. }, CommandResult::Cas(CasResult::Updated(metadata))) => {
+                self.object_metadata_repository.store(metadata).await?;
+            }
+            _ => {}
+        }
 
         self.reorder_buffer.lock().await.remove(&req.timestamp);
         self.apply_notify.notify_waiters();

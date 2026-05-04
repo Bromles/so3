@@ -34,6 +34,8 @@ impl NodeIdentityRepository for FileSystemNodeIdentityRepository {
     }
 
     async fn store(&self, id: Uuid) -> So3Result<()> {
-        fs::write(&self.path, id.to_string()).await.map_err(So3Error::from)
+        fs::write(&self.path, id.to_string())
+            .await
+            .map_err(So3Error::from)
     }
 }

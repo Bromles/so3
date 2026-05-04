@@ -1,6 +1,6 @@
+use crate::domain::error::So3Result;
 use async_trait::async_trait;
 use uuid::Uuid;
-use crate::domain::error::So3Result;
 
 #[async_trait]
 pub trait NodeIdentityUseCase {

@@ -188,21 +188,18 @@ where
                     .await?
                     .map(|m| m.version.next())
                     .unwrap_or_else(ObjectVersion::initial);
-                let metadata = ObjectMetadata {
-                    key: key.clone(),
-                    version,
-                    blob_id: blob_id.clone(),
-                    sha256: sha256.clone(),
-                    size: *size,
-                    last_modified_ms: physical_millis_now(),
-                };
-                self.object_metadata_repository.store(&metadata).await?;
-                CommandResult::Write(WriteResult { metadata })
+                CommandResult::Write(WriteResult {
+                    metadata: ObjectMetadata {
+                        key: key.clone(),
+                        version,
+                        blob_id: blob_id.clone(),
+                        sha256: sha256.clone(),
+                        size: *size,
+                        last_modified_ms: physical_millis_now(),
+                    },
+                })
             }
-            ObjectCommand::Delete { key } => {
-                self.object_metadata_repository.delete(key).await?;
-                CommandResult::Delete
-            }
+            ObjectCommand::Delete { .. } => CommandResult::Delete,
             ObjectCommand::Cas {
                 key,
                 expected_version,
@@ -216,16 +213,14 @@ where
                 }
                 match self.object_metadata_repository.load(key).await? {
                     Some(meta) if meta.version == *expected_version => {
-                        let new_meta = ObjectMetadata {
+                        CommandResult::Cas(CasResult::Updated(ObjectMetadata {
                             key: key.clone(),
                             version: meta.version.next(),
                             blob_id: blob_id.clone(),
                             sha256: sha256.clone(),
                             size: *size,
                             last_modified_ms: physical_millis_now(),
-                        };
-                        self.object_metadata_repository.store(&new_meta).await?;
-                        CommandResult::Cas(CasResult::Updated(new_meta))
+                        }))
                     }
                     Some(meta) => CommandResult::Cas(CasResult::Conflict {
                         current_version: meta.version,
@@ -237,9 +232,24 @@ where
             }
         };
 
+        // Journal-first: persist the result before mutating object metadata.
         self.consensus_journal_repository
             .record_applied(&req.command_id, &result)
             .await?;
+
+        // Apply object metadata side effects.
+        match (&req.command, &result) {
+            (ObjectCommand::Write { .. }, CommandResult::Write(WriteResult { metadata })) => {
+                self.object_metadata_repository.store(metadata).await?;
+            }
+            (ObjectCommand::Delete { key }, CommandResult::Delete) => {
+                self.object_metadata_repository.delete(key).await?;
+            }
+            (ObjectCommand::Cas { .. }, CommandResult::Cas(CasResult::Updated(metadata))) => {
+                self.object_metadata_repository.store(metadata).await?;
+            }
+            _ => {}
+        }
 
         self.apply_notify.notify_waiters();
 
@@ -376,7 +386,12 @@ where
 
         // Accept phase with recovery ballot.
         self.consensus_journal_repository
-            .record_accepted(command_id, &recovery_ballot, &final_timestamp, &DependencySet(final_deps.clone()))
+            .record_accepted(
+                command_id,
+                &recovery_ballot,
+                &final_timestamp,
+                &DependencySet(final_deps.clone()),
+            )
             .await?;
 
         let mut accept_ok = 0usize;
@@ -520,7 +535,12 @@ where
         } else {
             // --- Slow path: Accept (TODO: parallelize) ---
             self.consensus_journal_repository
-                .record_accepted(&command_id, &ballot, &final_timestamp, &DependencySet(all_deps.clone()))
+                .record_accepted(
+                    &command_id,
+                    &ballot,
+                    &final_timestamp,
+                    &DependencySet(all_deps.clone()),
+                )
                 .await?;
 
             let mut accept_ok = 0usize;

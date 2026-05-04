@@ -1,4 +1,4 @@
-pub mod use_case;
 mod interface;
+pub mod use_case;
 
 pub use interface::NodeIdentityUseCase;
