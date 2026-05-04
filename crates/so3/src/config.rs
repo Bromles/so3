@@ -7,7 +7,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use so3_core::domain::error::{So3Error, So3Result};
-use so3_core::node::config::{ClusterConfig, NodeConfig};
+use so3_core::node::config::{ClusterConfig, NodeConfig, PeerConfig};
 
 const CONFIG_PATH_ENV: &str = "SO3_CONFIG";
 const OBJECT_ADDR_ENV: &str = "SO3_OBJECT_ADDR";
@@ -115,7 +115,7 @@ fn build_node_config(
         file_config.and_then(|config| config.node_id.as_deref()),
     )?;
     let cluster = ClusterConfig {
-        peers: pick_socket_addr_list(
+        peers: pick_peer_list(
             &get_var,
             CLUSTER_PEERS_ENV,
             file_config.map_or(&[][..], |config| config.cluster.peers.as_slice()),
@@ -192,31 +192,44 @@ fn pick_uuid(
     }
 }
 
-fn pick_socket_addr_list(
+fn pick_peer_list(
     get_var: &impl Fn(&str) -> Option<String>,
     env_name: &str,
     file_values: &[String],
-) -> So3Result<Vec<SocketAddr>> {
+) -> So3Result<Vec<PeerConfig>> {
     if let Some(value) = get_var(env_name) {
         return value
             .split(CLUSTER_PEERS_SEPARATOR)
             .map(str::trim)
             .filter(|entry| !entry.is_empty())
-            .map(|entry| parse_socket_addr_entry(env_name, entry))
+            .map(|entry| parse_peer_entry(env_name, entry))
             .collect();
     }
 
     file_values
         .iter()
         .map(String::as_str)
-        .map(|entry| parse_socket_addr_entry(env_name, entry))
+        .map(|entry| parse_peer_entry(env_name, entry))
         .collect()
 }
 
-fn parse_socket_addr_entry(name: &str, value: &str) -> So3Result<SocketAddr> {
-    SocketAddr::from_str(value).map_err(|error| {
-        So3Error::InvalidRequest(format!("failed to parse {name} entry {value}: {error}"))
-    })
+fn parse_peer_entry(name: &str, value: &str) -> So3Result<PeerConfig> {
+    let (uuid_part, addr_part) = value.split_once('@').ok_or_else(|| {
+        So3Error::InvalidRequest(format!(
+            "failed to parse {name} entry {value}: expected format 'uuid@host:port'"
+        ))
+    })?;
+    let node_id = Uuid::parse_str(uuid_part).map_err(|error| {
+        So3Error::InvalidRequest(format!(
+            "failed to parse {name} entry {value}: invalid uuid: {error}"
+        ))
+    })?;
+    let addr = SocketAddr::from_str(addr_part).map_err(|error| {
+        So3Error::InvalidRequest(format!(
+            "failed to parse {name} entry {value}: invalid address: {error}"
+        ))
+    })?;
+    Ok(PeerConfig { node_id, addr })
 }
 
 fn load_optional_config_file(
@@ -261,8 +274,12 @@ mod tests {
     const DEFAULT_RPC_ADDR: &str = "127.0.0.1:4000";
     const OVERRIDE_OBJECT_ADDR: &str = "127.0.0.1:3100";
     const OVERRIDE_RPC_ADDR: &str = "127.0.0.1:4100";
-    const PEER_ONE_ADDR: &str = "127.0.0.1:4101";
-    const PEER_TWO_ADDR: &str = "127.0.0.1:4102";
+    const PEER_ONE_ID: &str = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    const PEER_ONE_SOCKET: &str = "127.0.0.1:4101";
+    const PEER_ONE_ENTRY: &str = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa@127.0.0.1:4101";
+    const PEER_TWO_ID: &str = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+    const PEER_TWO_SOCKET: &str = "127.0.0.1:4102";
+    const PEER_TWO_ENTRY: &str = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb@127.0.0.1:4102";
     const OVERRIDE_TIMEOUT_SECS: u64 = 25;
     const OVERRIDE_DATA_DIR: &str = "./tmp/so3";
     const OVERRIDE_METADATA_DIR: &str = "./tmp/so3-metadata";
@@ -278,7 +295,10 @@ mod tests {
         data_dir = "./tmp/toml"
 
         [cluster]
-        peers = ["127.0.0.1:4201", "127.0.0.1:4202"]
+        peers = [
+            "cccccccc-cccc-cccc-cccc-cccccccccccc@127.0.0.1:4201",
+            "dddddddd-dddd-dddd-dddd-dddddddddddd@127.0.0.1:4202",
+        ]
     "#;
 
     #[test]
@@ -312,7 +332,7 @@ mod tests {
             super::METADATA_DIR_ENV => Some(OVERRIDE_METADATA_DIR.to_owned()),
             super::BLOB_DIR_ENV => Some(OVERRIDE_BLOB_DIR.to_owned()),
             super::NODE_ID_ENV => Some(FIXED_NODE_ID.to_owned()),
-            super::CLUSTER_PEERS_ENV => Some(format!("{PEER_ONE_ADDR}, {PEER_TWO_ADDR}")),
+            super::CLUSTER_PEERS_ENV => Some(format!("{PEER_ONE_ENTRY}, {PEER_TWO_ENTRY}")),
             _ => None,
         })
         .unwrap();
@@ -327,8 +347,10 @@ mod tests {
         assert_eq!(config.blob_dir.to_string_lossy(), OVERRIDE_BLOB_DIR);
         assert_eq!(config.node_id.unwrap().to_string(), FIXED_NODE_ID);
         assert_eq!(config.cluster.peers.len(), 2);
-        assert_eq!(config.cluster.peers[0].to_string(), PEER_ONE_ADDR);
-        assert_eq!(config.cluster.peers[1].to_string(), PEER_TWO_ADDR);
+        assert_eq!(config.cluster.peers[0].node_id.to_string(), PEER_ONE_ID);
+        assert_eq!(config.cluster.peers[0].addr.to_string(), PEER_ONE_SOCKET);
+        assert_eq!(config.cluster.peers[1].node_id.to_string(), PEER_TWO_ID);
+        assert_eq!(config.cluster.peers[1].addr.to_string(), PEER_TWO_SOCKET);
     }
 
     #[test]
@@ -360,7 +382,7 @@ mod tests {
     #[test]
     fn load_node_config_with_reports_invalid_cluster_peer() {
         let error = load_node_config_with(|name| match name {
-            super::CLUSTER_PEERS_ENV => Some(format!("{PEER_ONE_ADDR},{INVALID_SOCKET_ADDR}")),
+            super::CLUSTER_PEERS_ENV => Some(format!("{PEER_ONE_ENTRY},{INVALID_SOCKET_ADDR}")),
             _ => None,
         })
         .unwrap_err();

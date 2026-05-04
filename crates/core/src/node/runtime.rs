@@ -80,9 +80,9 @@ impl Node {
 
         let mut consensus_clients = HashMap::new();
         let mut blob_clients = HashMap::new();
-        for peer_addr in &config.cluster.peers {
-            let peer_id = peer_node_id(*peer_addr);
-            let endpoint = rpc_endpoint(*peer_addr);
+        for peer in &config.cluster.peers {
+            let peer_id = NodeId::new(peer.node_id.to_string());
+            let endpoint = rpc_endpoint(peer.addr);
             consensus_clients.insert(
                 peer_id.clone(),
                 Arc::new(ConsensusTransportClient::new(endpoint.clone())?),
@@ -98,6 +98,12 @@ impl Node {
                 .ensure(config.node_id)
                 .await?
         };
+        if config.cluster.peers.iter().any(|p| p.node_id == node_uuid) {
+            return Err(So3Error::InvalidRequest(format!(
+                "node_id {node_uuid} appears in the cluster peers list; \
+                 a node cannot be its own peer"
+            )));
+        }
         let node_id = NodeId::new(node_uuid.to_string());
         let apply_notify = Arc::new(tokio::sync::Notify::new());
         let coordinator = AccordConsensusCoordinatorService::new(
@@ -238,10 +244,6 @@ async fn reconcile_applied_metadata(
         }
     }
     Ok(())
-}
-
-fn peer_node_id(addr: SocketAddr) -> NodeId {
-    NodeId::new(addr.to_string())
 }
 
 fn rpc_endpoint(addr: SocketAddr) -> String {

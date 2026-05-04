@@ -39,7 +39,7 @@ operational risks that current tests do not cover.
    `reorder_buffer` (`crates/core/src/use_case/inbound_consensus/commit.rs`). After restart, committed-but-not-applied
    commands are not restored into the buffer, so later Apply requests can bypass earlier committed commands.
 
-7. Production peer identity is derived from socket address.
+7. (FIXED) Production peer identity is derived from socket address.
    `ClusterConfig` stores only `SocketAddr`, while `Node::new` maps peers to `NodeId(addr.to_string())` and self to the
    configured UUID (`crates/core/src/node/config.rs`, `crates/core/src/node/runtime.rs`). Accord needs stable peer
    identities; address-derived IDs cannot validate duplicate identities, self-in-peers, or node-id/address changes.

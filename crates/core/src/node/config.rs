@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -17,9 +18,15 @@ pub struct NodeConfig {
     pub cluster: ClusterConfig,
 }
 
+#[derive(Clone, Debug)]
+pub struct PeerConfig {
+    pub node_id: Uuid,
+    pub addr: SocketAddr,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ClusterConfig {
-    pub peers: Vec<SocketAddr>,
+    pub peers: Vec<PeerConfig>,
 }
 
 impl NodeConfig {
@@ -38,6 +45,15 @@ impl NodeConfig {
                 "SO3_METADATA_DIR and SO3_BLOB_DIR must differ, both resolved to {}",
                 self.metadata_dir.display()
             )));
+        }
+        let mut seen_peer_ids = HashSet::new();
+        for peer in &self.cluster.peers {
+            if !seen_peer_ids.insert(peer.node_id) {
+                return Err(So3Error::InvalidRequest(format!(
+                    "duplicate peer node_id {} in cluster configuration",
+                    peer.node_id
+                )));
+            }
         }
 
         Ok(())
