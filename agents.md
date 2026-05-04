@@ -24,7 +24,7 @@ Current status: `cargo test --workspace` passes, and `cargo clippy --workspace -
 6. (FIXED) Apply failures after a committed decision are returned as regular errors.
    Local and inbound Apply return `PeerUnavailable` when dependencies are not yet applied. After a decision is committed, this can make clients retry and create duplicate commands instead of driving recovery/apply completion.
 
-7. Blob replication requires every peer before consensus.
+7. (FIXED) Blob replication requires every peer before consensus.
    Write/CAS push blobs to all peers before `coordinate`; any failed peer aborts the operation even when an Accord quorum would still be available.
 
 ## Medium Risk

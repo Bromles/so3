@@ -31,9 +31,32 @@ where
 
         self.blob_repository.store(&blob_id, &payload).await?;
 
-        for client in self.blob_client_map.values() {
-            // TODO make parallel
-            client.push(blob_id, &payload).await?;
+        let peers: Vec<_> = self.blob_client_map.values().cloned().collect();
+        let n = 1 + peers.len();
+        let quorum = n / 2 + 1;
+        let peers_needed = quorum - 1;
+
+        let handles: Vec<_> = peers
+            .into_iter()
+            .map(|client| {
+                let id = blob_id.clone();
+                let p = payload.clone();
+                tokio::spawn(async move { client.push(id, &p).await })
+            })
+            .collect();
+
+        let mut ok = 0usize;
+        for handle in handles {
+            if matches!(handle.await, Ok(Ok(()))) {
+                ok += 1;
+            }
+        }
+        if ok < peers_needed {
+            return Err(So3Error::PeerUnavailable(format!(
+                "blob push: only {}/{} peers reachable, need quorum of {quorum}",
+                ok + 1,
+                n,
+            )));
         }
 
         let result = self
