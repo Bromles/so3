@@ -82,6 +82,59 @@ conformance, Maelstrom parity, and operational risks that current tests do not c
   committed local file once, fan out to N peers simultaneously. Requires a multi-consumer broadcast stream (e.g.
   `tokio::sync::broadcast` or a custom tee combinator), which adds meaningful complexity.
 
+## Performance / Scalability TODO
+
+- Add SQLite indexes for consensus journal hot paths.
+  `check_conflicts_and_record_pre_accepted` scans `consensus_journal` by `key` and `state < Applied`
+  (`crates/core/src/repository/consensus_journal/sqlite.rs`) but the table only has the primary key
+  `(origin_node_id, sequence)`. Add and benchmark an index such as `(key, state)` for conflict detection and an index on
+  `state` for `list_by_state` / startup reorder-buffer loading. Re-check write overhead after adding the indexes.
+
+- Add consensus journal compaction or snapshotting.
+  Applied commands remain in `consensus_journal` forever. Even with indexes, the table grows with every `PUT`, `GET`,
+  `HEAD`, and `DELETE`, increasing SQLite file size, cache churn, startup scans, and conflict-index maintenance. Define a
+  safe retention boundary for applied commands after dependencies/recovery no longer need the full row, then archive,
+  compact, or checkpoint old entries.
+
+- Stop routing every `GET` and `HEAD` through the write-heavy consensus coordinator.
+  `ObjectUseCaseImpl::read` and `head` coordinate `ObjectCommand::Read` before loading metadata
+  (`crates/core/src/use_case/object/read.rs`, `crates/core/src/use_case/object/head.rs`). This appends journal rows and
+  performs consensus work for read-only S3 operations, so read-heavy benchmarks age the journal like write workloads.
+  Decide the intended consistency contract for S3 reads and implement an optimized read path, for example local read
+  after a committed/applied watermark, quorum read, lease/read-index, or a documented weaker mode.
+
+- Add blob garbage collection for overwritten and deleted objects.
+  Each write/CAS creates a fresh immutable `BlobId`, while object metadata stores only the current blob
+  (`crates/core/src/repository/metadata/sqlite.rs`, `crates/core/src/repository/blob/fs.rs`). Repeated writes to the same
+  key leave old committed blob files behind, and `DELETE` removes metadata but not historical blobs. Add reference
+  tracking, tombstone-aware cleanup, or a mark-and-sweep pass that is safe with recovery and in-flight consensus.
+
+- Avoid flat committed-blob directories for large stores.
+  `FileSystemBlobRepository` stores every committed blob directly under `blob_dir/committed`
+  (`crates/core/src/repository/blob/fs.rs`). Large benchmark or production runs can create thousands to millions of
+  files in one directory. Shard committed blobs by hash prefix or another stable fanout scheme before relying on large
+  object counts.
+
+- Parallelize consensus RPC phases to quorum.
+  Coordinator `PreAccept`, `Accept`, and `Commit` loops currently await peers sequentially
+  (`crates/core/src/service/consensus_coordinator/service.rs`). In multi-node production this makes phase latency roughly
+  the sum of peer latencies instead of the latency to the fastest quorum. Send requests concurrently, stop when quorum is
+  reached, apply per-RPC deadlines, and drain/cancel the remaining work carefully.
+
+- Reduce small-object fsync amplification or make durability level configurable.
+  A single small `PUT` fsyncs blob data, fsyncs the committed directory, updates consensus journal state multiple times,
+  and updates object metadata with SQLite `synchronous=FULL`
+  (`crates/core/src/repository/blob/fs.rs`, `crates/core/src/repository/consensus_journal/sqlite.rs`,
+  `crates/core/src/repository/metadata/sqlite.rs`). This is durable but expensive and dominates small-object latency.
+  Consider group commit, batching, WAL checkpoint tuning, or an explicit benchmark/dev durability profile while keeping
+  the default production profile conservative.
+
+- Update k6 methodology to separate fresh-run performance from aging behavior.
+  A 30-run benchmark against one long-lived process and one `SO3_DATA_DIR` measures storage/journal aging as much as
+  steady-state release performance. Extend `scripts/k6/run-benchmark.sh` with a mode that starts `target/release/so3`
+  on a fresh temp data dir for each run, samples CPU/RSS for that run, stops the process, and reports both fresh-run and
+  long-lived aging aggregates separately.
+
 ## Test Gaps
 
 - No multi-node production-node integration test covers real tonic communication, coordinator concurrency, and mixed

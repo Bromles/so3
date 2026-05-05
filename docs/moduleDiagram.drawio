@@ -1,77 +1,166 @@
-<mxfile host="drawio-plugin" modified="2026-04-26T17:38:39.678Z" agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36" version="22.1.22" etag="vRB7O5ZCVFCYG6vWeO66" type="embed">
+<mxfile host="app.diagrams.net">
   <diagram id="so3-module-overview" name="so3 module overview">
-    <mxGraphModel dx="962" dy="1397" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1280" pageHeight="720" math="0" shadow="0">
+    <mxGraphModel dx="1500" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1500" pageHeight="900" math="0" shadow="0">
       <root>
-        <mxCell id="0" />
-        <mxCell id="1" parent="0" />
-        <mxCell id="client" value="Client" style="shape=umlActor;verticalLabelPosition=bottom;verticalAlign=top;html=1;outlineConnect=0;fontSize=14" parent="1" vertex="1">
-          <mxGeometry x="734" y="-60" width="42" height="74" as="geometry" />
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="title_prod" value="Production node" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=18;fontStyle=1" parent="1" vertex="1">
+          <mxGeometry x="40" y="20" width="220" height="30" as="geometry"/>
         </mxCell>
-        <mxCell id="binary" value="so3 binary&lt;br&gt;config + bootstrap" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=14" parent="1" vertex="1">
-          <mxGeometry x="170" y="110" width="160" height="70" as="geometry" />
+
+        <mxCell id="s3_client" value="S3 client&lt;br&gt;GET / HEAD / PUT / DELETE" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#f8cecc;strokeColor=#b85450;fontSize=14;fontStyle=1" parent="1" vertex="1">
+          <mxGeometry x="40" y="80" width="190" height="70" as="geometry"/>
         </mxCell>
-        <mxCell id="node" value="Node&lt;br&gt;lifecycle + wiring" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=14;fontStyle=1" parent="1" vertex="1">
-          <mxGeometry x="390" y="110" width="170" height="70" as="geometry" />
+        <mxCell id="s3_api" value="S3-compatible API&lt;br&gt;Axum route /{bucket}/{*key}" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=14;fontStyle=1" parent="1" vertex="1">
+          <mxGeometry x="280" y="80" width="220" height="70" as="geometry"/>
         </mxCell>
-        <mxCell id="object_api" value="Object API&lt;br&gt;HTTP Read / Write / CAS / Delete" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=14" parent="1" vertex="1">
-          <mxGeometry x="660" y="92" width="190" height="70" as="geometry" />
+        <mxCell id="object_uc" value="ObjectUseCaseImpl&lt;br&gt;read / head / write / delete / cas" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14;fontStyle=1" parent="1" vertex="1">
+          <mxGeometry x="550" y="80" width="240" height="70" as="geometry"/>
         </mxCell>
-        <mxCell id="rpc_server" value="RPC Server&lt;br&gt;private tonic API" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=14" parent="1" vertex="1">
-          <mxGeometry x="660" y="248" width="190" height="70" as="geometry" />
+        <mxCell id="coordinator" value="Accord coordinator&lt;br&gt;PreAccept / Accept / Commit / Apply / Recover" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14;fontStyle=1" parent="1" vertex="1">
+          <mxGeometry x="850" y="80" width="270" height="70" as="geometry"/>
         </mxCell>
-        <mxCell id="object_service" value="ObjectService&lt;br&gt;command mapping" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14" parent="1" vertex="1">
-          <mxGeometry x="930" y="92" width="190" height="70" as="geometry" />
+        <mxCell id="peer_clients" value="Tonic peer clients&lt;br&gt;consensus + blob" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=14" parent="1" vertex="1">
+          <mxGeometry x="1180" y="80" width="220" height="70" as="geometry"/>
         </mxCell>
-        <mxCell id="coordinator" value="Accord Coordinator&lt;br&gt;client command path" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14;fontStyle=1" parent="1" vertex="1">
-          <mxGeometry x="930" y="248" width="190" height="70" as="geometry" />
+
+        <mxCell id="rpc_api" value="Private tonic RPC&lt;br&gt;ConsensusTransport + BlobService" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=14" parent="1" vertex="1">
+          <mxGeometry x="1180" y="230" width="220" height="70" as="geometry"/>
         </mxCell>
-        <mxCell id="applying" value="Applying Transport&lt;br&gt;replica phase handler" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14" parent="1" vertex="1">
-          <mxGeometry x="930" y="404" width="190" height="70" as="geometry" />
+        <mxCell id="inbound" value="InboundConsensusUseCaseImpl&lt;br&gt;peer consensus phases" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14" parent="1" vertex="1">
+          <mxGeometry x="850" y="230" width="270" height="70" as="geometry"/>
         </mxCell>
-        <mxCell id="peer_transport" value="Peer Transport&lt;br&gt;tonic clients" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#f8cecc;strokeColor=#b85450;fontSize=14" parent="1" vertex="1">
-          <mxGeometry x="660" y="404" width="190" height="70" as="geometry" />
+        <mxCell id="blob_uc" value="BlobUseCaseImpl&lt;br&gt;store / fetch local blobs" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14" parent="1" vertex="1">
+          <mxGeometry x="550" y="230" width="240" height="70" as="geometry"/>
         </mxCell>
-        <mxCell id="sqlite" value="SQLite&lt;br&gt;metadata + applied results&lt;br&gt;consensus journal" style="shape=cylinder3d;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;fillColor=#f5f5f5;strokeColor=#666666;fontSize=13" parent="1" vertex="1">
-          <mxGeometry x="670" y="550" width="170" height="90" as="geometry" />
+
+        <mxCell id="journal" value="SQLite consensus journal&lt;br&gt;command state + result" style="shape=cylinder3d;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;fillColor=#f5f5f5;strokeColor=#666666;fontSize=13" parent="1" vertex="1">
+          <mxGeometry x="280" y="390" width="250" height="80" as="geometry"/>
         </mxCell>
-        <mxCell id="blobs" value="Filesystem&lt;br&gt;immutable blobs" style="shape=folder;tabWidth=40;tabHeight=14;tabPosition=left;html=1;whiteSpace=wrap;fillColor=#f5f5f5;strokeColor=#666666;fontSize=13" parent="1" vertex="1">
-          <mxGeometry x="960" y="558" width="130" height="74" as="geometry" />
+        <mxCell id="metadata" value="SQLite object metadata&lt;br&gt;key, version, blob_id, sha256, size" style="shape=cylinder3d;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;fillColor=#f5f5f5;strokeColor=#666666;fontSize=13" parent="1" vertex="1">
+          <mxGeometry x="620" y="390" width="270" height="80" as="geometry"/>
         </mxCell>
-        <mxCell id="e_client_api" value="Read / Write / CAS / Delete" style="endArrow=block;html=1;rounded=0;strokeWidth=2" parent="1" source="client" target="object_api" edge="1">
-          <mxGeometry relative="1" as="geometry" />
+        <mxCell id="blobs" value="Filesystem blobs&lt;br&gt;committed object bytes" style="shape=folder;tabWidth=40;tabHeight=14;tabPosition=left;html=1;whiteSpace=wrap;fillColor=#f5f5f5;strokeColor=#666666;fontSize=13" parent="1" vertex="1">
+          <mxGeometry x="990" y="390" width="250" height="80" as="geometry"/>
         </mxCell>
-        <mxCell id="e_binary_node" value="starts" style="endArrow=block;html=1;rounded=0" parent="1" source="binary" target="node" edge="1">
-          <mxGeometry relative="1" as="geometry" />
+
+        <mxCell id="title_maelstrom" value="Maelstrom adapter" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=18;fontStyle=1" parent="1" vertex="1">
+          <mxGeometry x="40" y="560" width="220" height="30" as="geometry"/>
         </mxCell>
-        <mxCell id="e_node_api" value="binds" style="endArrow=block;html=1;rounded=0" parent="1" source="node" target="object_api" edge="1">
-          <mxGeometry relative="1" as="geometry" />
+
+        <mxCell id="maelstrom_io" value="Maelstrom stdin/stdout&lt;br&gt;lin-kv messages" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#f8cecc;strokeColor=#b85450;fontSize=14;fontStyle=1" parent="1" vertex="1">
+          <mxGeometry x="40" y="620" width="210" height="70" as="geometry"/>
         </mxCell>
-        <mxCell id="e_node_rpc" value="binds" style="endArrow=block;html=1;rounded=0" parent="1" source="node" target="rpc_server" edge="1">
-          <mxGeometry relative="1" as="geometry" />
+        <mxCell id="shared_runtime" value="SharedRuntime&lt;br&gt;leader forwarding + pending maps" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=14" parent="1" vertex="1">
+          <mxGeometry x="310" y="620" width="240" height="70" as="geometry"/>
         </mxCell>
-        <mxCell id="e_api_service" value="" style="endArrow=block;html=1;rounded=0" parent="1" source="object_api" target="object_service" edge="1">
-          <mxGeometry relative="1" as="geometry" />
+        <mxCell id="maelstrom_service" value="MaelstromService&lt;br&gt;read / write / cas adapter" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14" parent="1" vertex="1">
+          <mxGeometry x="610" y="620" width="230" height="70" as="geometry"/>
         </mxCell>
-        <mxCell id="e_service_coord" value="replicated command" style="endArrow=block;html=1;rounded=0;strokeWidth=2" parent="1" source="object_service" target="coordinator" edge="1">
-          <mxGeometry relative="1" as="geometry" />
+        <mxCell id="maelstrom_peers" value="Maelstrom peer clients&lt;br&gt;protobuf payloads in JSON" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=14" parent="1" vertex="1">
+          <mxGeometry x="900" y="620" width="250" height="70" as="geometry"/>
         </mxCell>
-        <mxCell id="e_coord_apply" value="local phases" style="endArrow=block;html=1;rounded=0;strokeWidth=2" parent="1" source="coordinator" target="applying" edge="1">
-          <mxGeometry relative="1" as="geometry" />
+        <mxCell id="maelstrom_storage" value="Per-node durable state&lt;br&gt;metadata/&lt;node_id&gt; + blobs/&lt;node_id&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#f5f5f5;strokeColor=#666666;fontSize=14" parent="1" vertex="1">
+          <mxGeometry x="1210" y="620" width="250" height="70" as="geometry"/>
         </mxCell>
-        <mxCell id="e_coord_peer" value="peer phases" style="endArrow=block;html=1;rounded=0" parent="1" source="coordinator" target="peer_transport" edge="1">
-          <mxGeometry relative="1" as="geometry" />
+
+        <mxCell id="e1" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;edgeStyle=orthogonalEdgeStyle" parent="1" source="s3_client" target="s3_api" edge="1">
+          <mxGeometry relative="1" as="geometry"/>
         </mxCell>
-        <mxCell id="e_peer_rpc" value="tonic" style="endArrow=block;html=1;rounded=0" parent="1" source="peer_transport" target="rpc_server" edge="1">
-          <mxGeometry relative="1" as="geometry" />
+        <mxCell id="e2" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;edgeStyle=orthogonalEdgeStyle" parent="1" source="s3_api" target="object_uc" edge="1">
+          <mxGeometry relative="1" as="geometry"/>
         </mxCell>
-        <mxCell id="e_rpc_apply" value="" style="endArrow=block;html=1;rounded=0" parent="1" source="rpc_server" target="applying" edge="1">
-          <mxGeometry relative="1" as="geometry" />
+        <mxCell id="e3" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;edgeStyle=orthogonalEdgeStyle" parent="1" source="object_uc" target="coordinator" edge="1">
+          <mxGeometry relative="1" as="geometry"/>
         </mxCell>
-        <mxCell id="e_apply_sqlite" value="journal + metadata + results" style="endArrow=block;html=1;rounded=0" parent="1" source="applying" target="sqlite" edge="1">
-          <mxGeometry relative="1" as="geometry" />
+        <mxCell id="e4" value="" style="endArrow=block;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle" parent="1" source="coordinator" target="peer_clients" edge="1">
+          <mxGeometry relative="1" as="geometry"/>
         </mxCell>
-        <mxCell id="e_apply_blobs" value="object bytes" style="endArrow=block;html=1;rounded=0" parent="1" source="applying" target="blobs" edge="1">
-          <mxGeometry relative="1" as="geometry" />
+        <mxCell id="e5" value="" style="endArrow=block;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle" parent="1" source="peer_clients" target="rpc_api" edge="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e6" value="" style="endArrow=block;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle" parent="1" source="rpc_api" target="inbound" edge="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e7" value="" style="endArrow=block;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle" parent="1" source="rpc_api" target="blob_uc" edge="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e8" value="" style="endArrow=block;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle" parent="1" source="object_uc" target="blobs" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="670" y="350"/>
+              <mxPoint x="1115" y="350"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e9" value="" style="endArrow=block;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle" parent="1" source="coordinator" target="journal" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="985" y="340"/>
+              <mxPoint x="405" y="340"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e10" value="" style="endArrow=block;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle" parent="1" source="coordinator" target="metadata" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="985" y="360"/>
+              <mxPoint x="755" y="360"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e11" value="" style="endArrow=block;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle" parent="1" source="inbound" target="journal" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="985" y="520"/>
+              <mxPoint x="405" y="520"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e12" value="" style="endArrow=block;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle" parent="1" source="inbound" target="metadata" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="985" y="500"/>
+              <mxPoint x="755" y="500"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e13" value="" style="endArrow=block;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle" parent="1" source="blob_uc" target="blobs" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="670" y="330"/>
+              <mxPoint x="1115" y="330"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="m1" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;edgeStyle=orthogonalEdgeStyle" parent="1" source="maelstrom_io" target="shared_runtime" edge="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="m2" value="" style="endArrow=block;html=1;rounded=0;strokeWidth=2;edgeStyle=orthogonalEdgeStyle" parent="1" source="shared_runtime" target="maelstrom_service" edge="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="m3" value="" style="endArrow=block;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle" parent="1" source="maelstrom_service" target="object_uc" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="725" y="560"/>
+              <mxPoint x="670" y="560"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="m4" value="" style="endArrow=block;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle" parent="1" source="shared_runtime" target="maelstrom_peers" edge="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="m5" value="" style="endArrow=block;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle" parent="1" source="maelstrom_peers" target="coordinator" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1025" y="560"/>
+              <mxPoint x="985" y="560"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="m6" value="" style="endArrow=block;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle" parent="1" source="shared_runtime" target="maelstrom_storage" edge="1">
+          <mxGeometry relative="1" as="geometry"/>
         </mxCell>
       </root>
     </mxGraphModel>

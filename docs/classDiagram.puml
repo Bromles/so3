@@ -1,49 +1,27 @@
 @startuml
-'!pragma layout smetana
 
-top to bottom direction
+left to right direction
 skinparam packageStyle rectangle
 skinparam classAttributeIconSize 0
 skinparam linetype ortho
 
 package "crates/so3" {
-    class Main <<bin>> {
+    class main <<bin>> {
         +main()
-        +run()
-    }
-}
-
-package "crates/so3-maelstrom" {
-    class SharedRuntime <<Arc-shared state>> {
-        +node_id: String
-        +node_ids: Vec<String>
-        +service: MaelstromObjectService
-        +local_transport: MaelstromLocalTransport
-        +output: mpsc::UnboundedSender
-        +pending_consensus: Mutex<HashMap>
-        +pending_forwards: Mutex<HashMap>
-        +next_msg_id: AtomicU64
-        +next_command_sequence: AtomicU64
-        +send_message()
+        -run()
     }
 
-    class MaelstromPeerTransport {
-        +shared: Arc<SharedRuntime>
-        -send_consensus_rpc()
-    }
-
-    class MaelstromService {
-        +prepare_command()
-        +response_from_result()
+    class config {
+        +load_node_config(): NodeConfig
     }
 }
 
 package "crates/core::node" {
     class Node {
         -config: NodeConfig
-        -object_server: ObjectServer
-        -rpc_server: RpcServer
-        -object_service: ObjectService
+        -object_use_case: Arc<ObjectUseCaseImpl>
+        -inbound_consensus_use_case: Arc<InboundConsensusUseCaseImpl>
+        -blob_use_case: Arc<BlobUseCaseImpl>
         +new(config): Result<Node>
         +bind(): Result<BoundNode>
         +run(cancellation_token): Result<()>
@@ -52,13 +30,15 @@ package "crates/core::node" {
     class BoundNode {
         -object_listener: TcpListener
         -rpc_listener: TcpListener
+        +config(): &NodeConfig
         +run(cancellation_token): Result<()>
     }
 
     class NodeConfig {
-        +node_id: Uuid
+        +node_id: Option<Uuid>
         +object_api_addr: SocketAddr
         +rpc_api_addr: SocketAddr
+        +object_request_timeout: Duration
         +metadata_dir: PathBuf
         +blob_dir: PathBuf
         +cluster: ClusterConfig
@@ -66,139 +46,33 @@ package "crates/core::node" {
     }
 
     class ClusterConfig {
-        +peers: Vec<SocketAddr>
+        +peers: Vec<PeerConfig>
+    }
+
+    class PeerConfig {
+        +node_id: Uuid
+        +addr: SocketAddr
     }
 }
 
-package "crates/core::object_server" {
-    class ObjectServer {
-        +run(listener, config, service, cancellation_token): Result<()>
+package "crates/core::api" {
+    class AxumS3Server {
+        +start(listener, config, token): Result<()>
     }
 
-    class ObjectService {
-        -executor: ObjectCommandExecutor
-        +read(key): Result<Option<StoredObject>>
-        +write(key, value): Result<StoredObject>
-        +delete(key): Result<()>
-        +cas(key, expected_version, value): Result<CasResult>
-        +execute_command(command): Result<ObjectResult>
+    class ObjectApiController {
+        +router(): Router
+        -handle_s3_get()
+        -handle_s3_head()
+        -handle_s3_put()
+        -handle_s3_delete()
     }
 
-    class ObjectApiState
-    class ApiError
-}
-
-package "crates/core::domain" {
-    class ObjectKey
-    class ObjectVersion
-    class ObjectLastModified
-
-    class ObjectRecord {
-        +key: ObjectKey
-        +version: ObjectVersion
-        +blob_id: String
-        +content_length: u64
-        +checksum: String
-        +last_modified: ObjectLastModified
+    class TonicRpcServer {
+        +start(listener, token, inbound, blob): Result<()>
     }
 
-    class StoredObject {
-        +record: ObjectRecord
-        +value: Vec<u8>
-    }
-
-    enum ObjectCommand {
-        Read
-        Write
-        Cas
-        Delete
-    }
-
-    enum ObjectResult {
-        Read
-        Write
-        Cas
-        Delete
-    }
-
-    enum CasResult {
-        Applied
-        NotFound
-        Mismatch
-    }
-
-    class So3Error
-}
-
-package "crates/core::consensus" {
-    interface ObjectCommandExecutor {
-        +execute_command(command): Result<ObjectResult>
-    }
-
-    class LocalStateMachine {
-        -repository: ObjectRepository
-        +execute(command): Result<ObjectResult>
-    }
-
-    class LocalConsensusObjectCommandExecutor {
-        -local_transport: ConsensusTransportHandler
-        -peer_transport: TonicConsensusPeerTransport
-        -next_sequence: AtomicU64
-        +execute_command(command): Result<ObjectResult>
-    }
-
-    class AccordCoordinator {
-        -local_transport: ConsensusTransportHandler
-        -peer_transport: ConsensusPeerTransport
-        -clock: HybridLogicalClock
-        +execute(command_id, command): Result<ObjectResult>
-        +recover(command_id, ballot): Result<RecoveryDecision>
-    }
-
-    interface ConsensusPeerTransport {
-        +pre_accept_peer()
-        +accept_peer()
-        +commit_peer()
-        +recover_peer()
-    }
-
-    class PersistentReplicatedCommandExecutor {
-        -state_machine: LocalStateMachine
-        -applied_command_store: AppliedCommandStore
-        +execute_replicated(command_id, command): Result<ObjectResult>
-    }
-
-    interface ReplicatedCommandExecutor {
-        +execute_replicated(command_id, command): Result<ObjectResult>
-    }
-
-    class SqliteConsensusJournal {
-        +record_pre_accepted()
-        +record_accepted()
-        +record_committed()
-        +record_applied()
-        +list_by_state()
-        +next_sequence_for_origin()
-    }
-
-    enum JournalState {
-        PreAccepted
-        Accepted
-        Committed
-        Applied
-    }
-
-    class HybridLogicalClock
-    class CommandId
-}
-
-package "crates/core::rpc_server" {
-    class RpcServer {
-        -handler: ConsensusTransportHandler
-        +run(listener, cancellation_token): Result<()>
-    }
-
-    interface ConsensusTransportHandler {
+    class ConsensusTransportService <<tonic>> {
         +pre_accept()
         +accept()
         +commit()
@@ -206,155 +80,246 @@ package "crates/core::rpc_server" {
         +recover()
     }
 
-    class ApplyingConsensusTransport {
-        -executor: ReplicatedCommandExecutor
-        -journal: SqliteConsensusJournal
-        -clock: HybridLogicalClock
+    class BlobService <<tonic>> {
+        +store_blob(stream)
+        +fetch_blob(request)
     }
-
-    class TonicConsensusPeerTransport {
-        -peers: HashMap<String, ConsensusTransportClient>
-    }
-
-    class RejectingConsensusTransport {
-        -node_id: Uuid
-    }
-
-    class ConsensusTransportService <<tonic service>>
-    class ConsensusTransportClient <<generated client>>
-    class ConsensusTransportServer <<generated server>>
 }
 
-package "crates/core::storage" {
-    class PersistentStorage {
-        +metadata_repository: SqliteObjectMetadataRepository
-        +object_repository: SqliteFsPersistentObjectRepository
-        +consensus_journal: SqliteConsensusJournal
-        +open(metadata_dir, blob_dir): Result<PersistentStorage>
-    }
-
-    interface ObjectRepository {
+package "crates/core::use_case" {
+    class ObjectUseCaseImpl {
+        +head(key): Result<Option<ObjectMetadata>>
         +read(key): Result<Option<StoredObject>>
-        +write(key, value, last_modified): Result<StoredObject>
-        +cas(key, expected_version, value, last_modified): Result<CasWriteOutcome>
+        +write(key, body): Result<ObjectMetadata>
+        +delete(key): Result<()>
+        +cas(key, expected_version, body): Result<CasResult>
     }
 
-    class PersistentObjectRepository {
-        -metadata_repository: ObjectMetadataRepository
-        -blob_repository: BlobRepository
-        -write_lock: Mutex
+    class InboundConsensusUseCaseImpl {
+        +pre_accept(req): Result<PreAcceptResponse>
+        +accept(req): Result<AcceptResponse>
+        +commit(req): Result<CommitResponse>
+        +apply(req): Result<ApplyResponse>
+        +recover(req): Result<RecoverResponse>
     }
 
-    interface ObjectMetadataRepository
-    interface AppliedCommandStore
-    class SqliteObjectMetadataRepository
-    interface BlobRepository
-    class FileSystemBlobRepository
+    class BlobUseCaseImpl {
+        +exists(blob_id): Result<bool>
+        +append_chunk(blob_id, chunk): Result<()>
+        +commit(blob_id): Result<()>
+        +abort(blob_id): Result<()>
+        +fetch(blob_id): Result<BlobStream>
+    }
+
+    class NodeIdentityUseCaseImpl {
+        +ensure(configured): Result<Uuid>
+    }
 }
 
-Main --> NodeConfig : loads
-Main --> Node : starts
+package "crates/core::service" {
+    class AccordConsensusCoordinatorService {
+        +coordinate(command): Result<CommandResult>
+        -recover_and_complete()
+        -complete_from_commit()
+        -apply_local()
+    }
+}
+
+package "crates/core::client" {
+    class ConsensusTransportClient <<tonic client>> {
+        +pre_accept(req)
+        +accept(req)
+        +commit(req)
+        +apply(req)
+        +recover(req)
+    }
+
+    class BlobClient <<tonic client>> {
+        +push(blob_id, size, sha256, data)
+        +fetch(blob_id)
+    }
+}
+
+package "crates/core::repository" {
+    class SqliteObjectMetadataRepository {
+        +load(key)
+        +store(metadata)
+        +delete(key)
+    }
+
+    class SqliteConsensusJournal {
+        +load(command_id)
+        +check_conflicts_and_record_pre_accepted()
+        +record_ballot()
+        +record_accepted()
+        +record_committed()
+        +record_applied()
+        +list_by_state(state)
+        +max_sequence(node_id)
+    }
+
+    class FileSystemBlobRepository {
+        +append_chunk(blob_id, chunk)
+        +commit(blob_id)
+        +abort(blob_id)
+        +open_reader(blob_id)
+        +exists(blob_id)
+        +delete(blob_id)
+    }
+
+    class FileSystemNodeIdentityRepository {
+        +load()
+        +store(node_id)
+    }
+}
+
+package "crates/core::domain" {
+    enum ObjectCommand {
+        Read
+        Write
+        Cas
+        Delete
+    }
+
+    enum CommandResult {
+        Read
+        Write
+        Cas
+        Delete
+    }
+
+    class ObjectMetadata {
+        +key: ObjectKey
+        +version: ObjectVersion
+        +blob_id: BlobId
+        +sha256: Sha256Digest
+        +size: u64
+        +last_modified_ms: u64
+    }
+
+    class StoredObject {
+        +metadata: ObjectMetadata
+        +blob: BlobStream
+    }
+
+    class CommandId {
+        +origin_node_id: NodeId
+        +sequence: u64
+    }
+
+    class Ballot {
+        +round: u64
+        +node_id: NodeId
+    }
+
+    class LogicalTimestamp
+
+    enum JournalState {
+        PreAccepted
+        Accepted
+        Committed
+        Applied
+    }
+}
+
+package "crates/so3-maelstrom" {
+    class SharedRuntime {
+        +is_coordinator(): bool
+        +coordinator_id(): &str
+        +send_message()
+    }
+
+    class MaelstromService {
+        +handle_read(msg_id, key)
+        +handle_write(msg_id, key, value)
+        +handle_cas(msg_id, key, from, to, create_if_not_exists)
+    }
+
+    class MaelstromConsensusPeerClient {
+        +pre_accept(req)
+        +accept(req)
+        +commit(req)
+        +apply(req)
+        +recover(req)
+    }
+
+    class MaelstromBlobPeerClient {
+        +push(blob_id, size, sha256, data)
+        +fetch(blob_id)
+    }
+}
+
+main --> config
+config --> NodeConfig
+main --> Node
 Node *-- NodeConfig
-Node *-- ObjectServer
-Node *-- RpcServer
-Node *-- ObjectService
-Node ..> PersistentStorage : opens
-Node ..> ApplyingConsensusTransport : local RPC handler
-Node ..> TonicConsensusPeerTransport : peer clients
 NodeConfig o-- ClusterConfig
+ClusterConfig o-- PeerConfig
 
-ObjectServer --> ObjectApiState
-ObjectServer --> ObjectService
-ObjectService --> ObjectCommandExecutor
-ObjectService ..> ObjectCommand
-ObjectService ..> ObjectResult
+Node --> SqliteObjectMetadataRepository : opens
+Node --> SqliteConsensusJournal : opens
+Node --> FileSystemBlobRepository : opens
+Node --> FileSystemNodeIdentityRepository : identity
+Node --> ObjectUseCaseImpl : wires
+Node --> InboundConsensusUseCaseImpl : wires
+Node --> BlobUseCaseImpl : wires
+BoundNode --> AxumS3Server : S3-compatible API
+BoundNode --> TonicRpcServer : private RPC
 
-LocalConsensusObjectCommandExecutor ..|> ObjectCommandExecutor
-LocalConsensusObjectCommandExecutor --> AccordCoordinator
-LocalConsensusObjectCommandExecutor --> TonicConsensusPeerTransport
-AccordCoordinator --> ConsensusTransportHandler : local phases
-AccordCoordinator --> ConsensusPeerTransport : peer phases
-TonicConsensusPeerTransport ..|> ConsensusPeerTransport
-TonicConsensusPeerTransport --> ConsensusTransportClient
+AxumS3Server --> ObjectApiController
+ObjectApiController --> ObjectUseCaseImpl
+TonicRpcServer --> ConsensusTransportService
+TonicRpcServer --> BlobService
+ConsensusTransportService --> InboundConsensusUseCaseImpl
+BlobService --> BlobUseCaseImpl
 
-RpcServer --> ConsensusTransportServer
-ConsensusTransportServer --> ConsensusTransportService
-ConsensusTransportService --> ConsensusTransportHandler
-ApplyingConsensusTransport ..|> ConsensusTransportHandler
-RejectingConsensusTransport ..|> ConsensusTransportHandler
-ApplyingConsensusTransport --> SqliteConsensusJournal
-ApplyingConsensusTransport --> ReplicatedCommandExecutor
+ObjectUseCaseImpl --> AccordConsensusCoordinatorService
+ObjectUseCaseImpl --> FileSystemBlobRepository
+ObjectUseCaseImpl --> BlobClient
 
-PersistentReplicatedCommandExecutor ..|> ReplicatedCommandExecutor
-PersistentReplicatedCommandExecutor --> LocalStateMachine
-PersistentReplicatedCommandExecutor --> AppliedCommandStore
-LocalStateMachine ..|> ObjectCommandExecutor
-LocalStateMachine --> ObjectRepository
+AccordConsensusCoordinatorService --> SqliteConsensusJournal
+AccordConsensusCoordinatorService --> SqliteObjectMetadataRepository
+AccordConsensusCoordinatorService --> FileSystemBlobRepository
+AccordConsensusCoordinatorService --> ConsensusTransportClient
+AccordConsensusCoordinatorService --> BlobClient
+AccordConsensusCoordinatorService ..> ObjectCommand
+AccordConsensusCoordinatorService ..> CommandResult
+AccordConsensusCoordinatorService ..> CommandId
+AccordConsensusCoordinatorService ..> Ballot
+AccordConsensusCoordinatorService ..> LogicalTimestamp
 
-PersistentStorage *-- SqliteObjectMetadataRepository
-PersistentStorage *-- PersistentObjectRepository
-PersistentStorage *-- SqliteConsensusJournal
-PersistentObjectRepository ..|> ObjectRepository
-PersistentObjectRepository --> ObjectMetadataRepository
-PersistentObjectRepository --> BlobRepository
-SqliteObjectMetadataRepository ..|> ObjectMetadataRepository
-SqliteObjectMetadataRepository ..|> AppliedCommandStore
-FileSystemBlobRepository ..|> BlobRepository
+InboundConsensusUseCaseImpl --> SqliteConsensusJournal
+InboundConsensusUseCaseImpl --> SqliteObjectMetadataRepository
+InboundConsensusUseCaseImpl --> FileSystemBlobRepository
+InboundConsensusUseCaseImpl --> BlobClient
+
 SqliteConsensusJournal --> JournalState
-
-ObjectCommand --> ObjectKey
-ObjectCommand --> ObjectVersion
-ObjectResult --> StoredObject
-CasResult --> StoredObject
-StoredObject *-- ObjectRecord
-ObjectRecord --> ObjectKey
-ObjectRecord --> ObjectVersion
-ObjectRecord --> ObjectLastModified
-ApiError --> So3Error
+StoredObject *-- ObjectMetadata
+CommandResult --> ObjectMetadata
 
 SharedRuntime --> MaelstromService
-SharedRuntime --> ApplyingConsensusTransport : local consensus RPC
-SharedRuntime ..> PersistentStorage : per Maelstrom node
-MaelstromPeerTransport --> SharedRuntime : Arc clone
-MaelstromPeerTransport ..|> ConsensusPeerTransport
-MaelstromPeerTransport ..> AccordCoordinator : passed as &mut peer_transport
-MaelstromService ..> ObjectCommand
-MaelstromService ..> ObjectResult
+SharedRuntime --> InboundConsensusUseCaseImpl
+SharedRuntime --> FileSystemBlobRepository
+MaelstromService --> ObjectUseCaseImpl
+AccordConsensusCoordinatorService --> MaelstromConsensusPeerClient
+ObjectUseCaseImpl --> MaelstromBlobPeerClient
 
-note right of Node
-Production node composition:
-- HTTP object API (S3-compatible)
-- private tonic RPC API
-- local applying transport
-- tonic peer transport
-- durable replay before serving
+note right of AccordConsensusCoordinatorService
+Current phases:
+- local PreAccepted record
+- peer PreAccept
+- optional Accept
+- Commit retry until quorum
+- local Apply
+- peer Apply in background tasks
 end note
 
-note right of AccordCoordinator
-Accord consensus prototype:
-- PreAccept / Accept / Commit / Recover phases
-- majority quorum for PreAccept and Accept
-- unanimous fast path skips Accept (timestamp_zero)
-- commit broadcast is best effort
-- client success waits for local applied result
-end note
-
-note right of SharedRuntime
-Maelstrom adapter runtime:
-- Arc<SharedRuntime> shared across tokio tasks
-- event loop routes ConsensusOk/ForwardOk via
-  oneshot channels (no recursion)
-- new client/consensus messages spawned as tasks
-- dedicated writer task owns stdout
-- multi-threaded tokio runtime (all CPU cores)
-end note
-
-note right of PersistentStorage
-Durability:
-- SQLite metadata and applied results
-- SQLite consensus journal
-- immutable filesystem blobs
-- blob is placed before metadata references it
+note bottom of SharedRuntime
+Maelstrom adapter:
+- deterministic leader = node_ids.first()
+- followers forward client commands
+- consensus payloads use core protobuf
+- blob payloads are single JSON byte arrays
 end note
 
 @enduml

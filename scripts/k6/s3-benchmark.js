@@ -16,10 +16,11 @@
  * AWS_ACCESS_KEY_ID     Fake key id              (default: testkey)
  * AWS_SECRET_ACCESS_KEY Fake secret              (default: testsecret)
  *
- * Single run:
+ * Single run against a release so3 process:
+ *   SO3_OBJECT_ADDR=127.0.0.1:3000 target/release/so3
  *   k6 run scripts/k6/s3-benchmark.js
  *
- * Multi-run (30 iterations, aggregate statistics):
+ * Multi-run (30 iterations, aggregate statistics and CPU/RSS sampling):
  *   bash scripts/k6/run-benchmark.sh --runs 30
  */
 
