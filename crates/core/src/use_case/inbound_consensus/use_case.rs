@@ -1,6 +1,5 @@
 use crate::client::interface::BlobPeerClient;
 use crate::domain::blob::id::BlobId;
-use crate::domain::blob::payload::BlobPayload;
 use crate::domain::clock::{HybridLogicalClock, LogicalTimestamp};
 use crate::domain::consensus::command_id::CommandId;
 use crate::domain::consensus::journal::JournalState;
@@ -16,9 +15,10 @@ use crate::repository::metadata::ObjectMetadataRepository;
 use crate::use_case::inbound_consensus::InboundConsensusUseCase;
 use async_trait::async_trait;
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
+use tokio_stream::StreamExt;
 
 /// Committed commands not yet applied, keyed by commit timestamp.
 /// Apply gates execution on all earlier-timestamped entries being absent.
@@ -88,13 +88,26 @@ where
             .observe(self.epoch.load(Ordering::Acquire), remote)
     }
 
-    pub(super) async fn fetch_blob_from_any_peer(
-        &self,
-        blob_id: &BlobId,
-    ) -> So3Result<BlobPayload> {
+    pub(super) async fn fetch_blob_from_any_peer(&self, blob_id: &BlobId) -> So3Result<()> {
         for client in self.blob_clients.values() {
-            if let Ok(payload) = client.fetch(blob_id).await {
-                return Ok(payload);
+            if let Ok(mut stream) = client.fetch(blob_id).await {
+                let mut failed = false;
+                while let Some(chunk) = stream.next().await {
+                    if let Ok(c) = chunk {
+                        if self.blob_repository.append_chunk(blob_id, c).await.is_err() {
+                            failed = true;
+                            break;
+                        }
+                    } else {
+                        failed = true;
+                        break;
+                    }
+                }
+                if failed {
+                    let _ = self.blob_repository.abort(blob_id).await;
+                    continue;
+                }
+                return self.blob_repository.commit(blob_id).await;
             }
         }
         Err(So3Error::NotFound(format!(

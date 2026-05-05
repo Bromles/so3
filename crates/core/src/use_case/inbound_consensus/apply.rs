@@ -10,7 +10,7 @@ use crate::repository::blob::BlobRepository;
 use crate::repository::consensus_journal::ConsensusJournalRepository;
 use crate::repository::metadata::ObjectMetadataRepository;
 use crate::use_case::inbound_consensus::use_case::InboundConsensusUseCaseImpl;
-use tokio::time::{Duration, Instant, timeout_at};
+use tokio::time::{timeout_at, Duration, Instant};
 
 impl<CJR, OMR, BR, BPC> InboundConsensusUseCaseImpl<CJR, OMR, BR, BPC>
 where
@@ -102,8 +102,7 @@ where
                 size,
             } => {
                 if !self.blob_repository.exists(blob_id).await? {
-                    let payload = self.fetch_blob_from_any_peer(blob_id).await?;
-                    self.blob_repository.store(blob_id, &payload).await?;
+                    self.fetch_blob_from_any_peer(blob_id).await?;
                 }
                 let version = self
                     .object_metadata_repository
@@ -131,8 +130,7 @@ where
                 size,
             } => {
                 if !self.blob_repository.exists(blob_id).await? {
-                    let payload = self.fetch_blob_from_any_peer(blob_id).await?;
-                    self.blob_repository.store(blob_id, &payload).await?;
+                    self.fetch_blob_from_any_peer(blob_id).await?;
                 }
                 match self.object_metadata_repository.load(key).await? {
                     Some(meta) if meta.version == *expected_version => {

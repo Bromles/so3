@@ -1,5 +1,7 @@
 use crate::client::interface::BlobPeerClient;
-use crate::domain::blob::payload::BlobPayload;
+use crate::domain::blob::checksum::{Sha256Digest, Sha256Hasher};
+use crate::domain::blob::id::BlobId;
+use crate::domain::blob::stream::BlobStream;
 use crate::domain::command::{CasResult, CommandResult};
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::node::NodeId;
@@ -14,6 +16,7 @@ use crate::use_case::object::ObjectUseCase;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio_stream::StreamExt;
 
 pub struct ObjectUseCaseImpl<
     CCS: ConsensusCoordinatorService,
@@ -58,6 +61,25 @@ where
             "unexpected state machine result for {operation}: {result:?}"
         )))
     }
+
+    pub(crate) async fn stream_to_local(
+        &self,
+        blob_id: &BlobId,
+        mut body: BlobStream,
+    ) -> So3Result<(Sha256Digest, u64)> {
+        let mut hasher = Sha256Hasher::new();
+        let mut size = 0u64;
+        while let Some(chunk) = body.next().await {
+            let chunk = chunk?;
+            if !chunk.is_empty() {
+                hasher.update(&chunk);
+                size += chunk.len() as u64;
+                self.blob_repository.append_chunk(blob_id, chunk).await?;
+            }
+        }
+        self.blob_repository.commit(blob_id).await?;
+        Ok((hasher.finalize(), size))
+    }
 }
 
 #[async_trait]
@@ -77,8 +99,8 @@ where
         self.read_internal(key).await
     }
 
-    async fn write(&self, key: ObjectKey, payload: BlobPayload) -> So3Result<ObjectMetadata> {
-        self.write_internal(key, payload).await
+    async fn write(&self, key: ObjectKey, body: BlobStream) -> So3Result<ObjectMetadata> {
+        self.write_internal(key, body).await
     }
 
     async fn delete(&self, key: &ObjectKey) -> So3Result<()> {
@@ -89,8 +111,8 @@ where
         &self,
         key: ObjectKey,
         expected_version: ObjectVersion,
-        payload: BlobPayload,
+        body: BlobStream,
     ) -> So3Result<CasResult> {
-        self.cas_internal(key, expected_version, payload).await
+        self.cas_internal(key, expected_version, body).await
     }
 }

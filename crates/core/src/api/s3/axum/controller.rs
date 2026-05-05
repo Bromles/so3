@@ -1,18 +1,19 @@
 use crate::api::s3::axum::error::ApiError;
-use crate::domain::blob::payload::BlobPayload;
+use crate::domain::blob::stream::BlobStream;
 use crate::domain::error::So3Error;
 use crate::domain::object::key::ObjectKey;
 use crate::domain::object::metadata::ObjectMetadata;
 use crate::use_case::object::ObjectUseCase;
-use axum::Router;
+use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::header::CONTENT_LENGTH;
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use bytes::Bytes;
+use axum::Router;
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
+use tokio_stream::StreamExt;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
@@ -67,7 +68,8 @@ impl<O: ObjectUseCase> ObjectApiController<O> {
             .await?
             .ok_or_else(|| So3Error::not_found(&object_key))?;
 
-        let mut response = stored_object.blob.as_bytes().clone().into_response();
+        let body = Body::from_stream(stored_object.blob);
+        let mut response = Response::new(body);
 
         attach_s3_metadata_headers(response.headers_mut(), &stored_object.metadata)?;
 
@@ -96,14 +98,16 @@ impl<O: ObjectUseCase> ObjectApiController<O> {
     async fn handle_s3_put(
         State(state): State<Arc<Self>>,
         Path((bucket, key)): Path<(String, String)>,
-        body: Bytes,
+        body: Body,
     ) -> Result<Response, ApiError> {
         let object_key = s3_object_key(&bucket, &key)?;
 
-        let metadata = state
-            .object_use_case
-            .write(object_key, BlobPayload::new(body))
-            .await?;
+        let stream = body
+            .into_data_stream()
+            .map(|r| r.map_err(|e| So3Error::Io(e.to_string())));
+        let blob_stream = BlobStream::new(stream);
+
+        let metadata = state.object_use_case.write(object_key, blob_stream).await?;
 
         let mut response = StatusCode::OK.into_response();
 

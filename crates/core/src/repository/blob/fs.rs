@@ -2,16 +2,17 @@ use std::fs::File as StdFile;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::domain::blob::id::BlobId;
+use crate::domain::blob::stream::BlobStream;
+use crate::domain::error::{So3Error, So3Result};
+use crate::repository::blob::interface::BlobRepository;
 use async_trait::async_trait;
+use bytes::Bytes;
 use tokio::fs;
 use tokio::fs::File as TokioFile;
 use tokio::io::AsyncWriteExt;
-use uuid::Uuid;
-
-use crate::domain::blob::id::BlobId;
-use crate::domain::blob::payload::BlobPayload;
-use crate::domain::error::{So3Error, So3Result};
-use crate::repository::blob::interface::BlobRepository;
+use tokio_stream::StreamExt;
+use tokio_util::io::ReaderStream;
 
 const TEMP_DIR: &str = "tmp";
 const COMMITTED_DIR: &str = "committed";
@@ -35,10 +36,8 @@ impl FileSystemBlobRepository {
         self.blob_dir.join(COMMITTED_DIR).join(blob_id.to_string())
     }
 
-    fn temp_path(&self) -> PathBuf {
-        self.blob_dir
-            .join(TEMP_DIR)
-            .join(Uuid::new_v4().to_string())
+    fn streaming_temp_path(&self, blob_id: &BlobId) -> PathBuf {
+        self.blob_dir.join(TEMP_DIR).join(blob_id.to_string())
     }
 
     async fn remove_stale_temp_files(&self) -> So3Result<()> {
@@ -52,18 +51,25 @@ impl FileSystemBlobRepository {
 
 #[async_trait]
 impl BlobRepository for FileSystemBlobRepository {
-    async fn store(&self, blob_id: &BlobId, payload: &BlobPayload) -> So3Result<()> {
-        let final_path = self.committed_path(blob_id);
-        if fs::try_exists(&final_path).await? {
+    async fn append_chunk(&self, blob_id: &BlobId, chunk: Bytes) -> So3Result<()> {
+        if fs::try_exists(self.committed_path(blob_id)).await? {
             return Ok(());
         }
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.streaming_temp_path(blob_id))
+            .await?;
+        file.write_all(&chunk).await?;
+        Ok(())
+    }
 
-        let temp_path = self.temp_path();
-        let mut file = TokioFile::create(&temp_path).await?;
-        file.write_all(payload.as_bytes()).await?;
+    async fn commit(&self, blob_id: &BlobId) -> So3Result<()> {
+        let temp_path = self.streaming_temp_path(blob_id);
+        let final_path = self.committed_path(blob_id);
+        let file = TokioFile::open(&temp_path).await?;
         file.sync_all().await?;
         drop(file);
-
         match fs::rename(&temp_path, &final_path).await {
             Ok(()) => sync_dir(self.blob_dir.join(COMMITTED_DIR)).await,
             Err(_) if fs::try_exists(&final_path).await.unwrap_or(false) => {
@@ -74,9 +80,18 @@ impl BlobRepository for FileSystemBlobRepository {
         }
     }
 
-    async fn load(&self, blob_id: &BlobId) -> So3Result<BlobPayload> {
-        let bytes = fs::read(self.committed_path(blob_id)).await?;
-        Ok(BlobPayload::from_vec(bytes))
+    async fn abort(&self, blob_id: &BlobId) -> So3Result<()> {
+        match fs::remove_file(self.streaming_temp_path(blob_id)).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(So3Error::from(e)),
+        }
+    }
+
+    async fn open_reader(&self, blob_id: &BlobId) -> So3Result<BlobStream> {
+        let file = fs::File::open(self.committed_path(blob_id)).await?;
+        let stream = ReaderStream::new(file).map(|r| r.map_err(So3Error::from));
+        Ok(BlobStream::new(stream))
     }
 
     async fn exists(&self, blob_id: &BlobId) -> So3Result<bool> {

@@ -4,7 +4,7 @@ use tokio::sync::oneshot;
 
 use so3_core::domain::error::{So3Error, So3Result};
 
-use crate::protocol::{CRASH_CODE, ClientRequest, Message, RequestBody, ResponseBody};
+use crate::protocol::{ClientRequest, Message, RequestBody, ResponseBody, CRASH_CODE};
 use crate::runtime::types::SharedRuntime;
 
 pub(super) async fn handle_client_message(

@@ -26,6 +26,7 @@ thiserror = { workspace = true }
 uuid = { workspace = true, features = ["v4", "serde"] }
 postcard = { workspace = true, features = ["alloc"] }
 sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
+futures-core = { workspace = true }
 sha2 = { workspace = true }
 const-hex = { workspace = true, features = ["alloc"] }
 tempfile = { workspace = true }

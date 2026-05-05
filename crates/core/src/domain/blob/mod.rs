@@ -1,3 +1,3 @@
 pub mod checksum;
 pub mod id;
-pub mod payload;
+pub mod stream;

@@ -3,6 +3,22 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub struct Sha256Hasher(Sha256);
+
+impl Sha256Hasher {
+    pub fn new() -> Self {
+        Self(Sha256::new())
+    }
+
+    pub fn update(&mut self, data: &[u8]) {
+        Digest::update(&mut self.0, data);
+    }
+
+    pub fn finalize(self) -> Sha256Digest {
+        Sha256Digest::from_bytes(Digest::finalize(self.0).into())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Sha256Digest([u8; 32]);
 

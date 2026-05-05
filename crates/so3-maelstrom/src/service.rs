@@ -1,14 +1,15 @@
+use bytes::Bytes;
 use serde_json::Value;
 
-use so3_core::domain::blob::payload::BlobPayload;
+use so3_core::domain::blob::stream::BlobStream;
 use so3_core::domain::command::CasResult;
 use so3_core::domain::error::{So3Error, So3Result};
 use so3_core::domain::object::key::ObjectKey;
 use so3_core::use_case::object::ObjectUseCase;
 
 use crate::protocol::{
-    CRASH_CODE, KEY_DOES_NOT_EXIST_CODE, MALFORMED_REQUEST_CODE, PRECONDITION_FAILED_CODE,
-    ResponseBody, error_response,
+    error_response, ResponseBody, CRASH_CODE, KEY_DOES_NOT_EXIST_CODE,
+    MALFORMED_REQUEST_CODE, PRECONDITION_FAILED_CODE,
 };
 
 pub struct MaelstromService<O: ObjectUseCase> {
@@ -26,12 +27,15 @@ impl<O: ObjectUseCase> MaelstromService<O> {
             Err(e) => return map_error(msg_id, &e),
         };
         match self.object_use_case.read(&key).await {
-            Ok(Some(obj)) => match serde_json::from_slice::<Value>(obj.blob.as_bytes()) {
-                Ok(value) => ResponseBody::ReadOk {
-                    in_reply_to: msg_id,
-                    value,
+            Ok(Some(obj)) => match collect_blob(obj.blob).await {
+                Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
+                    Ok(value) => ResponseBody::ReadOk {
+                        in_reply_to: msg_id,
+                        value,
+                    },
+                    Err(e) => map_error(msg_id, &So3Error::Serialization(e.to_string())),
                 },
-                Err(e) => map_error(msg_id, &So3Error::Serialization(e.to_string())),
+                Err(e) => map_error(msg_id, &e),
             },
             Ok(None) => error_response(msg_id, KEY_DOES_NOT_EXIST_CODE, "key does not exist"),
             Err(e) => map_error(msg_id, &e),
@@ -47,11 +51,8 @@ impl<O: ObjectUseCase> MaelstromService<O> {
             Ok(b) => b,
             Err(e) => return map_error(msg_id, &e),
         };
-        match self
-            .object_use_case
-            .write(key, BlobPayload::from_vec(bytes))
-            .await
-        {
+        let stream = bytes_to_stream(bytes);
+        match self.object_use_case.write(key, stream).await {
             Ok(_) => ResponseBody::WriteOk {
                 in_reply_to: msg_id,
             },
@@ -86,7 +87,7 @@ impl<O: ObjectUseCase> MaelstromService<O> {
                 if create_if_not_exists {
                     return match self
                         .object_use_case
-                        .write(key.clone(), BlobPayload::from_vec(to_bytes.clone()))
+                        .write(key.clone(), bytes_to_stream(to_bytes.clone()))
                         .await
                     {
                         Ok(_) => ResponseBody::CasOk {
@@ -98,7 +99,11 @@ impl<O: ObjectUseCase> MaelstromService<O> {
                 return error_response(msg_id, KEY_DOES_NOT_EXIST_CODE, "key does not exist");
             };
 
-            let current_value = match serde_json::from_slice::<Value>(current_obj.blob.as_bytes()) {
+            let blob_bytes = match collect_blob(current_obj.blob).await {
+                Ok(b) => b,
+                Err(e) => return map_error(msg_id, &e),
+            };
+            let current_value = match serde_json::from_slice::<Value>(&blob_bytes) {
                 Ok(v) => v,
                 Err(e) => return map_error(msg_id, &So3Error::Serialization(e.to_string())),
             };
@@ -115,7 +120,7 @@ impl<O: ObjectUseCase> MaelstromService<O> {
                 .cas(
                     key.clone(),
                     current_obj.metadata.version,
-                    BlobPayload::from_vec(to_bytes.clone()),
+                    bytes_to_stream(to_bytes.clone()),
                 )
                 .await
             {
@@ -129,6 +134,19 @@ impl<O: ObjectUseCase> MaelstromService<O> {
             }
         }
     }
+}
+
+fn bytes_to_stream(bytes: Vec<u8>) -> BlobStream {
+    BlobStream::new(tokio_stream::iter(std::iter::once(Ok(Bytes::from(bytes)))))
+}
+
+async fn collect_blob(mut stream: BlobStream) -> So3Result<Vec<u8>> {
+    use tokio_stream::StreamExt;
+    let mut buf = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        buf.extend_from_slice(&chunk?);
+    }
+    Ok(buf)
 }
 
 fn object_key_from_json(key: &Value) -> So3Result<ObjectKey> {

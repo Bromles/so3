@@ -2,10 +2,12 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use prost::Message as ProstMessage;
+use tokio_stream::StreamExt;
 
 use so3_core::client::interface::{BlobPeerClient, ConsensusPeerClient};
+use so3_core::domain::blob::checksum::Sha256Digest;
 use so3_core::domain::blob::id::BlobId;
-use so3_core::domain::blob::payload::BlobPayload;
+use so3_core::domain::blob::stream::BlobStream;
 use so3_core::domain::consensus::transport::{
     AcceptRequest, AcceptResponse, ApplyRequest, ApplyResponse, CommitRequest, CommitResponse,
     PreAcceptRequest, PreAcceptResponse, RecoverRequest, RecoverResponse,
@@ -58,12 +60,23 @@ impl MaelstromBlobPeerClient {
 
 #[async_trait]
 impl BlobPeerClient for MaelstromBlobPeerClient {
-    async fn push(&self, blob_id: BlobId, payload: &BlobPayload) -> So3Result<()> {
+    async fn push(
+        &self,
+        blob_id: BlobId,
+        _size: u64,
+        _sha256: Sha256Digest,
+        mut data: BlobStream,
+    ) -> So3Result<()> {
+        let mut bytes = Vec::new();
+        while let Some(chunk) = data.next().await {
+            bytes.extend_from_slice(&chunk?);
+        }
+
         match self
             .send_blob_request(|msg_id| RequestBody::BlobPush {
                 msg_id,
                 blob_id: blob_id.to_string(),
-                payload: payload.as_bytes().to_vec(),
+                payload: bytes,
             })
             .await?
         {
@@ -74,7 +87,7 @@ impl BlobPeerClient for MaelstromBlobPeerClient {
         }
     }
 
-    async fn fetch(&self, blob_id: &BlobId) -> So3Result<BlobPayload> {
+    async fn fetch(&self, blob_id: &BlobId) -> So3Result<BlobStream> {
         match self
             .send_blob_request(|msg_id| RequestBody::BlobFetch {
                 msg_id,
@@ -82,7 +95,12 @@ impl BlobPeerClient for MaelstromBlobPeerClient {
             })
             .await?
         {
-            BlobResponse::Fetched(payload) => Ok(BlobPayload::from_vec(payload)),
+            BlobResponse::Fetched(payload) => {
+                use bytes::Bytes;
+                Ok(BlobStream::new(tokio_stream::iter(std::iter::once(Ok(
+                    Bytes::from(payload),
+                )))))
+            }
             BlobResponse::Pushed => Err(So3Error::InvalidRequest(
                 "unexpected blob push response for fetch".into(),
             )),

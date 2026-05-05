@@ -1,7 +1,5 @@
 use crate::client::interface::BlobPeerClient;
-use crate::domain::blob::checksum::Sha256Digest;
-use crate::domain::blob::id::BlobId;
-use crate::domain::blob::payload::BlobPayload;
+use crate::domain::blob::stream::BlobStream;
 use crate::domain::command::{CasResult, CommandResult, ObjectCommand};
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::object::key::ObjectKey;
@@ -24,32 +22,35 @@ where
         &self,
         key: ObjectKey,
         expected_version: ObjectVersion,
-        payload: BlobPayload,
+        body: BlobStream,
     ) -> So3Result<CasResult> {
-        let blob_id = BlobId::new();
-        let sha256 = Sha256Digest::compute(payload.as_bytes());
-        let size = payload.len() as u64;
+        use crate::domain::blob::id::BlobId;
 
-        self.blob_repository.store(&blob_id, &payload).await?;
+        let blob_id = BlobId::new();
+
+        let (sha256, size) = match self.stream_to_local(&blob_id, body).await {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = self.blob_repository.abort(&blob_id).await;
+                return Err(e);
+            }
+        };
 
         let peers: Vec<_> = self.blob_client_map.values().cloned().collect();
         let n = 1 + peers.len();
         let quorum = n / 2 + 1;
         let peers_needed = quorum - 1;
 
-        let handles: Vec<_> = peers
-            .into_iter()
-            .map(|client| {
-                let id = blob_id.clone();
-                let p = payload.clone();
-                tokio::spawn(async move { client.push(id, &p).await })
-            })
-            .collect();
-
         let mut ok = 0usize;
-        for handle in handles {
-            if matches!(handle.await, Ok(Ok(()))) {
-                ok += 1;
+        for client in &peers {
+            if let Ok(reader) = self.blob_repository.open_reader(&blob_id).await {
+                if client
+                    .push(blob_id.clone(), size, sha256.clone(), reader)
+                    .await
+                    .is_ok()
+                {
+                    ok += 1;
+                }
             }
         }
         if ok < peers_needed {

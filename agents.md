@@ -52,7 +52,7 @@ operational risks that current tests do not cover.
    `crates/core/src/service/consensus_coordinator/service.rs`). If `wait_for` is intended to drive Accord recovery
    ordering, recovery remains incomplete.
 
-9. Blob RPC buffers full objects in memory and trusts header size too early.
+9. (FIXED) Blob RPC buffers full objects in memory and trusts header size too early.
    `BlobService::store_blob` collects all chunks into `Vec<Bytes>`, then `BlobUseCaseImpl::store` allocates
    `BytesMut::with_capacity(size as usize)` (`crates/core/src/api/rpc/tonic/blob_service.rs`,
    `crates/core/src/use_case/blob/use_case.rs`). There is no streaming write path or configured max object size, so a
@@ -62,6 +62,12 @@ operational risks that current tests do not cover.
     `read_internal` coordinates a Read, then loads the referenced blob only from the local repository (
     `crates/core/src/use_case/object/read.rs`). If metadata is present but the local blob is missing after crash or
     partial replication, GET fails instead of fetching from a peer and repairing local state.
+
+11. Blob fetch doesn't use the same scheme as blob push - no checksum and size verification. Possible corruption
+
+## TODO
+
+- Blob replication to peers is currently sequential (one peer at a time). Consider parallel tee-streaming: read the committed local file once, fan out to N peers simultaneously. Requires a multi-consumer broadcast stream (e.g. `tokio::sync::broadcast` or a custom tee combinator), which adds meaningful complexity.
 
 ## Test Gaps
 

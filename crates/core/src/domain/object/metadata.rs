@@ -1,6 +1,6 @@
 use crate::domain::blob::checksum::Sha256Digest;
 use crate::domain::blob::id::BlobId;
-use crate::domain::blob::payload::BlobPayload;
+use crate::domain::blob::stream::BlobStream;
 use crate::domain::object::key::ObjectKey;
 use crate::domain::object::version::ObjectVersion;
 
@@ -16,5 +16,5 @@ pub struct ObjectMetadata {
 
 pub struct StoredObject {
     pub metadata: ObjectMetadata,
-    pub blob: BlobPayload,
+    pub blob: BlobStream,
 }

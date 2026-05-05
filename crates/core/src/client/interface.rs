@@ -1,5 +1,6 @@
+use crate::domain::blob::checksum::Sha256Digest;
 use crate::domain::blob::id::BlobId;
-use crate::domain::blob::payload::BlobPayload;
+use crate::domain::blob::stream::BlobStream;
 use crate::domain::consensus::transport::{
     AcceptRequest, AcceptResponse, ApplyRequest, ApplyResponse, CommitRequest, CommitResponse,
     PreAcceptRequest, PreAcceptResponse, RecoverRequest, RecoverResponse,
@@ -18,6 +19,12 @@ pub trait ConsensusPeerClient: Send + Sync + 'static {
 
 #[async_trait]
 pub trait BlobPeerClient: Send + Sync + 'static {
-    async fn push(&self, blob_id: BlobId, payload: &BlobPayload) -> So3Result<()>;
-    async fn fetch(&self, blob_id: &BlobId) -> So3Result<BlobPayload>;
+    async fn push(
+        &self,
+        blob_id: BlobId,
+        size: u64,
+        sha256: Sha256Digest,
+        data: BlobStream,
+    ) -> So3Result<()>;
+    async fn fetch(&self, blob_id: &BlobId) -> So3Result<BlobStream>;
 }

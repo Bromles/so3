@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use so3_core::domain::blob::id::BlobId;
-use so3_core::domain::blob::payload::BlobPayload;
 use so3_core::domain::error::{So3Error, So3Result};
 use so3_core::repository::blob::BlobRepository;
+use tokio_stream::StreamExt;
 
-use crate::protocol::{CRASH_CODE, Message, RequestBody};
+use crate::protocol::{Message, RequestBody, CRASH_CODE};
 use crate::runtime::types::SharedRuntime;
 
 pub(super) async fn handle_blob_push(
@@ -15,13 +15,16 @@ pub(super) async fn handle_blob_push(
     blob_id: String,
     payload: Vec<u8>,
 ) -> So3Result<()> {
-    let result = match BlobId::try_from(blob_id.as_str()) {
-        Ok(blob_id) => {
-            let payload = BlobPayload::from_vec(payload);
-            shared.local_blobs.store(&blob_id, &payload).await
-        }
-        Err(error) => Err(So3Error::InvalidRequest(error.to_string())),
-    };
+    let result = async {
+        let blob_id = BlobId::try_from(blob_id.as_str())
+            .map_err(|e| So3Error::InvalidRequest(e.to_string()))?;
+        shared
+            .local_blobs
+            .append_chunk(&blob_id, bytes::Bytes::from(payload))
+            .await?;
+        shared.local_blobs.commit(&blob_id).await
+    }
+    .await;
 
     match result {
         Ok(()) => shared.send_message(&Message {
@@ -49,14 +52,17 @@ pub(super) async fn handle_blob_fetch(
     msg_id: u64,
     blob_id: String,
 ) -> So3Result<()> {
-    let result = match BlobId::try_from(blob_id.as_str()) {
-        Ok(blob_id) => shared
-            .local_blobs
-            .load(&blob_id)
-            .await
-            .map(|payload| payload.as_bytes().to_vec()),
-        Err(error) => Err(So3Error::InvalidRequest(error.to_string())),
-    };
+    let result = async {
+        let blob_id = BlobId::try_from(blob_id.as_str())
+            .map_err(|e| So3Error::InvalidRequest(e.to_string()))?;
+        let mut stream = shared.local_blobs.open_reader(&blob_id).await?;
+        let mut buf = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            buf.extend_from_slice(&chunk?);
+        }
+        So3Result::Ok(buf)
+    }
+    .await;
 
     match result {
         Ok(payload) => shared.send_message(&Message {

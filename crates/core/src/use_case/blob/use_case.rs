@@ -1,14 +1,11 @@
-use crate::domain::blob::checksum::Sha256Digest;
 use crate::domain::blob::id::BlobId;
-use crate::domain::blob::payload::BlobPayload;
-use crate::domain::error::{So3Error, So3Result};
+use crate::domain::blob::stream::BlobStream;
+use crate::domain::error::So3Result;
 use crate::repository::blob::BlobRepository;
 use crate::use_case::blob::BlobUseCase;
 use async_trait::async_trait;
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use std::sync::Arc;
-use tokio::pin;
-use tokio_stream::{Stream, StreamExt};
 
 pub struct BlobUseCaseImpl<BR: BlobRepository> {
     pub blob_repository: Arc<BR>,
@@ -22,43 +19,23 @@ impl<BR: BlobRepository> BlobUseCaseImpl<BR> {
 
 #[async_trait]
 impl<BR: BlobRepository> BlobUseCase for BlobUseCaseImpl<BR> {
-    async fn store(
-        &self,
-        blob_id: BlobId,
-        size: u64,
-        sha256: Sha256Digest,
-        chunks: impl Stream<Item = Bytes> + Send,
-    ) -> So3Result<bool> {
-        if self.blob_repository.exists(&blob_id).await? {
-            return Ok(true);
-        }
-
-        let mut buf = BytesMut::with_capacity(size as usize);
-        pin!(chunks);
-        while let Some(chunk) = chunks.next().await {
-            buf.extend_from_slice(&chunk);
-        }
-        let bytes = buf.freeze();
-
-        if bytes.len() as u64 != size {
-            return Err(So3Error::InvalidRequest(format!(
-                "blob size mismatch: expected {size}, got {}",
-                bytes.len()
-            )));
-        }
-
-        if Sha256Digest::compute(&bytes) != sha256 {
-            return Err(So3Error::InvalidRequest("blob sha256 mismatch".to_string()));
-        }
-
-        self.blob_repository
-            .store(&blob_id, &BlobPayload::new(bytes))
-            .await?;
-
-        Ok(false)
+    async fn exists(&self, blob_id: &BlobId) -> So3Result<bool> {
+        self.blob_repository.exists(blob_id).await
     }
 
-    async fn fetch(&self, blob_id: &BlobId) -> So3Result<BlobPayload> {
-        self.blob_repository.load(blob_id).await
+    async fn append_chunk(&self, blob_id: &BlobId, chunk: Bytes) -> So3Result<()> {
+        self.blob_repository.append_chunk(blob_id, chunk).await
+    }
+
+    async fn commit(&self, blob_id: &BlobId) -> So3Result<()> {
+        self.blob_repository.commit(blob_id).await
+    }
+
+    async fn abort(&self, blob_id: &BlobId) -> So3Result<()> {
+        self.blob_repository.abort(blob_id).await
+    }
+
+    async fn fetch(&self, blob_id: &BlobId) -> So3Result<BlobStream> {
+        self.blob_repository.open_reader(blob_id).await
     }
 }

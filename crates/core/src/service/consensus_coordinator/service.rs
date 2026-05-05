@@ -1,5 +1,5 @@
 use crate::client::interface::{BlobPeerClient, ConsensusPeerClient};
-use crate::domain::clock::{HybridLogicalClock, LogicalTimestamp, physical_millis_now};
+use crate::domain::clock::{physical_millis_now, HybridLogicalClock, LogicalTimestamp};
 use crate::domain::command::{CasResult, CommandResult, ObjectCommand, ReadResult, WriteResult};
 use crate::domain::consensus::ballot::Ballot;
 use crate::domain::consensus::command_id::{AppliedSet, CommandId, DependencySet};
@@ -17,10 +17,10 @@ use crate::repository::metadata::ObjectMetadataRepository;
 use crate::service::consensus_coordinator::ConsensusCoordinatorService;
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
-use tokio::time::{Duration, Instant, sleep, timeout_at};
+use tokio::time::{sleep, timeout_at, Duration, Instant};
 
 pub struct AccordConsensusCoordinatorService<CJR, CPC, OMR, BR, BPC>
 where
@@ -112,10 +112,30 @@ where
     async fn fetch_blob_from_any_peer(
         &self,
         blob_id: &crate::domain::blob::id::BlobId,
-    ) -> So3Result<crate::domain::blob::payload::BlobPayload> {
+    ) -> So3Result<()> {
+        use tokio_stream::StreamExt;
         for client in self.blob_peer_clients.values() {
-            if let Ok(payload) = client.fetch(blob_id).await {
-                return Ok(payload);
+            if let Ok(mut stream) = client.fetch(blob_id).await {
+                let mut failed = false;
+                while let Some(chunk) = stream.next().await {
+                    match chunk {
+                        Ok(c) => {
+                            if self.blob_repository.append_chunk(blob_id, c).await.is_err() {
+                                failed = true;
+                                break;
+                            }
+                        }
+                        Err(_) => {
+                            failed = true;
+                            break;
+                        }
+                    }
+                }
+                if failed {
+                    let _ = self.blob_repository.abort(blob_id).await;
+                    continue;
+                }
+                return self.blob_repository.commit(blob_id).await;
             }
         }
         Err(So3Error::NotFound(format!(
@@ -178,8 +198,7 @@ where
                 size,
             } => {
                 if !self.blob_repository.exists(blob_id).await? {
-                    let payload = self.fetch_blob_from_any_peer(blob_id).await?;
-                    self.blob_repository.store(blob_id, &payload).await?;
+                    self.fetch_blob_from_any_peer(blob_id).await?;
                 }
                 let version = self
                     .object_metadata_repository
@@ -207,8 +226,7 @@ where
                 size,
             } => {
                 if !self.blob_repository.exists(blob_id).await? {
-                    let payload = self.fetch_blob_from_any_peer(blob_id).await?;
-                    self.blob_repository.store(blob_id, &payload).await?;
+                    self.fetch_blob_from_any_peer(blob_id).await?;
                 }
                 match self.object_metadata_repository.load(key).await? {
                     Some(meta) if meta.version == *expected_version => {

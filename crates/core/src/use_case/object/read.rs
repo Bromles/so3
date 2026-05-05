@@ -33,7 +33,7 @@ where
             }
         };
 
-        let blob = self.blob_repository.load(&metadata.blob_id).await?;
+        let blob = self.blob_repository.open_reader(&metadata.blob_id).await?;
 
         Ok(Some(StoredObject { metadata, blob }))
     }

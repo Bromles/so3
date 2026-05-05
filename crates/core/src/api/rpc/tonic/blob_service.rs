@@ -1,4 +1,4 @@
-use crate::domain::blob::checksum::Sha256Digest;
+use crate::domain::blob::checksum::{Sha256Digest, Sha256Hasher};
 use crate::domain::blob::id::BlobId;
 use crate::proto::blob::blob_service_server::BlobService as ProtoBlobService;
 use crate::proto::blob::store_blob_request::Payload;
@@ -7,7 +7,6 @@ use crate::proto::blob::{
 };
 use crate::use_case::blob::BlobUseCase;
 use async_trait::async_trait;
-use bytes::Bytes;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio_stream::{Stream, StreamExt};
@@ -31,7 +30,6 @@ impl<B: BlobUseCase> ProtoBlobService for BlobService<B> {
     ) -> Result<Response<StoreBlobResponse>, Status> {
         let mut stream = request.into_inner();
 
-        // Header
         let header = match stream.next().await {
             Some(Ok(msg)) => match msg.payload {
                 Some(Payload::Header(h)) => h,
@@ -44,40 +42,86 @@ impl<B: BlobUseCase> ProtoBlobService for BlobService<B> {
         let blob_id = BlobId::try_from(header.blob_id.as_str())
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
 
-        // Chunks + Footer
-        let mut chunks: Vec<Bytes> = Vec::new();
-        let mut footer_sha256: Option<Sha256Digest> = None;
+        if self
+            .blob_use_case
+            .exists(&blob_id)
+            .await
+            .map_err(Status::from)?
+        {
+            return Ok(Response::new(StoreBlobResponse {
+                already_existed: true,
+            }));
+        }
+
+        let mut hasher = Sha256Hasher::new();
+        let mut total: u64 = 0;
+        let mut committed = false;
 
         while let Some(msg) = stream.next().await {
             match msg.map_err(|e| Status::internal(e.to_string()))?.payload {
                 Some(Payload::Chunk(c)) => {
-                    let expected = Sha256Digest::try_from(c.sha256)
+                    let expected_chunk = Sha256Digest::try_from(c.sha256)
                         .map_err(|e| Status::invalid_argument(e.to_string()))?;
-                    if Sha256Digest::compute(&c.chunk) != expected {
+                    if Sha256Digest::compute(&c.chunk) != expected_chunk {
+                        self.blob_use_case
+                            .abort(&blob_id)
+                            .await
+                            .map_err(Status::from)?;
                         return Err(Status::data_loss("chunk sha256 mismatch"));
                     }
-                    chunks.push(c.chunk);
+                    total = total.saturating_add(c.chunk.len() as u64);
+                    if total > header.size {
+                        self.blob_use_case
+                            .abort(&blob_id)
+                            .await
+                            .map_err(Status::from)?;
+                        return Err(Status::invalid_argument("blob exceeds declared size"));
+                    }
+                    hasher.update(&c.chunk);
+                    self.blob_use_case
+                        .append_chunk(&blob_id, c.chunk)
+                        .await
+                        .map_err(Status::from)?;
                 }
                 Some(Payload::Footer(f)) => {
-                    footer_sha256 = Some(
-                        Sha256Digest::try_from(f.sha256)
-                            .map_err(|e| Status::invalid_argument(e.to_string()))?,
-                    );
+                    let expected = Sha256Digest::try_from(f.sha256)
+                        .map_err(|e| Status::invalid_argument(e.to_string()))?;
+                    let computed = hasher.finalize();
+                    if computed != expected || total != header.size {
+                        self.blob_use_case
+                            .abort(&blob_id)
+                            .await
+                            .map_err(Status::from)?;
+                        return Err(Status::data_loss("blob sha256 mismatch"));
+                    }
+                    self.blob_use_case
+                        .commit(&blob_id)
+                        .await
+                        .map_err(Status::from)?;
+                    committed = true;
                     break;
                 }
-                _ => return Err(Status::invalid_argument("unexpected message in stream")),
+                _ => {
+                    self.blob_use_case
+                        .abort(&blob_id)
+                        .await
+                        .map_err(Status::from)?;
+                    return Err(Status::invalid_argument("unexpected message in stream"));
+                }
             }
         }
 
-        let sha256 = footer_sha256.ok_or_else(|| Status::invalid_argument("missing footer"))?;
+        if !committed {
+            self.blob_use_case
+                .abort(&blob_id)
+                .await
+                .map_err(Status::from)?;
+            return Err(Status::invalid_argument("missing footer"));
+        }
 
-        let already_existed = self
-            .blob_use_case
-            .store(blob_id, header.size, sha256, tokio_stream::iter(chunks))
-            .await
-            .map_err(Status::from)?;
-
-        Ok(Response::new(StoreBlobResponse { already_existed }))
+        Ok(Response::new(StoreBlobResponse {
+            already_existed: false,
+        }))
     }
 
     type FetchBlobStream = Pin<Box<dyn Stream<Item = Result<FetchBlobResponse, Status>> + Send>>;
@@ -89,22 +133,17 @@ impl<B: BlobUseCase> ProtoBlobService for BlobService<B> {
         let blob_id = BlobId::try_from(request.into_inner().blob_id.as_str())
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
 
-        let payload = self
+        let stream = self
             .blob_use_case
             .fetch(&blob_id)
             .await
             .map_err(Status::from)?;
 
-        let bytes = payload.as_bytes().clone();
-        let chunk_size = 64 * 1024;
+        let response_stream = stream.map(|r| {
+            r.map(|chunk| FetchBlobResponse { chunk })
+                .map_err(Status::from)
+        });
 
-        let stream = tokio_stream::iter((0..bytes.len()).step_by(chunk_size).map(move |offset| {
-            let end = (offset + chunk_size).min(bytes.len());
-            Ok(FetchBlobResponse {
-                chunk: bytes.slice(offset..end),
-            })
-        }));
-
-        Ok(Response::new(Box::pin(stream)))
+        Ok(Response::new(Box::pin(response_stream)))
     }
 }

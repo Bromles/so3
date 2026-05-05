@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
-use sqlx::{Row, SqlitePool, query, query_scalar};
+use sqlx::{query, query_scalar, Row, SqlitePool};
 use std::path::Path;
 use std::time::Duration;
 use tokio::fs;
@@ -12,11 +12,11 @@ use crate::domain::consensus::command_id::{CommandId, DependencySet};
 use crate::domain::consensus::journal::{JournalEntry, JournalState};
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::node::NodeId;
-use crate::repository::consensus_journal::ConsensusJournalRepository;
 use crate::repository::consensus_journal::mappers::{
     command_key, encode_command, encode_deps, encode_result, i64_to_u64, row_to_entry,
     sequence_to_i64,
 };
+use crate::repository::consensus_journal::ConsensusJournalRepository;
 
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SQLITE_MAX_CONNECTIONS: u32 = 1;
