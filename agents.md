@@ -1,77 +1,95 @@
 # Audit Findings
 
 Current status: `cargo test --workspace` passes. `cargo clippy --workspace --all-targets -- -W clippy::pedantic` also
-completes, but the workspace still emits many warnings. The remaining issues below are correctness, durability, and
-operational risks that current tests do not cover.
+completes, but the workspace still emits many warnings. The remaining issues below are correctness, durability, Accord
+conformance, Maelstrom parity, and operational risks that current tests do not cover.
 
 ## Critical
 
-1. (FIXED) Node identity is not durable by default.
-   `so3` generates a fresh `Uuid::new_v4()` when `SO3_NODE_ID`/`node_id` is not configured (`crates/so3/src/config.rs`).
-   A restarted node can come back with a different `NodeId`, so `max_sequence` no longer resumes the old command stream
-   and durable consensus state is effectively orphaned.
+1. Recovery counts the coordinator as part of the quorum but does not include local replica state in the recovered
+   decision.
+   `recover_and_complete` records a local recovery ballot, then collects only peer `RecoverSuccess` values and checks
+   quorum as `successes.len() + 1` (`crates/core/src/service/consensus_coordinator/service.rs`). Local dependencies,
+   local committed/applied state, and local `wait_for` are not merged into the recovered value. This can commit a
+   recovery decision that omits conflicts known only by the coordinator replica.
 
-2. (FIXED) Production node startup eagerly connects to every peer.
-   `Node::new` constructs `ConsensusTransportClient` and `BlobClient` with `connect().await` for every configured peer (
-   `crates/core/src/node/runtime.rs`). This can deadlock cluster bootstrap: a node cannot start while its peers are
-   still down or starting.
+2. Recovery cannot choose the accepted value by ballot.
+   `RecoverSuccess` exposes `superseding: bool`, dependencies, and timestamp, but not the accepted ballot
+   (`crates/core/src/domain/consensus/transport.rs`). `recover_and_complete` chooses a superseding value by max
+   timestamp instead of the highest accepted ballot (`crates/core/src/service/consensus_coordinator/service.rs`). Accord
+   recovery needs enough accepted-ballot information to preserve a previously accepted value.
 
-3. (FIXED) Inbound `Commit`/`Apply` cannot handle a missing journal row.
-   `commit_internal` calls `record_committed`, and SQLite only performs `UPDATE` with a `rows_affected == 1` check (
-   `crates/core/src/use_case/inbound_consensus/commit.rs`, `crates/core/src/repository/consensus_journal/sqlite.rs`). If
-   a replica missed PreAccept/Accept but receives Commit, it rejects the committed decision instead of synthesizing and
-   storing the row.
+3. Coordinator local apply bypasses committed-command reorder gating.
+   Remote inbound `Apply` waits for earlier committed timestamps via `reorder_buffer`
+   (`crates/core/src/use_case/inbound_consensus/apply.rs`), but coordinator `apply_local` only waits explicit
+   dependencies (`crates/core/src/service/consensus_coordinator/service.rs`). A node can apply its own coordinated
+   command while an earlier committed command received through inbound `Commit` is still unapplied.
 
 ## High Risk
 
-4. (FIXED) Accepted dependency sets are not durably stored.
-   `accept_internal` returns `req.dependencies`, but `record_accepted` only persists state, ballot, and timestamp (
-   `crates/core/src/use_case/inbound_consensus/accept.rs`, `crates/core/src/repository/consensus_journal/sqlite.rs`).
-   After a crash, recovery can observe an Accepted row with stale PreAccept dependencies.
+4. Accept after missed PreAccept discards local conflict dependencies.
+   `accept_internal` synthesizes a PreAccepted row when the replica missed PreAccept, but ignores the dependencies
+   returned by `check_conflicts_and_record_pre_accepted` and responds with only `req.dependencies`
+   (`crates/core/src/use_case/inbound_consensus/accept.rs`). Slow-path or recovery Accept sent to a replica outside the
+   PreAccept quorum can lose conflicts known only by that replica.
 
-5. (FIXED) Command execution and `Applied` journaling are not atomic.
-   Both inbound apply and coordinator local apply mutate object metadata before calling `record_applied` (
-   `crates/core/src/use_case/inbound_consensus/apply.rs`, `crates/core/src/service/consensus_coordinator/service.rs`). A
-   crash in that window can make replay apply Write/CAS/Delete again and return a different result.
+5. Blob fetch/repair accepts unverified bytes.
+   Fetch paths stream bytes from the first peer that responds and commit by `blob_id` only, without checking the expected
+   size or SHA-256 from object metadata (`crates/core/src/use_case/object/use_case.rs`,
+   `crates/core/src/use_case/inbound_consensus/use_case.rs`,
+   `crates/core/src/service/consensus_coordinator/service.rs`). A corrupt or buggy peer can repair local storage with
+   invalid bytes.
 
-6.  (FIXED) The committed reorder buffer is only in memory.
-   `commit_internal` durably records the command as Committed, then inserts its timestamp into an in-memory
-   `reorder_buffer` (`crates/core/src/use_case/inbound_consensus/commit.rs`). After restart, committed-but-not-applied
-   commands are not restored into the buffer, so later Apply requests can bypass earlier committed commands.
+6. Maelstrom hides production multi-coordinator behavior.
+   The Maelstrom runtime forwards all client requests to `node_ids.first()` (`crates/so3-maelstrom/src/runtime/types.rs`,
+   `crates/so3-maelstrom/src/runtime/handler/client.rs`). Production allows any node to coordinate via the shared core
+   object use case. This means Maelstrom is not exercising concurrent coordinators, where Accord dependency and recovery
+   bugs are most likely.
 
-7. (FIXED) Production peer identity is derived from socket address.
-   `ClusterConfig` stores only `SocketAddr`, while `Node::new` maps peers to `NodeId(addr.to_string())` and self to the
-   configured UUID (`crates/core/src/node/config.rs`, `crates/core/src/node/runtime.rs`). Accord needs stable peer
-   identities; address-derived IDs cannot validate duplicate identities, self-in-peers, or node-id/address changes.
+7. Maelstrom CAS create-if-not-exists is not atomic.
+   Missing-key CAS performs a coordinated read, then an unconditional write when `create_if_not_exists` is true
+   (`crates/so3-maelstrom/src/service.rs`). Two concurrent create-CAS operations can both return `cas_ok`, with the
+   later write overwriting the earlier value.
 
 ## Medium Risk
 
-8. (FIXED) Recovery responses expose `wait_for`, but the coordinator ignores it.
-   `recover_internal` computes unapplied dependencies and returns `wait_for`, but `recover_and_complete` only collects
-   successes and dependencies (`crates/core/src/use_case/inbound_consensus/recover.rs`,
-   `crates/core/src/service/consensus_coordinator/service.rs`). If `wait_for` is intended to drive Accord recovery
-   ordering, recovery remains incomplete.
+8. PreAccept replay can return dependencies that differ from durable journal state.
+   `check_conflicts_and_record_pre_accepted` computes conflicts, then uses `INSERT OR IGNORE`, and returns the newly
+   computed dependency set (`crates/core/src/repository/consensus_journal/sqlite.rs`). If the row already existed, the
+   response may not match the dependency set stored in SQLite.
 
-9. (FIXED) Blob RPC buffers full objects in memory and trusts header size too early.
-   `BlobService::store_blob` collects all chunks into `Vec<Bytes>`, then `BlobUseCaseImpl::store` allocates
-   `BytesMut::with_capacity(size as usize)` (`crates/core/src/api/rpc/tonic/blob_service.rs`,
-   `crates/core/src/use_case/blob/use_case.rs`). There is no streaming write path or configured max object size, so a
-   malformed peer can force large allocations.
+9. RPC calls lack operation deadlines.
+   Production tonic clients use lazy channels and await each consensus/blob call without per-call deadlines
+   (`crates/core/src/client/consensus_transport_client.rs`, `crates/core/src/client/blob_client.rs`). Maelstrom
+   consensus/blob/forward requests await oneshot responses without timeout (`crates/so3-maelstrom/src/runtime/peer.rs`,
+   `crates/so3-maelstrom/src/runtime/handler/client.rs`). Partitions can leak pending maps and stall handlers.
 
-10. (FIXED) Object reads do not repair or fetch missing local blobs.
-    `read_internal` coordinates a Read, then loads the referenced blob only from the local repository (
-    `crates/core/src/use_case/object/read.rs`). If metadata is present but the local blob is missing after crash or
-    partial replication, GET fails instead of fetching from a peer and repairing local state.
+10. Generated durable node identity is not written atomically or fsynced.
+    The fallback identity is generated when no configured or stored `node_id` exists, but persistence is a plain
+    `fs::write` (`crates/core/src/use_case/node_identity/use_case.rs`,
+    `crates/core/src/repository/node_identity/fs.rs`). A crash after startup can still lose or partially write the
+    identity file.
 
-11. Blob fetch doesn't use the same scheme as blob push - no checksum and size verification. Possible corruption
+11. Maelstrom blob push/fetch does not match production blob transport validation.
+    `MaelstromBlobPeerClient::push` ignores the `size` and `sha256` arguments, sends a single JSON payload, and the
+    receiver commits it without checksum validation (`crates/so3-maelstrom/src/runtime/peer.rs`,
+    `crates/so3-maelstrom/src/runtime/handler/blob.rs`). This diverges from the production push path and can hide blob
+    validation bugs.
 
 ## TODO
 
-- Blob replication to peers is currently sequential (one peer at a time). Consider parallel tee-streaming: read the committed local file once, fan out to N peers simultaneously. Requires a multi-consumer broadcast stream (e.g. `tokio::sync::broadcast` or a custom tee combinator), which adds meaningful complexity.
+- Blob replication to peers is currently sequential (one peer at a time). Consider parallel tee-streaming: read the
+  committed local file once, fan out to N peers simultaneously. Requires a multi-consumer broadcast stream (e.g.
+  `tokio::sync::broadcast` or a custom tee combinator), which adds meaningful complexity.
 
 ## Test Gaps
 
-- No multi-node production-node integration test covers startup ordering, peer identity, or real tonic communication.
-- No tests cover missing-PreAccept Commit/Apply delivery.
-- No crash/restart tests cover durable `NodeId`, committed reorder-buffer recovery, or apply idempotency.
-- No tests cover blob fetch/repair after metadata exists but the local blob file is missing.
+- No multi-node production-node integration test covers real tonic communication, coordinator concurrency, and mixed
+  client entrypoints.
+- No tests cover recovery with local-only dependencies, accepted ballots from multiple replicas, or committed/applied
+  state present only on the recovering coordinator.
+- No tests cover missed-PreAccept Accept delivery where the accepting replica discovers additional local conflicts.
+- No crash/restart tests cover atomic durable `NodeId` persistence or coordinator-vs-inbound apply ordering.
+- No tests verify blob fetch/repair against expected SHA-256 and size, or Maelstrom blob parity with production blob
+  transport.
+- No Maelstrom tests exercise non-leader local coordination or atomic create-if-not-exists CAS races.
