@@ -62,6 +62,36 @@ where
         )))
     }
 
+    pub(crate) async fn fetch_blob_from_any_peer(&self, blob_id: &BlobId) -> So3Result<()> {
+        for client in self.blob_client_map.values() {
+            if let Ok(mut stream) = client.fetch(blob_id).await {
+                let mut failed = false;
+                while let Some(chunk) = stream.next().await {
+                    match chunk {
+                        Ok(c) => {
+                            if self.blob_repository.append_chunk(blob_id, c).await.is_err() {
+                                failed = true;
+                                break;
+                            }
+                        }
+                        Err(_) => {
+                            failed = true;
+                            break;
+                        }
+                    }
+                }
+                if failed {
+                    let _ = self.blob_repository.abort(blob_id).await;
+                    continue;
+                }
+                return self.blob_repository.commit(blob_id).await;
+            }
+        }
+        Err(So3Error::NotFound(format!(
+            "blob {blob_id} not available on any peer"
+        )))
+    }
+
     pub(crate) async fn stream_to_local(
         &self,
         blob_id: &BlobId,

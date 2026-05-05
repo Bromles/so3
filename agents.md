@@ -58,7 +58,7 @@ operational risks that current tests do not cover.
    `crates/core/src/use_case/blob/use_case.rs`). There is no streaming write path or configured max object size, so a
    malformed peer can force large allocations.
 
-10. Object reads do not repair or fetch missing local blobs.
+10. (FIXED) Object reads do not repair or fetch missing local blobs.
     `read_internal` coordinates a Read, then loads the referenced blob only from the local repository (
     `crates/core/src/use_case/object/read.rs`). If metadata is present but the local blob is missing after crash or
     partial replication, GET fails instead of fetching from a peer and repairing local state.

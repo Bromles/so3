@@ -33,6 +33,10 @@ where
             }
         };
 
+        if !self.blob_repository.exists(&metadata.blob_id).await? {
+            self.fetch_blob_from_any_peer(&metadata.blob_id).await?;
+        }
+
         let blob = self.blob_repository.open_reader(&metadata.blob_id).await?;
 
         Ok(Some(StoredObject { metadata, blob }))
