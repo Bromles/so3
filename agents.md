@@ -6,7 +6,7 @@ conformance, Maelstrom parity, and operational risks that current tests do not c
 
 ## Critical
 
-1. Recovery counts the coordinator as part of the quorum but does not include local replica state in the recovered
+1. (FIXED) Recovery counts the coordinator as part of the quorum but does not include local replica state in the recovered
    decision.
    `recover_and_complete` records a local recovery ballot, then collects only peer `RecoverSuccess` values and checks
    quorum as `successes.len() + 1` (`crates/core/src/service/consensus_coordinator/service.rs`). Local dependencies,

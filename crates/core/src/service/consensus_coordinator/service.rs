@@ -6,6 +6,7 @@ use crate::domain::consensus::command_id::{AppliedSet, CommandId, DependencySet}
 use crate::domain::consensus::journal::JournalState;
 use crate::domain::consensus::transport::{
     AcceptRequest, ApplyRequest, CommitRequest, PreAcceptRequest, RecoverRequest, RecoverResponse,
+    RecoverSuccess,
 };
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::node::NodeId;
@@ -327,6 +328,58 @@ where
         Ok(result)
     }
 
+    async fn unapplied_deps_local(&self, deps: &DependencySet) -> So3Result<Vec<CommandId>> {
+        let mut unapplied = Vec::new();
+        for dep_id in &deps.0 {
+            match self.consensus_journal_repository.load(dep_id).await? {
+                Some(e) if e.state == JournalState::Applied => {}
+                _ => unapplied.push(dep_id.clone()),
+            }
+        }
+        Ok(unapplied)
+    }
+
+    async fn local_recover_success(
+        &self,
+        command_id: &CommandId,
+        command: &ObjectCommand,
+        timestamp_zero: &LogicalTimestamp,
+    ) -> So3Result<RecoverSuccess> {
+        let entry = self.consensus_journal_repository.load(command_id).await?;
+        match entry {
+            None => {
+                let deps = self
+                    .consensus_journal_repository
+                    .check_conflicts_and_record_pre_accepted(command_id, command, timestamp_zero)
+                    .await?;
+                let wait_for = self.unapplied_deps_local(&deps).await?;
+                Ok(RecoverSuccess {
+                    local_state: JournalState::PreAccepted,
+                    wait_for,
+                    superseding: false,
+                    dependencies: deps,
+                    timestamp_zero: timestamp_zero.clone(),
+                    timestamp: timestamp_zero.clone(),
+                })
+            }
+            Some(e) => {
+                let wait_for = self.unapplied_deps_local(&e.dependencies).await?;
+                let superseding = matches!(
+                    e.state,
+                    JournalState::Accepted | JournalState::Committed | JournalState::Applied
+                );
+                Ok(RecoverSuccess {
+                    local_state: e.state,
+                    wait_for,
+                    superseding,
+                    dependencies: e.dependencies,
+                    timestamp_zero: e.timestamp_zero,
+                    timestamp: e.timestamp.unwrap_or_else(|| timestamp_zero.clone()),
+                })
+            }
+        }
+    }
+
     async fn wait_for_applied(&self, deps: &[CommandId]) -> So3Result<()> {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
@@ -370,7 +423,13 @@ where
             .record_ballot(command_id, &recovery_ballot)
             .await?;
 
-        let mut successes = vec![];
+        // Include the coordinator's own local state — it is a replica and its journal
+        // state must be merged, not merely counted toward quorum as an anonymous +1.
+        let local_success = self
+            .local_recover_success(command_id, command, timestamp_zero)
+            .await?;
+
+        let mut successes = vec![local_success];
         for peer in peers {
             if let Ok(RecoverResponse::Success(s)) = peer
                 .recover(RecoverRequest {
@@ -385,8 +444,7 @@ where
             }
         }
 
-        // +1 for self (we recorded locally above).
-        if successes.len() + 1 < quorum {
+        if successes.len() < quorum {
             return Err(So3Error::PeerUnavailable(
                 "recovery quorum not reached".into(),
             ));

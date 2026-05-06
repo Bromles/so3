@@ -2,8 +2,6 @@
 #![forbid(unsafe_code)]
 use std::process::exit;
 
-use tokio::signal::unix;
-use tokio::signal::unix::SignalKind;
 use tokio::{select, signal, spawn};
 use tokio_util::sync::CancellationToken;
 use tracing::error;
@@ -53,7 +51,9 @@ async fn shutdown_signal() -> So3Result<()> {
 
     #[cfg(unix)]
     let terminate = async {
-        if let Ok(mut signal) = unix::signal(SignalKind::terminate()) {
+        if let Ok(mut signal) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
             signal.recv().await;
         }
     };
