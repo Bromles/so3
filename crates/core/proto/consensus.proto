@@ -186,6 +186,7 @@ message RecoverSuccess {
   DependencySet dependencies = 4;
   LogicalTimestamp timestamp_zero = 5;
   LogicalTimestamp timestamp = 6;
+  optional Ballot accepted_ballot = 7;
 }
 
 message RecoverNack {

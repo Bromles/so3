@@ -76,6 +76,7 @@ pub struct RecoverSuccess {
     pub dependencies: DependencySet,
     pub timestamp_zero: LogicalTimestamp,
     pub timestamp: LogicalTimestamp,
+    pub accepted_ballot: Option<Ballot>,
 }
 
 pub struct RecoverNack {

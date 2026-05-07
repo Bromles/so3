@@ -599,6 +599,7 @@ pub fn recover_res_to_domain(res: ProtoRecoverResponse) -> So3Result<DomainRecov
             dependencies,
             timestamp_zero,
             timestamp,
+            accepted_ballot,
         }) => Ok(DomainRecoverResponse::Success(DomainRecoverSuccess {
             local_state: local_state.try_into()?,
             wait_for: wait_for.iter().map(command_id_to_domain).collect(),
@@ -614,6 +615,7 @@ pub fn recover_res_to_domain(res: ProtoRecoverResponse) -> So3Result<DomainRecov
             timestamp: logical_timestamp_to_domain(
                 timestamp.ok_or_else(|| So3Error::InvalidRequest("empty timestamp".to_string()))?,
             ),
+            accepted_ballot: accepted_ballot.map(ballot_to_domain),
         })),
         ProtoRecoverOutcome::Nack(ProtoRecoverNack { superseding_ballot }) => {
             Ok(DomainRecoverResponse::Nack(DomainRecoverNack {
@@ -635,6 +637,7 @@ pub fn recover_res_to_proto(res: DomainRecoverResponse) -> ProtoRecoverResponse 
             dependencies,
             timestamp_zero,
             timestamp,
+            accepted_ballot,
         }) => ProtoRecoverResponse {
             outcome: Some(ProtoRecoverOutcome::Success(ProtoRecoverSuccess {
                 local_state: local_state.as_i32(),
@@ -643,6 +646,7 @@ pub fn recover_res_to_proto(res: DomainRecoverResponse) -> ProtoRecoverResponse 
                 dependencies: Some(dependency_set_to_proto(dependencies)),
                 timestamp_zero: Some(logical_timestamp_to_proto(timestamp_zero)),
                 timestamp: Some(logical_timestamp_to_proto(timestamp)),
+                accepted_ballot: accepted_ballot.map(ballot_to_proto),
             })),
         },
         DomainRecoverResponse::Nack(DomainRecoverNack { superseding_ballot }) => {

@@ -21,14 +21,13 @@ where
         let entry = self.journal.load(&req.command_id).await?;
 
         // Nack if we already have a higher ballot.
-        if let Some(ref e) = entry {
-            if let Some(ref stored) = e.ballot {
-                if *stored > req.ballot {
-                    return Ok(RecoverResponse::Nack(RecoverNack {
-                        superseding_ballot: stored.clone(),
-                    }));
-                }
-            }
+        if let Some(ref e) = entry
+            && let Some(ref stored) = e.ballot
+            && *stored > req.ballot
+        {
+            return Ok(RecoverResponse::Nack(RecoverNack {
+                superseding_ballot: stored.clone(),
+            }));
         }
 
         let timestamp = self.observe(&req.timestamp_zero).await;
@@ -57,6 +56,7 @@ where
                     dependencies: deps,
                     timestamp_zero: req.timestamp_zero,
                     timestamp,
+                    accepted_ballot: None,
                 }))
             }
             Some(e) => {
@@ -67,11 +67,18 @@ where
                 let wait_for = self.unapplied_deps(&e.dependencies).await?;
                 // superseding = true when this replica has voted to accept a specific
                 // timestamp (state >= Accepted), meaning the recovery coordinator must
-                // use the slow path and honour this node's data.
+                // use the slow path and honor this node's data.
                 let superseding = matches!(
                     e.state,
                     JournalState::Accepted | JournalState::Committed | JournalState::Applied
                 );
+                // Expose the accepted ballot only for Accepted state so the recovery
+                // coordinator can pick by highest ballot rather than highest timestamp.
+                let accepted_ballot = if e.state == JournalState::Accepted {
+                    e.ballot.clone()
+                } else {
+                    None
+                };
                 Ok(RecoverResponse::Success(RecoverSuccess {
                     local_state: e.state,
                     wait_for,
@@ -79,6 +86,7 @@ where
                     dependencies: e.dependencies,
                     timestamp_zero: e.timestamp_zero,
                     timestamp: e.timestamp.unwrap_or(timestamp),
+                    accepted_ballot,
                 }))
             }
         }

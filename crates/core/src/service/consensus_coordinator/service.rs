@@ -97,7 +97,7 @@ where
 
     // n = self + peers; quorum = strict majority
     fn quorum_size(&self) -> usize {
-        (1 + self.consensus_peer_client_map.len()) / 2 + 1
+        self.consensus_peer_client_map.len().div_ceil(2) + 1
     }
 
     async fn last_applied(&self) -> So3Result<AppliedSet> {
@@ -119,17 +119,14 @@ where
             if let Ok(mut stream) = client.fetch(blob_id).await {
                 let mut failed = false;
                 while let Some(chunk) = stream.next().await {
-                    match chunk {
-                        Ok(c) => {
-                            if self.blob_repository.append_chunk(blob_id, c).await.is_err() {
-                                failed = true;
-                                break;
-                            }
-                        }
-                        Err(_) => {
+                    if let Ok(c) = chunk {
+                        if self.blob_repository.append_chunk(blob_id, c).await.is_err() {
                             failed = true;
                             break;
                         }
+                    } else {
+                        failed = true;
+                        break;
                     }
                 }
                 if failed {
@@ -150,13 +147,12 @@ where
             .consensus_journal_repository
             .load(&req.command_id)
             .await?
+            && entry.state == JournalState::Applied
         {
-            if entry.state == JournalState::Applied {
-                let result = entry
-                    .result
-                    .ok_or_else(|| So3Error::Storage("applied entry missing result".to_string()))?;
-                return Ok(result);
-            }
+            let result = entry
+                .result
+                .ok_or_else(|| So3Error::Storage("applied entry missing result".to_string()))?;
+            return Ok(result);
         }
 
         // Wait for all explicit dependencies to be applied locally.
@@ -205,8 +201,7 @@ where
                     .object_metadata_repository
                     .load(key)
                     .await?
-                    .map(|m| m.version.next())
-                    .unwrap_or_else(ObjectVersion::initial);
+                    .map_or_else(ObjectVersion::initial, |m| m.version.next());
                 CommandResult::Write(WriteResult {
                     metadata: ObjectMetadata {
                         key: key.clone(),
@@ -360,6 +355,7 @@ where
                     dependencies: deps,
                     timestamp_zero: timestamp_zero.clone(),
                     timestamp: timestamp_zero.clone(),
+                    accepted_ballot: None,
                 })
             }
             Some(e) => {
@@ -368,6 +364,11 @@ where
                     e.state,
                     JournalState::Accepted | JournalState::Committed | JournalState::Applied
                 );
+                let accepted_ballot = if e.state == JournalState::Accepted {
+                    e.ballot.clone()
+                } else {
+                    None
+                };
                 Ok(RecoverSuccess {
                     local_state: e.state,
                     wait_for,
@@ -375,6 +376,7 @@ where
                     dependencies: e.dependencies,
                     timestamp_zero: e.timestamp_zero,
                     timestamp: e.timestamp.unwrap_or_else(|| timestamp_zero.clone()),
+                    accepted_ballot,
                 })
             }
         }
@@ -481,13 +483,29 @@ where
         }
 
         // Determine final timestamp and deps from recovery responses.
-        // If any peer is superseding (Accepted), we must use its data.
+        // If any peer has Accepted state, pick the one with the highest accepted ballot —
+        // that is the most recently accepted decision and must be preserved per Accord.
+        // Selecting by timestamp instead can pick an older Accept from a lower ballot.
         let (final_timestamp, final_deps) = {
             let mut deps: Vec<CommandId> = vec![];
             let mut ts = timestamp_zero.clone();
+            let mut best_ballot: Option<&crate::domain::consensus::ballot::Ballot> = None;
             for s in &successes {
-                if s.superseding && s.timestamp > ts {
-                    ts = s.timestamp.clone();
+                if s.superseding {
+                    match (&s.accepted_ballot, &best_ballot) {
+                        (Some(b), None) => {
+                            best_ballot = Some(b);
+                            ts = s.timestamp.clone();
+                        }
+                        (Some(b), Some(best)) if b > *best => {
+                            best_ballot = Some(b);
+                            ts = s.timestamp.clone();
+                        }
+                        // Committed/Applied have no accepted_ballot; they are handled by
+                        // the early-return above so this branch is only reached for
+                        // PreAccepted, which sets superseding=false.
+                        _ => {}
+                    }
                 }
                 deps.extend(s.dependencies.0.iter().cloned());
             }

@@ -13,7 +13,7 @@ conformance, Maelstrom parity, and operational risks that current tests do not c
    local committed/applied state, and local `wait_for` are not merged into the recovered value. This can commit a
    recovery decision that omits conflicts known only by the coordinator replica.
 
-2. Recovery cannot choose the accepted value by ballot.
+2. (FIXED) Recovery cannot choose the accepted value by ballot.
    `RecoverSuccess` exposes `superseding: bool`, dependencies, and timestamp, but not the accepted ballot
    (`crates/core/src/domain/consensus/transport.rs`). `recover_and_complete` chooses a superseding value by max
    timestamp instead of the highest accepted ballot (`crates/core/src/service/consensus_coordinator/service.rs`). Accord
