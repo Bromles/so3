@@ -3,10 +3,10 @@ syntax = "proto3";
 package consensus;
 
 service ConsensusTransport {
-  rpc Accept(AcceptRequest) returns (AcceptResponse) {}
-  rpc Apply(ApplyRequest) returns (ApplyResponse) {}
-  rpc Commit(CommitRequest) returns (CommitResponse) {}
   rpc PreAccept(PreAcceptRequest) returns (PreAcceptResponse) {}
+  rpc Accept(AcceptRequest) returns (AcceptResponse) {}
+  rpc Commit(CommitRequest) returns (CommitResponse) {}
+  rpc Apply(ApplyRequest) returns (ApplyResponse) {}
   rpc Recover(RecoverRequest) returns (RecoverResponse) {}
 }
 
@@ -16,40 +16,11 @@ message CommandId {
 }
 
 message DependencySet {
-  repeated CommandId commands = 1;
+  repeated CommandId command_ids = 1;
 }
 
-message AcceptRequest {
-  CommandId command_id = 1;
-  Ballot ballot = 2;
-  EventPayload event = 3;
-  LogicalTimestamp timestamp_zero = 4;
-  LogicalTimestamp timestamp = 5;
-  DependencySet dependencies = 6;
-  LastApplied last_applied = 7;
-}
-
-message AcceptResponse {
-  DependencySet dependencies = 1;
-  bool nack = 2;
-}
-
-message ApplyRequest {
-  CommandId command_id = 1;
-  EventPayload event = 2;
-  LogicalTimestamp timestamp_zero = 3;
-  LogicalTimestamp timestamp = 4;
-  DependencySet dependencies = 5;
-  ApplyHashes hashes = 6;
-}
-
-message ApplyResponse {
-  bytes result = 1;
-}
-
-message ApplyHashes {
-  bytes transaction_hash = 1;
-  bytes execution_hash = 2;
+message AppliedSet {
+  repeated CommandId command_ids = 1;
 }
 
 message Ballot {
@@ -57,37 +28,98 @@ message Ballot {
   string node_id = 2;
 }
 
-message CommitRequest {
-  CommandId command_id = 1;
-  EventPayload event = 2;
-  LogicalTimestamp timestamp_zero = 3;
-  LogicalTimestamp timestamp = 4;
-  DependencySet dependencies = 5;
-}
-
-message CommitResponse {
-  bytes result = 1;
-}
-
-message EventPayload {
-  bytes command = 1;
-}
-
-message LastApplied {
-  repeated CommandId commands = 1;
-}
-
 message LogicalTimestamp {
   uint64 epoch = 1;
-  uint64 counter = 2;
-  string node_id = 3;
+  uint64 physical_millis = 2;
+  uint64 logical = 3;
+  string node_id = 4;
 }
+
+message ObjectCommand {
+  oneof op {
+    ReadOp read = 1;
+    WriteOp write = 2;
+    CasOp cas = 3;
+    DeleteOp delete = 4;
+  }
+}
+
+message ReadOp {
+  string key = 1;
+}
+
+message WriteOp {
+  string key = 1;
+  string blob_id = 2;
+  bytes sha256 = 3;
+  uint64 size = 4;
+}
+
+message CasOp {
+  string key = 1;
+  int64 expected_version = 2;
+  string blob_id = 3;
+  bytes sha256 = 4;
+  uint64 size = 5;
+}
+
+message DeleteOp {
+  string key = 1;
+}
+
+message ObjectMetadata {
+  string key = 1;
+  int64 version = 2;
+  string blob_id = 3;
+  bytes sha256 = 4;
+  uint64 size = 5;
+  uint64 last_modified_ms = 6;
+}
+
+message CommandResult {
+  oneof result {
+    ReadResult read = 1;
+    WriteResult write = 2;
+    CasResult cas = 3;
+    DeleteResult delete = 4;
+  }
+}
+
+message ReadResult {
+  oneof outcome {
+    ObjectMetadata metadata = 1;
+    NotFound not_found = 2;
+  }
+}
+
+message NotFound {}
+
+message WriteResult {
+  ObjectMetadata metadata = 1;
+}
+
+message CasResult {
+  oneof outcome {
+    CasSuccess success = 1;
+    CasConflict conflict = 2;
+  }
+}
+
+message CasSuccess {
+  ObjectMetadata metadata = 1;
+}
+
+message CasConflict {
+  int64 current_version = 1;
+}
+
+message DeleteResult {}
 
 message PreAcceptRequest {
   CommandId command_id = 1;
-  EventPayload event = 2;
+  ObjectCommand command = 2;
   LogicalTimestamp timestamp_zero = 3;
-  LastApplied last_applied = 4;
+  AppliedSet last_applied = 4;
 }
 
 message PreAcceptResponse {
@@ -96,26 +128,75 @@ message PreAcceptResponse {
   bool nack = 3;
 }
 
+message AcceptRequest {
+  CommandId command_id = 1;
+  Ballot ballot = 2;
+  ObjectCommand command = 3;
+  LogicalTimestamp timestamp_zero = 4;
+  LogicalTimestamp timestamp = 5;
+  DependencySet dependencies = 6;
+  AppliedSet last_applied = 7;
+}
+
+message AcceptResponse {
+  DependencySet dependencies = 1;
+  bool nack = 2;
+}
+
+message CommitRequest {
+  CommandId command_id = 1;
+  ObjectCommand command = 2;
+  LogicalTimestamp timestamp_zero = 3;
+  LogicalTimestamp timestamp = 4;
+  DependencySet dependencies = 5;
+}
+
+message CommitResponse {}
+
+message ApplyRequest {
+  CommandId command_id = 1;
+  ObjectCommand command = 2;
+  LogicalTimestamp timestamp_zero = 3;
+  LogicalTimestamp timestamp = 4;
+  DependencySet dependencies = 5;
+}
+
+message ApplyResponse {
+  CommandResult result = 1;
+}
+
 message RecoverRequest {
   CommandId command_id = 1;
   Ballot ballot = 2;
-  EventPayload event = 3;
+  ObjectCommand command = 3;
   LogicalTimestamp timestamp_zero = 4;
 }
 
-enum State {
-  STATE_UNDEFINED = 0;
-  STATE_PRE_ACCEPTED = 1;
-  STATE_ACCEPTED = 2;
-  STATE_COMMITTED = 3;
-  STATE_APPLIED = 4;
+message RecoverResponse {
+  oneof outcome {
+    RecoverSuccess success = 1;
+    RecoverNack nack = 2;
+  }
 }
 
-message RecoverResponse {
+message RecoverSuccess {
   State local_state = 1;
   repeated CommandId wait_for = 2;
   bool superseding = 3;
   DependencySet dependencies = 4;
-  LogicalTimestamp timestamp = 5;
-  Ballot nack = 6;
+  LogicalTimestamp timestamp_zero = 5;
+  LogicalTimestamp timestamp = 6;
+  optional Ballot accepted_ballot = 7;
+}
+
+message RecoverNack {
+  Ballot superseding_ballot = 1;
+}
+
+enum State {
+  STATE_UNSPECIFIED = 0;
+  STATE_PRE_ACCEPTED = 1;
+  STATE_ACCEPTED = 2;
+  STATE_COMMITTED = 3;
+  STATE_APPLIED = 4;
 }

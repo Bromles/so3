@@ -1,13 +1,13 @@
 use std::io::Error as IoError;
 
+use crate::domain::object::key::ObjectKey;
+use crate::domain::object::version::ObjectVersion;
 use postcard::Error as PostcardError;
 use serde::Serialize;
-use sqlx::Error as SqlxError;
 use thiserror::Error;
+use uuid::Error as UuidError;
 
-use crate::domain::{ObjectKey, ObjectVersion};
-
-pub type So3Result<T> = std::result::Result<T, So3Error>;
+pub type So3Result<T> = Result<T, So3Error>;
 
 #[derive(Debug, Error, Serialize)]
 #[serde(tag = "kind", content = "detail")]
@@ -26,14 +26,12 @@ pub enum So3Error {
     },
     #[error("invalid request: {0}")]
     InvalidRequest(String),
-    #[error("storage error: {0}")]
+    #[error("repository error: {0}")]
     Storage(String),
     #[error("i/o error: {0}")]
     Io(String),
     #[error("serialization error: {0}")]
     Serialization(String),
-    #[error("rpc server is not implemented yet")]
-    RpcNotImplemented,
     /// Transient failure contacting a consensus peer; safe to retry the operation.
     #[error("peer unavailable: {0}")]
     PeerUnavailable(String),
@@ -42,13 +40,13 @@ pub enum So3Error {
 impl So3Error {
     #[must_use]
     pub fn not_found(key: &ObjectKey) -> Self {
-        Self::NotFound(key.as_str().to_owned())
+        Self::NotFound(key.as_ref().to_owned())
     }
 
     #[must_use]
     pub fn cas_mismatch(key: &ObjectKey, expected: ObjectVersion, actual: ObjectVersion) -> Self {
         Self::CasMismatch {
-            key: key.as_str().to_owned(),
+            key: key.as_ref().to_owned(),
             expected: expected.get(),
             actual: actual.get(),
         }
@@ -61,14 +59,14 @@ impl From<IoError> for So3Error {
     }
 }
 
-impl From<SqlxError> for So3Error {
-    fn from(value: SqlxError) -> Self {
-        Self::Storage(value.to_string())
-    }
-}
-
 impl From<PostcardError> for So3Error {
     fn from(value: PostcardError) -> Self {
         Self::Serialization(value.to_string())
+    }
+}
+
+impl From<UuidError> for So3Error {
+    fn from(value: UuidError) -> Self {
+        Self::Io(value.to_string())
     }
 }

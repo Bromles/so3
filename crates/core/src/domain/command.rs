@@ -1,154 +1,54 @@
-use postcard::{from_bytes as postcard_from_bytes, to_allocvec as postcard_to_allocvec};
+use crate::domain::blob::checksum::Sha256Digest;
+use crate::domain::blob::id::BlobId;
+use crate::domain::object::key::ObjectKey;
+use crate::domain::object::metadata::ObjectMetadata;
+use crate::domain::object::version::ObjectVersion;
 use serde::{Deserialize, Serialize};
 
-use crate::domain::error::{So3Error, So3Result};
-use crate::domain::{ObjectKey, ObjectLastModified, ObjectVersion, StoredObject};
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ObjectCommand {
-    Read(ReadCommand),
-    Write(WriteCommand),
-    Cas(CasCommand),
-    Delete(DeleteCommand),
+    Read {
+        key: ObjectKey,
+    },
+    Write {
+        key: ObjectKey,
+        blob_id: BlobId,
+        sha256: Sha256Digest,
+        size: u64,
+    },
+    Cas {
+        key: ObjectKey,
+        expected_version: ObjectVersion,
+        blob_id: BlobId,
+        sha256: Sha256Digest,
+        size: u64,
+    },
+    Delete {
+        key: ObjectKey,
+    },
 }
 
-impl ObjectCommand {
-    /// # Errors
-    ///
-    /// Returns [`So3Error::Serialization`] when postcard cannot encode the command.
-    pub fn to_bytes(&self) -> So3Result<Vec<u8>> {
-        postcard_to_allocvec(self).map_err(So3Error::from)
-    }
-
-    /// # Errors
-    ///
-    /// Returns [`So3Error::Serialization`] when postcard cannot decode the command payload.
-    pub fn from_bytes(bytes: &[u8]) -> So3Result<Self> {
-        postcard_from_bytes(bytes).map_err(So3Error::from)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReadCommand {
-    pub key: ObjectKey,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WriteCommand {
-    pub key: ObjectKey,
-    pub value: Vec<u8>,
-    pub last_modified: ObjectLastModified,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CasCommand {
-    pub key: ObjectKey,
-    pub expected_version: ObjectVersion,
-    pub value: Vec<u8>,
-    pub last_modified: ObjectLastModified,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeleteCommand {
-    pub key: ObjectKey,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ObjectResult {
+#[derive(Debug, Serialize, Deserialize)]
+pub enum CommandResult {
     Read(ReadResult),
     Write(WriteResult),
     Cas(CasResult),
-    Delete(DeleteResult),
+    Delete,
 }
 
-impl ObjectResult {
-    /// # Errors
-    ///
-    /// Returns [`So3Error::Serialization`] when postcard cannot encode the result.
-    pub fn to_bytes(&self) -> So3Result<Vec<u8>> {
-        postcard_to_allocvec(self).map_err(So3Error::from)
-    }
-
-    /// # Errors
-    ///
-    /// Returns [`So3Error::Serialization`] when postcard cannot decode the result payload.
-    pub fn from_bytes(bytes: &[u8]) -> So3Result<Self> {
-        postcard_from_bytes(bytes).map_err(So3Error::from)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReadResult {
-    pub object: Option<StoredObject>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WriteResult {
-    pub object: StoredObject,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CasResult {
-    Applied(StoredObject),
+#[derive(Debug, Serialize, Deserialize)]
+pub enum ReadResult {
+    Found(ObjectMetadata),
     NotFound,
-    Mismatch { current_version: ObjectVersion },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeleteResult;
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WriteResult {
+    pub metadata: ObjectMetadata,
+}
 
-#[cfg(test)]
-mod tests {
-    use crate::domain::{
-        CasCommand, ObjectCommand, ObjectKey, ObjectLastModified, ObjectResult, ObjectVersion,
-        ReadCommand, ReadResult, WriteCommand,
-    };
-
-    const KEY_ALPHA: &str = "alpha";
-    const READ_KEY: &str = "r";
-    const WRITE_KEY: &str = "w";
-    const PAYLOAD: &[u8] = b"payload";
-    const WRITE_VALUE: &[u8] = b"v";
-    const EXPECTED_VERSION: i64 = 7;
-    const LAST_MODIFIED_UNIX_MILLIS: i64 = 1_775_000_000_123;
-
-    #[test]
-    fn object_command_roundtrip_is_stable() {
-        let command = ObjectCommand::Cas(CasCommand {
-            key: ObjectKey::new(KEY_ALPHA).unwrap(),
-            expected_version: ObjectVersion::try_from(EXPECTED_VERSION).unwrap(),
-            value: PAYLOAD.to_vec(),
-            last_modified: ObjectLastModified::try_from(LAST_MODIFIED_UNIX_MILLIS).unwrap(),
-        });
-
-        let encoded = command.to_bytes().unwrap();
-        let decoded = ObjectCommand::from_bytes(&encoded).unwrap();
-
-        assert_eq!(decoded, command);
-    }
-
-    #[test]
-    fn read_and_write_commands_construct_cleanly() {
-        let read = ObjectCommand::Read(ReadCommand {
-            key: ObjectKey::new(READ_KEY).unwrap(),
-        });
-        let write = ObjectCommand::Write(WriteCommand {
-            key: ObjectKey::new(WRITE_KEY).unwrap(),
-            value: WRITE_VALUE.to_vec(),
-            last_modified: ObjectLastModified::try_from(LAST_MODIFIED_UNIX_MILLIS).unwrap(),
-        });
-
-        assert!(matches!(read, ObjectCommand::Read(_)));
-        assert!(matches!(write, ObjectCommand::Write(_)));
-    }
-
-    #[test]
-    fn object_result_roundtrip_is_stable() {
-        let result = ObjectResult::Read(ReadResult { object: None });
-
-        let encoded = result.to_bytes().unwrap();
-        let decoded = ObjectResult::from_bytes(&encoded).unwrap();
-
-        assert_eq!(decoded, result);
-    }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CasResult {
+    Updated(ObjectMetadata),
+    Conflict { current_version: ObjectVersion },
 }
