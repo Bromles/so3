@@ -1,17 +1,16 @@
 # Maelstrom
 
-`so3-maelstrom` is a separate binary crate for Jepsen Maelstrom `lin-kv` runs. It reuses
-`so3-core` object and consensus code, but replaces tonic peer transport with Maelstrom
-stdin/stdout JSON messages.
+`so3-maelstrom` - отдельный бинарный пакет для запусков Jepsen Maelstrom со сценарием `lin-kv`.
+Он повторно использует код объектов и консенсуса из `so3-core`, но заменяет tonic-транспорт между
+узлами на JSON-сообщения через stdin/stdout Maelstrom.
 
-The production `so3` binary does not include Maelstrom runtime code.
+## Предварительные требования
 
-## Prerequisites
+- Java доступна в `PATH`.
+- Исполняемый jar файл Maelstrom доступен в `PATH`, через `MAELSTROM_JAR` или через явный аргумент
+  скрипта `-MaelstromJar` / `-MaelstromBin`.
 
-- Java on `PATH`.
-- Maelstrom executable on `PATH`, `MAELSTROM_JAR`, or an explicit `-MaelstromJar` / `-MaelstromBin` script argument.
-
-## Install
+## Установка
 
 ```bash
 ./scripts/maelstrom/install-maelstrom.sh
@@ -21,12 +20,11 @@ The production `so3` binary does not include Maelstrom runtime code.
 ./scripts/maelstrom/install-maelstrom.ps1
 ```
 
-The installer downloads an official `jepsen-io/maelstrom` release into
-`.tools/maelstrom/maelstrom`.
+Установщик скачивает официальный релиз `jepsen-io/maelstrom` в `.tools/maelstrom/maelstrom`.
 
-## Runs
+## Запуски
 
-Single-node smoke:
+Smoke-тест на одном узле:
 
 ```bash
 ./scripts/maelstrom/smoke-lin-kv.sh
@@ -36,7 +34,7 @@ Single-node smoke:
 ./scripts/maelstrom/smoke-lin-kv.ps1 -MaelstromJar .\.tools\maelstrom\maelstrom\lib\maelstrom.jar
 ```
 
-Three-node smoke:
+Smoke-тест на трех узлах:
 
 ```bash
 ./scripts/maelstrom/smoke-3-node-lin-kv.sh
@@ -46,7 +44,7 @@ Three-node smoke:
 ./scripts/maelstrom/smoke-3-node-lin-kv.ps1 -MaelstromJar .\.tools\maelstrom\maelstrom\lib\maelstrom.jar
 ```
 
-General `lin-kv`:
+Общий запуск `lin-kv`:
 
 ```bash
 ./scripts/maelstrom/run-lin-kv.sh
@@ -56,7 +54,7 @@ General `lin-kv`:
 ./scripts/maelstrom/run-lin-kv.ps1 -MaelstromJar .\.tools\maelstrom\maelstrom\lib\maelstrom.jar
 ```
 
-Three-node partition run:
+Трехузловой запуск с partition nemesis:
 
 ```bash
 ./scripts/maelstrom/fault-3-node-lin-kv.sh
@@ -66,9 +64,9 @@ Three-node partition run:
 ./scripts/maelstrom/fault-3-node-lin-kv.ps1 -MaelstromJar .\.tools\maelstrom\maelstrom\lib\maelstrom.jar
 ```
 
-The fault wrapper defaults to:
+Значения по умолчанию для fault-wrapper:
 
-| Setting            | Value       |
+| Параметр           | Значение    |
 |--------------------|-------------|
 | `NODE_COUNT`       | `3`         |
 | `TIME_LIMIT`       | `30`        |
@@ -77,61 +75,63 @@ The fault wrapper defaults to:
 | `NEMESIS`          | `partition` |
 | `NEMESIS_INTERVAL` | `5`         |
 
-The general run scripts pass through optional Maelstrom settings such as `NEMESIS`,
+Общие скрипты пробрасывают дополнительные настройки Maelstrom, включая `NEMESIS`,
 `NEMESIS_INTERVAL`, `LATENCY`, `LATENCY_DIST`, `AVAILABILITY`, `CONSISTENCY_MODELS`,
-`LOG_NET_SEND`, and `LOG_NET_RECV`.
+`LOG_NET_SEND` и `LOG_NET_RECV`.
 
-## Runtime Model
+## Модель выполнения
 
-Maelstrom starts each node as a separate process and sends the initial node list in the `init`
-message. The adapter builds one isolated `so3-core` stack per Maelstrom node:
+Maelstrom запускает каждый узел отдельным процессом и передает исходный список узлов в сообщении
+`init`. Адаптер строит изолированный стек `so3-core` для каждого Maelstrom-узла:
 
-- SQLite metadata and consensus journal under `metadata/<node_id>`.
-- Blob files under `blobs/<node_id>`.
-- `AccordConsensusCoordinatorService` for commands coordinated by that node.
-- `InboundConsensusUseCaseImpl` for incoming consensus RPC messages.
-- Maelstrom peer clients that encode core protobuf requests into JSON payloads.
+- SQLite-метаданные и журнал консенсуса находятся в `metadata/<node_id>`;
+- blob-файлы находятся в `blobs/<node_id>`;
+- `AccordConsensusCoordinatorService` координирует команды этого узла;
+- `InboundConsensusUseCaseImpl` обрабатывает входящие сообщения консенсуса;
+- Maelstrom-клиенты узлов кодируют запросы ядра в JSON payloads.
 
-Client routing is intentionally different from production:
+Маршрутизация клиентских запросов намеренно отличается от production-узла:
 
-- `node_ids.first()` is treated as the deterministic leader.
-- Client requests delivered to followers are forwarded to that leader.
-- The leader coordinates the core operation and returns the response through the forwarding node.
+- `node_ids.first()` считается координатором;
+- клиентские запросы, доставленные followers, пересылаются этому координатору;
+- координатору исполняет операцию ядра и возвращает ответ через пересылающий узел.
 
-Production `so3` does not have this leader-forwarding layer; any node can coordinate requests that
-arrive through its S3-compatible API.
+В production-бинаре `so3` такого слоя пересылки координатору нет: любой узел может координировать
+запросы, пришедшие через его S3-подобный API.
 
-## Current Caveats
+## Текущие ограничения
 
-The adapter is useful for exercising core command semantics through Maelstrom histories, but it is
-not yet production-parity:
+Адаптер полезен для smoke-проверки семантики команд через истории Maelstrom, но пока не достигает
+полного соответствия production runtime:
 
-- It hides concurrent production coordinators because all Maelstrom client commands are forwarded to one leader.
-- `cas` with `create_if_not_exists=true` does a coordinated read followed by a write, so two concurrent creates can both
-  return `cas_ok`.
-- Blob push/fetch uses one JSON payload and does not validate size or SHA-256 the way production tonic `BlobService`
-  does.
-- Pending consensus, blob, and forward requests wait on oneshot responses without per-operation deadlines.
+- он скрывает конкурентных production-координаторов, потому что все клиентские команды Maelstrom
+  пересылаются одному координатору;
+- `cas` с `create_if_not_exists=true` выполняет скоординированное чтение, затем запись, поэтому две
+  конкурентные create-операции могут обе вернуть `cas_ok`;
+- blob push/fetch использует один JSON payload и не проверяет размер или SHA-256 так, как production
+  tonic `BlobService`;
+- ожидающие consensus, blob и forward-запросы ждут oneshot-ответы без дедлайнов операций.
 
-Use Maelstrom results as protocol smoke coverage, not as a complete proof of production-node
-behavior.
+Результаты Maelstrom следует использовать как smoke-покрытие протокола, а не как полное доказательство
+поведения production-узлов.
 
-## Latest Verification
+## Последняя проверка
 
-Local runs from 2026-05-05 with `target/release/so3-maelstrom` passed Knossos (`:valid? true`) for:
+Локальные запуски от 2026-05-05 с `target/release/so3-maelstrom` прошли Knossos (`:valid? true`)
+для следующих сценариев:
 
-| Scenario | Nodes | Rate | Concurrency | Nemesis | Ops | Ok | Fail | Info | Result |
-| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- |
-| `smoke-lin-kv` | 1 | 20 | `2n` | none | 197 | 144 | 53 | 0 | `:valid? true` |
-| `smoke-3-node-lin-kv` | 3 | 10 | `2n` | none | 95 | 67 | 28 | 0 | `:valid? true` |
-| `fault-3-node-lin-kv` | 3 | 20 | `2n` | `partition/5s` | 238 | 53 | 108 | 77 | `:valid? true` |
+| Сценарий              | Узлы | Rate | Concurrency | Nemesis        | Ops |  Ok | Fail | Info | Результат      |
+|-----------------------|------|------|-------------|----------------|----:|----:|-----:|-----:|----------------|
+| `smoke-lin-kv`        | 1    | 20   | `2n`        | none           | 197 | 144 |   53 |    0 | `:valid? true` |
+| `smoke-3-node-lin-kv` | 3    | 10   | `2n`        | none           |  95 |  67 |   28 |    0 | `:valid? true` |
+| `fault-3-node-lin-kv` | 3    | 20   | `2n`        | `partition/5s` | 238 |  53 |  108 |   77 | `:valid? true` |
 
-See [results.md](results.md) for the full counters and current interpretation caveats.
+Полные счетчики и ограничения интерпретации находятся в [results.md](results.md).
 
-## Platform Notes
+## Платформенные заметки
 
-- Windows: use `*.ps1` under PowerShell 7.
-- macOS/Linux: use `*.sh` under bash/zsh.
-- WSL: prefer building a Linux `so3-maelstrom` binary inside WSL.
-- Maelstrom writes detailed histories under `store/lin-kv/`, which is gitignored.
-- Helper scripts create a fresh temporary `SO3_MAELSTROM_DATA_DIR` unless one is provided.
+- Windows: используйте `*.ps1` под PowerShell 7.
+- macOS/Linux: используйте `*.sh` под bash/zsh.
+- WSL: предпочтительно собирать Linux-бинарь `so3-maelstrom` внутри WSL.
+- Maelstrom пишет подробные истории в `store/lin-kv/`; эта директория игнорируется git.
+- Helper-скрипты создают свежую временную `SO3_MAELSTROM_DATA_DIR`, если она не задана явно.

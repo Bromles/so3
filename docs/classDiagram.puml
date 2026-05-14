@@ -126,7 +126,7 @@ package "crates/core::service" {
 }
 
 package "crates/core::client" {
-    class ConsensusTransportClient <<tonic client>> {
+    class ConsensusTransportClient <<tonic клиент>> {
         +pre_accept(req)
         +accept(req)
         +commit(req)
@@ -134,7 +134,7 @@ package "crates/core::client" {
         +recover(req)
     }
 
-    class BlobClient <<tonic client>> {
+    class BlobClient <<tonic клиент>> {
         +push(blob_id, size, sha256, data)
         +fetch(blob_id)
     }
@@ -256,15 +256,15 @@ Node *-- NodeConfig
 NodeConfig o-- ClusterConfig
 ClusterConfig o-- PeerConfig
 
-Node --> SqliteObjectMetadataRepository : opens
-Node --> SqliteConsensusJournal : opens
-Node --> FileSystemBlobRepository : opens
-Node --> FileSystemNodeIdentityRepository : identity
-Node --> ObjectUseCaseImpl : wires
-Node --> InboundConsensusUseCaseImpl : wires
-Node --> BlobUseCaseImpl : wires
-BoundNode --> AxumS3Server : S3-compatible API
-BoundNode --> TonicRpcServer : private RPC
+Node --> SqliteObjectMetadataRepository : открывает
+Node --> SqliteConsensusJournal : открывает
+Node --> FileSystemBlobRepository : открывает
+Node --> FileSystemNodeIdentityRepository : идентичность
+Node --> ObjectUseCaseImpl : связывает
+Node --> InboundConsensusUseCaseImpl : связывает
+Node --> BlobUseCaseImpl : связывает
+BoundNode --> AxumS3Server : S3-подобный API
+BoundNode --> TonicRpcServer : приватный RPC
 
 AxumS3Server --> ObjectApiController
 ObjectApiController --> ObjectUseCaseImpl
@@ -305,21 +305,21 @@ AccordConsensusCoordinatorService --> MaelstromConsensusPeerClient
 ObjectUseCaseImpl --> MaelstromBlobPeerClient
 
 note right of AccordConsensusCoordinatorService
-Current phases:
-- local PreAccepted record
-- peer PreAccept
-- optional Accept
-- Commit retry until quorum
-- local Apply
-- peer Apply in background tasks
+Текущие фазы:
+- локальная запись PreAccepted
+- PreAccept другим узлам
+- необязательный Accept
+- повтор Commit до кворума
+- локальный Apply
+- Apply другим узлам в фоновых задачах
 end note
 
 note bottom of SharedRuntime
-Maelstrom adapter:
-- deterministic leader = node_ids.first()
-- followers forward client commands
-- consensus payloads use core protobuf
-- blob payloads are single JSON byte arrays
+Адаптер Maelstrom:
+- детерминированный лидер = node_ids.first()
+- followers пересылают клиентские команды
+- consensus payloads используют core protobuf
+- blob payloads являются одиночными JSON byte arrays
 end note
 
 @enduml

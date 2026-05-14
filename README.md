@@ -1,39 +1,61 @@
 # SO3
 
-SO3 is a Rust prototype of a replicated, S3-like object store. Each node exposes an
-S3-compatible API and a private tonic RPC API. Object operations are coordinated through
-the current Accord-style consensus implementation and persisted to SQLite plus the local
-filesystem.
+SO3 - исследовательский прототип распределенного объектного хранилища на Rust.
+Проект разработан в рамках магистерской диссертации с целью:
 
-The code is split into three workspace crates:
+> Разработать прототип распределенного объектного хранилища с поддержкой механизма репликации на основе алгоритма
+> консенсуса без лидера.
 
-| Crate           | Purpose                                                                               |
-|-----------------|---------------------------------------------------------------------------------------|
-| `so3-core`      | Domain types, repositories, S3 API, RPC API, object use cases, and consensus services |
-| `so3`           | Production-facing node binary                                                         |
-| `so3-maelstrom` | Jepsen Maelstrom stdin/stdout adapter for `lin-kv` tests                              |
+Проект следует рассматривать именно как прототип: он демонстрирует архитектуру, основные
+компоненты объектного хранилища, репликацию и координацию операций через консенсус, но не
+является системой, готовой к промышленной эксплуатации.
 
-## Current Shape
+## Статус
 
-- S3-compatible API: Axum route `/{bucket}/{*key}` with `GET`, `HEAD`, `PUT`, and `DELETE`.
-- Private RPC API: tonic services for consensus (`PreAccept`, `Accept`, `Commit`, `Apply`, `Recover`) and blob transfer.
-- Storage: SQLite metadata and consensus journal under `metadata_dir`; immutable blob files under `blob_dir`.
-- Replication model: every node stores a full copy of data; writes do not shard by key.
-- Node identity: `node_id` is optional. If omitted, the node generates and persists an identity under the metadata
-  directory.
+Поставленная цель работы достигнута: реализован рабочий прототип распределенного объектного
+хранилища, в котором каждый узел предоставляет публичное S3-подобный HTTP API и приватное RPC API для
+взаимодействия с другими узлами. Операции над объектами координируются через текущую
+Accord-подобную реализацию консенсуса без выделенного постоянного лидера, а состояние
+сохраняется в SQLite и локальной файловой системе.
 
-See [docs/architecture.md](docs/architecture.md) for diagrams, request flows, and known limitations.
+Текущий статус проверки:
 
-## Configuration
+- `cargo test --workspace` проходит.
+- Известные ограничения и риски зафиксированы в аудите и документации как направления
+  дальнейшего развития.
 
-`so3` builds configuration from defaults, an optional TOML file, and environment overrides:
+## Возможности прототипа
 
-1. Defaults are used when no value is configured.
-2. If `SO3_CONFIG` is set, that TOML file is loaded.
-3. Otherwise `./so3.toml` is loaded when present.
-4. Environment variables override TOML values.
+- S3-подобный API: маршрут `/{bucket}/{*key}` с методами `GET`, `HEAD`, `PUT` и `DELETE`.
+- Приватный RPC API на gRPC для консенсуса и передачи blob-данных.
+- Репликация: каждый узел хранит полную копию данных; шардирование по ключам не используется.
+- Хранилище состояния: метаданные объектов и журнал консенсуса хранятся в SQLite, содержимое
+  объектов - в неизменяемых blob-файлах.
+- Идентичность узла: `node_id` можно задать явно; если он не задан, узел генерирует и сохраняет
+  идентификатор в директории метаданных.
+- Maelstrom-адаптер для проверки части поведения через `lin-kv` сценарии Jepsen Maelstrom.
 
-Example:
+Подробное описание архитектуры, потоков запросов и ограничений находится в
+[docs/architecture.md](docs/architecture.md).
+
+## Структура workspace
+
+| Пакет           | Назначение                                                               |
+|-----------------|--------------------------------------------------------------------------|
+| `so3-core`      | Доменные типы, репозитории, S3 API, RPC API, сценарии работы и консенсус |
+| `so3`           | Бинарный файл узла с HTTP API и RPC API                                  |
+| `so3-maelstrom` | Адаптер stdin/stdout для Jepsen Maelstrom `lin-kv` тестов                |
+
+## Конфигурация
+
+`so3` собирает конфигурацию из значений по умолчанию, TOML-файла и переменных окружения:
+
+1. Если значение не задано, используется значение по умолчанию.
+2. Если задана переменная `SO3_CONFIG`, загружается указанный TOML-файл.
+3. Если `SO3_CONFIG` не задана, но рядом есть `./so3.toml`, загружается он.
+4. Переменные окружения переопределяют значения из TOML.
+
+Пример конфигурации:
 
 ```toml
 node_id = "123e4567-e89b-12d3-a456-426614174000"
@@ -49,27 +71,29 @@ peers = [
 ]
 ```
 
-Supported environment overrides:
+Поддерживаемые переменные окружения:
 
-| Variable                          | Meaning                                    |
-|-----------------------------------|--------------------------------------------|
-| `SO3_CONFIG`                      | Path to TOML config                        |
-| `SO3_NODE_ID`                     | Local UUID; optional                       |
-| `SO3_OBJECT_ADDR`                 | S3-compatible API bind address             |
-| `SO3_RPC_ADDR`                    | Private tonic RPC bind address             |
-| `SO3_OBJECT_REQUEST_TIMEOUT_SECS` | S3-compatible request timeout              |
-| `SO3_DATA_DIR`                    | Base data directory                        |
-| `SO3_METADATA_DIR`                | Metadata/journal directory                 |
-| `SO3_BLOB_DIR`                    | Blob directory                             |
-| `SO3_CLUSTER_PEERS`               | Comma-separated `uuid@host:port` peer list |
+| Переменная                        | Назначение                                       |
+|-----------------------------------|--------------------------------------------------|
+| `SO3_CONFIG`                      | Путь к TOML-конфигурации                         |
+| `SO3_NODE_ID`                     | Локальный UUID узла; необязателен                |
+| `SO3_OBJECT_ADDR`                 | Адрес S3-подобного HTTP API                      |
+| `SO3_RPC_ADDR`                    | Адрес приватного tonic RPC API                   |
+| `SO3_OBJECT_REQUEST_TIMEOUT_SECS` | Таймаут S3-подобного запроса                     |
+| `SO3_DATA_DIR`                    | Базовая директория данных                        |
+| `SO3_METADATA_DIR`                | Директория метаданных и журнала консенсуса       |
+| `SO3_BLOB_DIR`                    | Директория blob-файлов                           |
+| `SO3_CLUSTER_PEERS`               | Список узлов через запятую в формате `uuid@addr` |
 
-## Run
+## Запуск
+
+Запуск одного узла:
 
 ```bash
 cargo run -p so3
 ```
 
-Example object calls:
+Примеры запросов к объектному API:
 
 ```bash
 curl -X PUT --data-binary 'hello' http://127.0.0.1:3000/demo/key
@@ -78,16 +102,17 @@ curl -I http://127.0.0.1:3000/demo/key
 curl -X DELETE http://127.0.0.1:3000/demo/key
 ```
 
-## Verification
+## Проверка
 
 ```bash
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -W clippy::pedantic
 ```
 
-Maelstrom helper scripts and caveats live in [docs/maelstrom.md](docs/maelstrom.md).
-Performance benchmarks must use release binaries. The k6 helper refuses to benchmark a detected
-debug `so3` process by default and prints CPU/RSS aggregates:
+Maelstrom-скрипты, сценарии запуска и ограничения описаны в [docs/maelstrom.md](docs/maelstrom.md).
+
+Для нагрузочных проверок следует использовать release-сборку. Скрипт k6 по умолчанию отказывается
+измерять обнаруженный debug-процесс `so3` и печатает агрегаты CPU/RSS:
 
 ```bash
 cargo build --release -p so3
@@ -95,14 +120,27 @@ SO3_OBJECT_ADDR=127.0.0.1:3301 SO3_RPC_ADDR=127.0.0.1:4301 target/release/so3
 SO3_ADDR=http://127.0.0.1:3301 bash scripts/k6/run-benchmark.sh --runs 30
 ```
 
-Historical benchmark notes live in [docs/results.md](docs/results.md).
+Исторические заметки по результатам находятся в [docs/results.md](docs/results.md).
 
-## License
+## Ограничения
 
-All code in this repository is dual-licensed under either:
+SO3 не позиционируется как промышленная система хранения. В текущем состоянии это прототип,
+предназначенный для демонстрации выбранного подхода и проведения экспериментов.
 
-- MIT License ([LICENSE-MIT](LICENSE-MIT) or [http://opensource.org/licenses/MIT](http://opensource.org/licenses/MIT))
+Ключевые ограничения:
+
+- часть сценариев восстановления, упорядочивания применения команд и обработки конфликтов требует
+  дальнейшего усиления;
+- пути fetch/repair для blob-данных должны строже проверять размер и SHA-256 полученных байтов;
+- RPC-вызовам нужны явные дедлайны операций;
+- производительность и рост журнала консенсуса требуют отдельной оптимизации и компакции.
+
+Полный список известных рисков, TODO и пробелов в тестировании находится в [agents.md](agents.md).
+
+## Лицензия
+
+Код в этом репозитории распространяется на условиях одной из двух лицензий на выбор:
+
+- MIT License ([LICENSE-MIT](LICENSE-MIT) или [http://opensource.org/licenses/MIT](http://opensource.org/licenses/MIT))
 - Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE)
-  or [http://www.apache.org/licenses/LICENSE-2.0](http://www.apache.org/licenses/LICENSE-2.0))
-
-at your option.
+  или [http://www.apache.org/licenses/LICENSE-2.0](http://www.apache.org/licenses/LICENSE-2.0))

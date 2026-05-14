@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # run-benchmark.sh – run the so3 S3 benchmark N times and aggregate statistics
 #
-# Each k6 run writes a JSON summary export; this script collects per-run
-# throughput, error rate, latency, and so3 process CPU/RSS samples, then prints
-# cross-run/resource aggregates suitable for docs/results.md.
+# Each k6 run starts a fresh release so3 process with a fresh data directory,
+# writes a JSON summary export, then stops the process and removes the data
+# directory. The script collects per-run throughput, error rate, latency, and
+# so3 process CPU/RSS samples, then prints cross-run/resource aggregates
+# suitable for docs/results.md.
 #
-# Dependencies: k6, jq, awk (all standard on macOS/Linux).
+# Dependencies: k6, jq, awk, curl (all standard on macOS/Linux).
 #
 # Usage
 # ─────
@@ -13,17 +15,15 @@
 #
 # Examples
 #   bash scripts/k6/run-benchmark.sh --runs 30
-#   bash scripts/k6/run-benchmark.sh --runs 50 --outdir /tmp/bench \
-#       SO3_ADDR=http://10.0.0.1:3000 VUS=20 DURATION=60s
+#   bash scripts/k6/run-benchmark.sh --runs 50 --outdir /tmp/bench VUS=20 DURATION=60s
 #
 # Resource sampling
-#   The script auto-detects the so3 PID from SO3_ADDR's TCP port. Set SO3_PID
-#   explicitly when the endpoint cannot be mapped to a local listener.
+#   The script samples the managed so3 process for each run.
 #
 # Release guard
-#   By default, the detected process must be target/release/so3. Set
-#   SO3_REQUIRE_RELEASE=0 only for local script debugging, never for reported
-#   performance numbers.
+#   By default, the managed binary must be target/release/so3. Set SO3_BIN to
+#   override the path and SO3_REQUIRE_RELEASE=0 only for local script debugging,
+#   never for reported performance numbers.
 
 set -euo pipefail
 
@@ -35,12 +35,21 @@ BENCHMARK_SCRIPT="$SCRIPT_DIR/s3-benchmark.js"
 RUNS=30
 OUT_DIR=""
 K6_EXTRA_ARGS=()
-SO3_ADDR="${SO3_ADDR:-http://127.0.0.1:3000}"
-SO3_PID="${SO3_PID:-}"
+SO3_OBJECT_ADDR="${SO3_OBJECT_ADDR:-127.0.0.1:3000}"
+SO3_ADDR="${SO3_ADDR:-http://${SO3_OBJECT_ADDR}}"
+SO3_RPC_ADDR="${SO3_RPC_ADDR:-127.0.0.1:4000}"
+export SO3_ADDR
+SO3_BIN="${SO3_BIN:-target/release/so3}"
 SO3_REQUIRE_RELEASE="${SO3_REQUIRE_RELEASE:-1}"
+SO3_START_TIMEOUT_SECS="${SO3_START_TIMEOUT_SECS:-15}"
+SO3_STOP_TIMEOUT_SECS="${SO3_STOP_TIMEOUT_SECS:-10}"
+SO3_KEEP_RUN_DIRS="${SO3_KEEP_RUN_DIRS:-0}"
 RESOURCE_SAMPLE_INTERVAL_SECS="${RESOURCE_SAMPLE_INTERVAL_SECS:-1}"
 RESOURCE_FILE=""
 SAMPLER_PID=""
+SO3_MANAGED_PID=""
+RUN_DATA_DIR=""
+RUN_LOG_FILE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -55,63 +64,110 @@ if [[ -z "$OUT_DIR" ]]; then
 fi
 mkdir -p "$OUT_DIR"
 RESOURCE_FILE="${OUT_DIR}/resources.tsv"
+: > "$RESOURCE_FILE"
 
 echo "so3 S3 benchmark - ${RUNS} runs -> ${OUT_DIR}"
+echo "managed so3: ${SO3_BIN}"
 echo ""
 
-# ── resource sampling ────────────────────────────────────────────────────────
+# ── managed so3 lifecycle ────────────────────────────────────────────────────
 
-detect_port_from_addr() {
-  local addr_no_scheme hostport scheme
-
-  scheme="${SO3_ADDR%%://*}"
-  addr_no_scheme="${SO3_ADDR#*://}"
-  hostport="${addr_no_scheme%%/*}"
-
-  if [[ "$hostport" == *:* ]]; then
-    printf '%s\n' "${hostport##*:}"
-  elif [[ "$scheme" == "https" ]]; then
-    printf '443\n'
-  else
-    printf '80\n'
-  fi
-}
-
-detect_so3_pid() {
-  local port
-
-  if [[ -n "$SO3_PID" ]]; then
-    printf '%s\n' "$SO3_PID"
-    return
-  fi
-
-  port="$(detect_port_from_addr)"
-  if command -v lsof >/dev/null 2>&1; then
-    lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | head -n 1 || true
-  fi
-}
-
-assert_release_server() {
-  local pid="$1"
-  local command_line
-
+assert_release_binary() {
   if [[ "$SO3_REQUIRE_RELEASE" != "1" ]]; then
     return
   fi
 
-  command_line="$(ps -p "$pid" -o command= 2>/dev/null || true)"
-  if [[ -z "$command_line" ]]; then
-    echo "error: cannot inspect so3 process ${pid}; set SO3_PID or SO3_REQUIRE_RELEASE=0" >&2
-    exit 1
-  fi
+  case "$SO3_BIN" in
+    */target/release/so3|target/release/so3|*/target/release/so3.exe|target/release/so3.exe) ;;
+    *)
+      echo "error: refusing to benchmark non-release so3 binary ${SO3_BIN}" >&2
+      echo "       set SO3_BIN=target/release/so3, or set SO3_REQUIRE_RELEASE=0 for script debugging only" >&2
+      exit 1
+      ;;
+  esac
+}
 
-  if [[ "$command_line" != *"target/release/so3"* ]]; then
-    echo "error: refusing to benchmark non-release so3 process ${pid}" >&2
-    echo "       command: ${command_line}" >&2
-    echo "       start target/release/so3, or set SO3_REQUIRE_RELEASE=0 for script debugging only" >&2
-    exit 1
+wait_for_so3_ready() {
+  local deadline="$((SECONDS + SO3_START_TIMEOUT_SECS))"
+
+  while (( SECONDS < deadline )); do
+    if ! kill -0 "$SO3_MANAGED_PID" 2>/dev/null; then
+      echo "error: so3 exited before becoming ready; see ${RUN_LOG_FILE}" >&2
+      return 1
+    fi
+
+    if curl -sS --max-time 1 "$SO3_ADDR/" >/dev/null 2>&1; then
+      return 0
+    fi
+
+    sleep 0.2
+  done
+
+  echo "error: so3 did not become ready within ${SO3_START_TIMEOUT_SECS}s; see ${RUN_LOG_FILE}" >&2
+  return 1
+}
+
+start_so3() {
+  local run_index="$1"
+
+  assert_release_binary
+  RUN_DATA_DIR="$(mktemp -d "/tmp/so3-k6-run-${run_index}.XXXXXX")"
+  RUN_LOG_FILE="${OUT_DIR}/so3_run_$(printf '%03d' "$run_index").log"
+
+  SO3_OBJECT_ADDR="$SO3_OBJECT_ADDR" \
+  SO3_RPC_ADDR="$SO3_RPC_ADDR" \
+  SO3_DATA_DIR="$RUN_DATA_DIR" \
+  "$SO3_BIN" >"$RUN_LOG_FILE" 2>&1 &
+  SO3_MANAGED_PID="$!"
+
+  wait_for_so3_ready
+}
+
+stop_so3() {
+  if [[ -n "$SO3_MANAGED_PID" ]]; then
+    local pid="$SO3_MANAGED_PID"
+
+    if kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
+
+      local deadline="$((SECONDS + SO3_STOP_TIMEOUT_SECS))"
+      while (( SECONDS < deadline )); do
+        local state
+        state="$(ps -p "$pid" -o stat= 2>/dev/null || true)"
+        state="${state//[[:space:]]/}"
+        if [[ -z "$state" || "$state" == Z* ]]; then
+          break
+        fi
+        sleep 0.2
+      done
+
+      if kill -0 "$pid" 2>/dev/null; then
+        local state
+        state="$(ps -p "$pid" -o stat= 2>/dev/null || true)"
+        state="${state//[[:space:]]/}"
+        if [[ -n "$state" && "$state" != Z* ]]; then
+          kill -9 "$pid" 2>/dev/null || true
+        fi
+      fi
+    fi
+
+    wait "$pid" 2>/dev/null || true
+    SO3_MANAGED_PID=""
   fi
 }
+
+cleanup_run_data_dir() {
+  if [[ -n "$RUN_DATA_DIR" && "$SO3_KEEP_RUN_DIRS" != "1" ]]; then
+    case "$RUN_DATA_DIR" in
+      /tmp/so3-k6-run-*) rm -rf "$RUN_DATA_DIR" ;;
+      *) echo "warning: refusing to remove unexpected data dir ${RUN_DATA_DIR}" >&2 ;;
+    esac
+  fi
+
+  RUN_DATA_DIR=""
+}
+
+# ── resource sampling ────────────────────────────────────────────────────────
 
 start_resource_sampler() {
   local pid="$1"
@@ -120,10 +176,6 @@ start_resource_sampler() {
     echo "warning: so3 PID was not detected; CPU/RSS sampling disabled" >&2
     return
   fi
-
-  assert_release_server "$pid"
-  echo "sampling so3 resources: pid=${pid}, interval=${RESOURCE_SAMPLE_INTERVAL_SECS}s -> ${RESOURCE_FILE}"
-  : > "$RESOURCE_FILE"
 
   (
     while kill -0 "$pid" 2>/dev/null; do
@@ -145,29 +197,30 @@ stop_resource_sampler() {
 
 cleanup() {
   stop_resource_sampler
+  stop_so3
+  cleanup_run_data_dir
 }
 
 trap cleanup EXIT INT TERM
-
-SO3_SAMPLED_PID="$(detect_so3_pid)"
-start_resource_sampler "$SO3_SAMPLED_PID"
-echo ""
 
 # ── run k6 N times ────────────────────────────────────────────────────────────
 
 for i in $(seq 1 "$RUNS"); do
   export_file="${OUT_DIR}/run_$(printf '%03d' "$i").json"
   printf "  run %3d/%d ... " "$i" "$RUNS"
+  start_so3 "$i"
+  start_resource_sampler "$SO3_MANAGED_PID"
   k6 run \
     --quiet \
     --no-color \
     --summary-export="$export_file" \
     ${K6_EXTRA_ARGS[@]+"${K6_EXTRA_ARGS[@]}"} \
     "$BENCHMARK_SCRIPT" >/dev/null 2>/dev/null
+  stop_resource_sampler
+  stop_so3
+  cleanup_run_data_dir
   echo "done"
 done
-
-stop_resource_sampler
 echo ""
 
 # ── aggregate statistics across runs ─────────────────────────────────────────

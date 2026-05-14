@@ -1,35 +1,37 @@
-# Architecture
+# Архитектура
 
-This document describes the current implementation, not the intended final design.
+Этот документ описывает текущую реализацию SO3, а не финальный промышленный дизайн.
+Проект является исследовательским прототипом распределенного объектного хранилища с
+репликацией на основе консенсуса без постоянного лидера.
 
-## Workspace Layout
+## Структура workspace
 
 ```mermaid
 flowchart TB
-    so3["crates/so3\nnode binary"] --> core["crates/core\nshared implementation"]
-    maelstrom["crates/so3-maelstrom\nMaelstrom adapter"] --> core
-    core --> api["api\nS3-compatible Axum + tonic RPC"]
-    core --> use_case["use_case\nobject, inbound consensus, blob, identity"]
-    core --> service["service\nAccord coordinator"]
-    core --> repo["repository\nSQLite + filesystem"]
-    core --> domain["domain\ncommands, metadata, consensus, blob IDs"]
-    core --> client["client\ntonic peer clients"]
+    so3["crates/so3\nбинарный файл узла"] --> core["crates/core\nобщая реализация"]
+    maelstrom["crates/so3-maelstrom\nадаптер Maelstrom"] --> core
+    core --> api["api\nS3-подобный Axum + tonic RPC"]
+    core --> use_case["use_case\nобъекты, входящий консенсус, blob, идентичность"]
+    core --> service["service\nкоординатор Accord"]
+    core --> repo["repository\nSQLite + файловая система"]
+    core --> domain["domain\nкоманды, метаданные, консенсус, blob ID"]
+    core --> client["client\ntonic-клиенты узлов"]
 ```
 
-## Production Node
+## Узел SO3
 
 ```mermaid
 flowchart LR
-    client["S3 client"] --> http["S3-compatible Axum API\n/{bucket}/{*key}"]
+    client["S3-клиент"] --> http["S3-подобный Axum API\n/{bucket}/{*key}"]
     http --> object_uc["ObjectUseCaseImpl"]
     object_uc --> coordinator["AccordConsensusCoordinatorService"]
     object_uc --> local_blob["FileSystemBlobRepository"]
-    object_uc --> blob_peers["BlobClient peers"]
+    object_uc --> blob_peers["BlobClient узлов"]
     coordinator --> journal["SqliteConsensusJournal"]
     coordinator --> metadata["SqliteObjectMetadataRepository"]
     coordinator --> blob_repo["FileSystemBlobRepository"]
-    coordinator --> consensus_peers["ConsensusTransportClient peers"]
-    consensus_peers --> rpc["peer tonic RPC"]
+    coordinator --> consensus_peers["ConsensusTransportClient узлов"]
+    consensus_peers --> rpc["tonic RPC другого узла"]
     blob_peers --> rpc
     rpc --> inbound["InboundConsensusUseCaseImpl"]
     rpc --> blob_uc["BlobUseCaseImpl"]
@@ -39,149 +41,149 @@ flowchart LR
     blob_uc --> blob_repo
 ```
 
-`Node::new` wires the process as follows:
+`Node::new` собирает процесс следующим образом:
 
-- Opens `SqliteObjectMetadataRepository`, `SqliteConsensusJournal`, and `FileSystemBlobRepository`.
-- Builds tonic consensus and blob clients for every configured peer.
-- Reconciles already-applied journal entries back into object metadata before serving.
-- Ensures durable node identity, generating one when `node_id` is not configured.
-- Starts two listeners in `BoundNode::run`: the public S3-compatible Axum API and private tonic RPC API.
+- открывает `SqliteObjectMetadataRepository`, `SqliteConsensusJournal` и `FileSystemBlobRepository`;
+- создает tonic-клиенты консенсуса и blob-передачи для каждого настроенного узла;
+- перед запуском API восстанавливает объектные метаданные из уже примененных записей журнала;
+- обеспечивает устойчивую идентичность узла, генерируя `node_id`, если он не задан в конфигурации;
+- в `BoundNode::run` запускает два listener'а: публичный S3-подобный Axum API и приватный tonic RPC API.
 
-## S3 API
+## S3-подобный API
 
-The public HTTP surface is intentionally small:
+Публичная HTTP-поверхность намеренно небольшая:
 
-| Method   | Route              | Use case                                                                |
-|----------|--------------------|-------------------------------------------------------------------------|
-| `PUT`    | `/{bucket}/{*key}` | Store request body as a blob, push blob to a quorum, coordinate `Write` |
-| `GET`    | `/{bucket}/{*key}` | Coordinate `Read`, then stream local blob or repair from a peer         |
-| `HEAD`   | `/{bucket}/{*key}` | Coordinate `Read`, return metadata headers only                         |
-| `DELETE` | `/{bucket}/{*key}` | Coordinate `Delete`                                                     |
+| Метод    | Маршрут            | Сценарий работы                                                              |
+|----------|--------------------|------------------------------------------------------------------------------|
+| `PUT`    | `/{bucket}/{*key}` | Сохранить тело как blob, отправить blob кворуму, скоординировать `Write`     |
+| `GET`    | `/{bucket}/{*key}` | Скоординировать `Read`, затем отдать локальный blob или восстановить от узла |
+| `HEAD`   | `/{bucket}/{*key}` | Скоординировать `Read`, вернуть только заголовки метаданных                  |
+| `DELETE` | `/{bucket}/{*key}` | Скоординировать `Delete`                                                     |
 
-The object key stored internally is `bucket/key`. Metadata responses include:
+Внутренний ключ объекта хранится в формате `bucket/key`. Ответы с метаданными включают:
 
-- `etag`: quoted SHA-256 digest
-- `content-length`
-- `last-modified`
-- `x-amz-version-id`
-- `x-amz-object-size`
-- `x-amz-repository-class: STANDARD`
+- `etag`: SHA-256 digest в кавычках;
+- `content-length`;
+- `last-modified`;
+- `x-amz-version-id`;
+- `x-amz-object-size`;
+- `x-amz-repository-class: STANDARD`.
 
-## Write Flow
+## Поток записи
 
 ```mermaid
 sequenceDiagram
-    participant C as Client
+    participant C as Клиент
     participant A as S3 API
     participant O as ObjectUseCase
-    participant B as Local blob repo
-    participant BP as Blob peers
-    participant CC as Accord coordinator
-    participant CP as Consensus peers
-    participant J as SQLite journal
-    participant M as SQLite metadata
+    participant B as Локальный blob repo
+    participant BP as Blob-узлы
+    participant CC as Accord-координатор
+    participant CP as Consensus-узлы
+    participant J as SQLite-журнал
+    participant M as SQLite-метаданные
     C ->> A: PUT /bucket/key
     A ->> O: write(key, body)
-    O ->> B: stream body to new BlobId
+    O ->> B: записать тело в новый BlobId
     O ->> BP: StoreBlob(header, chunks, footer)
-    BP -->> O: quorum stored
+    BP -->> O: кворум сохранил blob
     O ->> CC: coordinate Write(key, blob_id, sha256, size)
-    CC ->> J: record local PreAccepted
+    CC ->> J: записать локальный PreAccepted
     CC ->> CP: PreAccept
-    alt slow path
-        CC ->> J: record Accepted
+    alt медленный путь
+        CC ->> J: записать Accepted
         CC ->> CP: Accept
     end
-    CC ->> J: record Committed
-    CC ->> CP: Commit until quorum
-    CC ->> J: record Applied(result)
-    CC ->> M: store object metadata
+    CC ->> J: записать Committed
+    CC ->> CP: Commit до кворума
+    CC ->> J: записать Applied(result)
+    CC ->> M: сохранить метаданные объекта
     CC -->> O: WriteResult(metadata)
     O -->> A: metadata
     A -->> C: 200 OK
-    CC ->> CP: Apply fire-and-forget
+    CC ->> CP: Apply в фоновых задачах
 ```
 
-Blob transfer in production uses a streaming tonic protocol:
+В production-узле передача blob-данных использует потоковый tonic-протокол:
 
-- `StoreBlobHeader` declares `blob_id` and total size.
-- Each `StoreBlobChunk` carries bytes plus chunk SHA-256.
-- `StoreBlobFooter` carries full-object SHA-256.
-- The receiver aborts on chunk mismatch, total-size mismatch, or final digest mismatch.
+- `StoreBlobHeader` объявляет `blob_id` и полный размер;
+- каждый `StoreBlobChunk` несет байты и SHA-256 конкретного chunk'а;
+- `StoreBlobFooter` несет SHA-256 всего объекта;
+- принимающая сторона прерывает запись при несовпадении chunk digest, общего размера или итогового digest.
 
-## Consensus Flow
+## Поток консенсуса
 
-The coordinator is also a replica. For each command it:
+Координатор одновременно является репликой. Для каждой команды он:
 
-1. Allocates `CommandId { origin_node_id, sequence }`.
-2. Ticks the hybrid logical clock for `timestamp_zero`.
-3. Records local PreAccepted state and local conflict dependencies.
-4. Sends `PreAccept` to peers.
-5. Uses the fast path only when every peer responds, the timestamp remains `timestamp_zero`, no dependencies are found,
-   and no peer fails.
-6. Otherwise records and sends `Accept`, merging dependencies from accept responses.
-7. Records `Committed`, retries `Commit` until a quorum responds, applies locally, and sends peer `Apply` requests in
-   background tasks.
+1. Выделяет `CommandId { origin_node_id, sequence }`.
+2. Обновляет hybrid logical clock и получает `timestamp_zero`.
+3. Записывает локальное состояние `PreAccepted` и локальные конфликтные зависимости.
+4. Отправляет `PreAccept` другим узлам.
+5. Использует быстрый путь только если ответили все узлы, timestamp остался равен `timestamp_zero`,
+   зависимости не найдены и ни один узел не завершился ошибкой.
+6. Иначе записывает и отправляет `Accept`, объединяя зависимости из ответов.
+7. Записывает `Committed`, повторяет `Commit` до ответа кворума, применяет команду локально и отправляет
+   `Apply` другим узлам в фоновых задачах.
 
-Recovery exists (`Recover` RPC and `recover_and_complete`) but currently has known correctness gaps around local
-recovery state and accepted-ballot selection. Treat the implementation as a prototype until those gaps are closed.
+Восстановление реализовано через `Recover` RPC и `recover_and_complete`.
 
-## Durable State
+## Устойчивое состояние
 
 ```mermaid
 flowchart TB
-    metadata_dir["metadata_dir"] --> object_db["object metadata SQLite"]
-    metadata_dir --> journal_db["consensus journal SQLite"]
-    metadata_dir --> node_id["node_id file"]
-    blob_dir["blob_dir"] --> blobs["committed blob files"]
-    blob_dir --> temp["temporary/aborted blob writes"]
+    metadata_dir["metadata_dir"] --> object_db["SQLite метаданных объектов"]
+    metadata_dir --> journal_db["SQLite журнала консенсуса"]
+    metadata_dir --> node_id["файл node_id"]
+    blob_dir["blob_dir"] --> blobs["зафиксированные blob-файлы"]
+    blob_dir --> temp["временные/прерванные blob-записи"]
 ```
 
-Durability rules currently implemented:
+Реализованные правила устойчивости:
 
-- Blob bytes are committed before object metadata references the blob.
-- Consensus results are journaled before metadata side effects are applied.
-- On startup, applied journal entries are replayed into object metadata in timestamp order.
+- blob-байты фиксируются до того, как объектные метаданные начинают ссылаться на blob;
+- результаты консенсуса журналируются до применения побочных эффектов к метаданным;
+- при старте примененные записи журнала переигрываются в объектные метаданные в порядке timestamp.
 
-Known durability gap: generated node identity persistence is a plain file write and is not yet atomic/fsynced.
+Известный пробел: сгенерированная идентичность узла пока сохраняется обычной записью файла, без
+атомарной замены и явного `fsync`.
 
-## Maelstrom Adapter
+## Адаптер Maelstrom
 
-`so3-maelstrom` reuses `so3-core` but replaces tonic peer transport with Maelstrom JSON messages:
+`so3-maelstrom` повторно использует `so3-core`, но заменяет tonic-транспорт между узлами на
+JSON-сообщения stdin/stdout Maelstrom:
 
 ```mermaid
 flowchart LR
     maelstrom["Maelstrom stdin/stdout"] --> runtime["SharedRuntime"]
     runtime --> leader{"node_ids.first()?"}
-    leader -->|leader| service["MaelstromService"]
-    leader -->|follower| forward["Forward to leader"]
+    leader -->|лидер| service["MaelstromService"]
+    leader -->|последователь| forward["Переслать лидеру"]
     forward --> service
     service --> core_uc["ObjectUseCaseImpl"]
-    core_uc --> coord["Accord coordinator"]
-    coord --> consensus_json["Consensus JSON messages\nprotobuf payloads"]
-    core_uc --> blob_json["BlobPush/BlobFetch JSON messages"]
+    core_uc --> coord["Accord-координатор"]
+    coord --> consensus_json["Consensus JSON-сообщения\nprotobuf payloads"]
+    core_uc --> blob_json["BlobPush/BlobFetch JSON-сообщения"]
 ```
 
-Important differences from production:
+Важные отличия от production-узла:
 
-- Client requests sent to non-leader Maelstrom nodes are forwarded to `node_ids.first()`.
-- Production `so3` lets any node coordinate requests that arrive at its S3-compatible API.
-- Maelstrom blob push/fetch sends one JSON payload and does not validate declared size or SHA-256 like production tonic
-  blob transport.
-- Maelstrom peer request maps currently wait on oneshot responses without operation deadlines.
-- Maelstrom CAS with `create_if_not_exists=true` performs read then write, so create-if-missing is not atomic under
-  concurrent creates.
+- клиентские запросы, пришедшие на не-лидерные Maelstrom-узлы, пересылаются на `node_ids.first()`;
+- production-бинарь `so3` позволяет любому узлу координировать запросы, пришедшие на его S3-подобный API;
+- Maelstrom blob push/fetch передает один JSON payload и не валидирует объявленный размер и SHA-256 так,
+  как это делает production tonic blob transport;
+- карты ожидающих Maelstrom-запросов сейчас ждут oneshot-ответы без дедлайнов операций;
+- Maelstrom CAS с `create_if_not_exists=true` выполняет read, затем write, поэтому create-if-missing
+  не является атомарным при конкурентных create-операциях.
 
-## Known Limitations
+## Известные ограничения
 
-Current high-priority risks tracked from the audit:
+Основные риски, которые остаются за рамками текущего прототипа:
 
-- Recovery counts the coordinator toward quorum without merging the coordinator's local accepted/committed/applied state
-  into the recovered decision.
-- Recovery responses do not expose accepted ballots, so recovery cannot choose the highest accepted value by ballot.
-- Coordinator-local apply waits for explicit dependencies but does not use the inbound committed-command reorder gate.
-- Accept after a missed PreAccept can discard local conflict dependencies discovered by the accepting replica.
-- Blob repair/fetch paths commit fetched bytes by `blob_id` without verifying expected metadata size and SHA-256.
-- Production tonic clients and Maelstrom pending maps lack per-operation deadlines.
+- локальный `apply` координатора ждет явные зависимости, но не использует тот же reorder gate,
+  что входящий `Apply`;
+- `Accept` после пропущенного `PreAccept` может потерять локальные конфликтные зависимости,
+  обнаруженные принимающей репликой;
+- пути blob repair/fetch фиксируют полученные байты по `blob_id` без проверки ожидаемого размера и SHA-256;
+- production tonic-клиенты и карты ожидающих Maelstrom-запросов не имеют дедлайнов на отдельные операции;
 
-See `AGENTS.md` at the repo root for the full audit checklist.
+Полный список аудита, TODO и пробелов в тестировании находится в [../agents.md](../agents.md).
