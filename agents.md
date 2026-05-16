@@ -6,8 +6,8 @@ conformance, Maelstrom parity, and operational risks that current tests do not c
 
 ## Critical
 
-1. (FIXED) Recovery counts the coordinator as part of the quorum but does not include local replica state in the recovered
-   decision.
+1. (FIXED) Recovery counts the coordinator as part of the quorum but does not include local replica state in the
+   recovered decision.
    `recover_and_complete` records a local recovery ballot, then collects only peer `RecoverSuccess` values and checks
    quorum as `successes.len() + 1` (`crates/core/src/service/consensus_coordinator/service.rs`). Local dependencies,
    local committed/applied state, and local `wait_for` are not merged into the recovered value. This can commit a
@@ -34,8 +34,8 @@ conformance, Maelstrom parity, and operational risks that current tests do not c
    PreAccept quorum can lose conflicts known only by that replica.
 
 5. Blob fetch/repair accepts unverified bytes.
-   Fetch paths stream bytes from the first peer that responds and commit by `blob_id` only, without checking the expected
-   size or SHA-256 from object metadata (`crates/core/src/use_case/object/use_case.rs`,
+   Fetch paths stream bytes from the first peer that responds and commit by `blob_id` only, without checking the
+   expected size or SHA-256 from object metadata (`crates/core/src/use_case/object/use_case.rs`,
    `crates/core/src/use_case/inbound_consensus/use_case.rs`,
    `crates/core/src/service/consensus_coordinator/service.rs`). A corrupt or buggy peer can repair local storage with
    invalid bytes.
@@ -92,8 +92,8 @@ conformance, Maelstrom parity, and operational risks that current tests do not c
 
 - Add consensus journal compaction or snapshotting.
   Applied commands remain in `consensus_journal` forever. Even with indexes, the table grows with every `PUT`, `GET`,
-  `HEAD`, and `DELETE`, increasing SQLite file size, cache churn, startup scans, and conflict-index maintenance. Define a
-  safe retention boundary for applied commands after dependencies/recovery no longer need the full row, then archive,
+  `HEAD`, and `DELETE`, increasing SQLite file size, cache churn, startup scans, and conflict-index maintenance. Define
+  a safe retention boundary for applied commands after dependencies/recovery no longer need the full row, then archive,
   compact, or checkpoint old entries.
 
 - Stop routing every `GET` and `HEAD` through the write-heavy consensus coordinator.
@@ -105,8 +105,8 @@ conformance, Maelstrom parity, and operational risks that current tests do not c
 
 - Add blob garbage collection for overwritten and deleted objects.
   Each write/CAS creates a fresh immutable `BlobId`, while object metadata stores only the current blob
-  (`crates/core/src/repository/metadata/sqlite.rs`, `crates/core/src/repository/blob/fs.rs`). Repeated writes to the same
-  key leave old committed blob files behind, and `DELETE` removes metadata but not historical blobs. Add reference
+  (`crates/core/src/repository/metadata/sqlite.rs`, `crates/core/src/repository/blob/fs.rs`). Repeated writes to the
+  same key leave old committed blob files behind, and `DELETE` removes metadata but not historical blobs. Add reference
   tracking, tombstone-aware cleanup, or a mark-and-sweep pass that is safe with recovery and in-flight consensus.
 
 - Avoid flat committed-blob directories for large stores.
@@ -117,9 +117,9 @@ conformance, Maelstrom parity, and operational risks that current tests do not c
 
 - Parallelize consensus RPC phases to quorum.
   Coordinator `PreAccept`, `Accept`, and `Commit` loops currently await peers sequentially
-  (`crates/core/src/service/consensus_coordinator/service.rs`). In multi-node production this makes phase latency roughly
-  the sum of peer latencies instead of the latency to the fastest quorum. Send requests concurrently, stop when quorum is
-  reached, apply per-RPC deadlines, and drain/cancel the remaining work carefully.
+  (`crates/core/src/service/consensus_coordinator/service.rs`). In multi-node production this makes phase latency
+  roughly the sum of peer latencies instead of the latency to the fastest quorum. Send requests concurrently, stop when 
+  quorum is reached, apply per-RPC deadlines, and drain/cancel the remaining work carefully.
 
 - Reduce small-object fsync amplification or make durability level configurable.
   A single small `PUT` fsyncs blob data, fsyncs the committed directory, updates consensus journal state multiple times,
@@ -131,9 +131,9 @@ conformance, Maelstrom parity, and operational risks that current tests do not c
 
 - Update k6 methodology to separate fresh-run performance from aging behavior.
   A 30-run benchmark against one long-lived process and one `SO3_DATA_DIR` measures storage/journal aging as much as
-  steady-state release performance. Extend `scripts/k6/run-benchmark.sh` with a mode that starts `target/release/so3`
-  on a fresh temp data dir for each run, samples CPU/RSS for that run, stops the process, and reports both fresh-run and
-  long-lived aging aggregates separately.
+  steady-state release performance. `scripts/k6/run-backend-benchmark.py --backend so3` now starts `target/release/so3`
+  on a fresh temp data dir for each run, samples CPU/RSS for that run, stops the process, and reports fresh-run
+  aggregates. Long-lived aging aggregates are still a separate possible follow-up.
 
 ## Test Gaps
 

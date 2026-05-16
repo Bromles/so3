@@ -222,11 +222,44 @@ package "crates/core::domain" {
     }
 }
 
+package "crates/core::proto" {
+    class mappers {
+        +pre_accept_req_to_proto()
+        +pre_accept_req_to_domain()
+        +apply_res_to_proto()
+        +apply_res_to_domain()
+        +object_command_to_proto()
+        +command_result_to_domain()
+    }
+
+    class consensus_proto <<prost>> {
+        +PreAcceptRequest
+        +AcceptRequest
+        +CommitRequest
+        +ApplyRequest
+        +RecoverRequest
+    }
+
+    class blob_proto <<prost>> {
+        +StoreBlobHeader
+        +StoreBlobChunk
+        +StoreBlobFooter
+        +FetchBlobRequest
+    }
+}
+
 package "crates/so3-maelstrom" {
     class SharedRuntime {
         +is_coordinator(): bool
         +coordinator_id(): &str
         +send_message()
+    }
+
+    class SharedState {
+        +node_id: String
+        +pending_consensus: HashMap
+        +pending_blobs: HashMap
+        +next_msg_id: AtomicU64
     }
 
     class MaelstromService {
@@ -271,7 +304,9 @@ ObjectApiController --> ObjectUseCaseImpl
 TonicRpcServer --> ConsensusTransportService
 TonicRpcServer --> BlobService
 ConsensusTransportService --> InboundConsensusUseCaseImpl
+ConsensusTransportService --> mappers
 BlobService --> BlobUseCaseImpl
+BlobService --> blob_proto
 
 ObjectUseCaseImpl --> AccordConsensusCoordinatorService
 ObjectUseCaseImpl --> FileSystemBlobRepository
@@ -282,6 +317,8 @@ AccordConsensusCoordinatorService --> SqliteObjectMetadataRepository
 AccordConsensusCoordinatorService --> FileSystemBlobRepository
 AccordConsensusCoordinatorService --> ConsensusTransportClient
 AccordConsensusCoordinatorService --> BlobClient
+ConsensusTransportClient --> mappers
+BlobClient --> blob_proto
 AccordConsensusCoordinatorService ..> ObjectCommand
 AccordConsensusCoordinatorService ..> CommandResult
 AccordConsensusCoordinatorService ..> CommandId
@@ -297,12 +334,14 @@ SqliteConsensusJournal --> JournalState
 StoredObject *-- ObjectMetadata
 CommandResult --> ObjectMetadata
 
+SharedRuntime *-- SharedState
 SharedRuntime --> MaelstromService
 SharedRuntime --> InboundConsensusUseCaseImpl
 SharedRuntime --> FileSystemBlobRepository
 MaelstromService --> ObjectUseCaseImpl
 AccordConsensusCoordinatorService --> MaelstromConsensusPeerClient
 ObjectUseCaseImpl --> MaelstromBlobPeerClient
+MaelstromConsensusPeerClient --> mappers
 
 note right of AccordConsensusCoordinatorService
 Текущие фазы:
@@ -320,6 +359,8 @@ note bottom of SharedRuntime
 - followers пересылают клиентские команды
 - consensus payloads используют core protobuf
 - blob payloads являются одиночными JSON byte arrays
+- SharedState хранит pending consensus/blob,
+  SharedRuntime хранит pending forward
 end note
 
 @enduml

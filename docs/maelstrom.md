@@ -117,7 +117,8 @@ Maelstrom запускает каждый узел отдельным проце
 
 ## Последняя проверка
 
-Локальные запуски от 2026-05-05 с `target/release/so3-maelstrom` прошли Knossos (`:valid? true`)
+Последняя локальная проверка Maelstrom зафиксирована в [results.md](results.md) как 2026-05-15.
+Сводные результаты запусков с `target/release/so3-maelstrom` прошли Knossos (`:valid? true`)
 для следующих сценариев:
 
 | Сценарий              | Узлы | Rate | Concurrency | Nemesis        | Ops |  Ok | Fail | Info | Результат      |

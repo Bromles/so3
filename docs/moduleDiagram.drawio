@@ -19,7 +19,7 @@
         <mxCell id="coordinator" value="Accord-координатор&lt;br&gt;PreAccept / Accept / Commit / Apply / Recover" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14;fontStyle=1" parent="1" vertex="1">
           <mxGeometry x="850" y="80" width="270" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="peer_clients" value="Tonic-клиенты узлов&lt;br&gt;consensus + blob" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=14" parent="1" vertex="1">
+        <mxCell id="peer_clients" value="Tonic-клиенты узлов&lt;br&gt;consensus + blob + proto" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=14" parent="1" vertex="1">
           <mxGeometry x="1180" y="80" width="220" height="70" as="geometry" />
         </mxCell>
         <mxCell id="rpc_api" value="Приватный tonic RPC&lt;br&gt;ConsensusTransport + BlobService" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=14" parent="1" vertex="1">
@@ -46,13 +46,13 @@
         <mxCell id="maelstrom_io" value="Maelstrom stdin/stdout&lt;br&gt;сообщения lin-kv" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#f8cecc;strokeColor=#b85450;fontSize=14;fontStyle=1" parent="1" vertex="1">
           <mxGeometry x="40" y="620" width="210" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="shared_runtime" value="SharedRuntime&lt;br&gt;пересылка лидеру + pending maps" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=14" parent="1" vertex="1">
+        <mxCell id="shared_runtime" value="SharedRuntime + SharedState&lt;br&gt;маршрутизация лидеру + pending maps" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=14" parent="1" vertex="1">
           <mxGeometry x="310" y="620" width="240" height="70" as="geometry" />
         </mxCell>
         <mxCell id="maelstrom_service" value="MaelstromService&lt;br&gt;адаптер read / write / cas" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14" parent="1" vertex="1">
           <mxGeometry x="610" y="620" width="230" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="maelstrom_peers" value="Maelstrom-клиенты узлов&lt;br&gt;payloads в JSON" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=14" parent="1" vertex="1">
+        <mxCell id="maelstrom_peers" value="Maelstrom-клиенты узлов&lt;br&gt;JSON + core protobuf payloads" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=14" parent="1" vertex="1">
           <mxGeometry x="900" y="620" width="250" height="70" as="geometry" />
         </mxCell>
         <mxCell id="maelstrom_storage" value="Устойчивое состояние узла&lt;br&gt;metadata/&lt;node_id&gt; + blobs/&lt;node_id&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#f5f5f5;strokeColor=#666666;fontSize=14" parent="1" vertex="1">
@@ -155,11 +155,7 @@
         <mxCell id="m6" value="" style="endArrow=block;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle" parent="1" source="shared_runtime" target="maelstrom_storage" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="2" value="Text" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" vertex="1" connectable="0" parent="m6">
-          <mxGeometry x="0.4455" y="-6" relative="1" as="geometry">
-            <mxPoint as="offset" />
-          </mxGeometry>
-        </mxCell>
+
       </root>
     </mxGraphModel>
   </diagram>

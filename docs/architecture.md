@@ -10,11 +10,13 @@
 flowchart TB
     so3["crates/so3\nбинарный файл узла"] --> core["crates/core\nобщая реализация"]
     maelstrom["crates/so3-maelstrom\nадаптер Maelstrom"] --> core
+    core --> node["node\nконфигурация и сборка runtime"]
     core --> api["api\nS3-подобный Axum + tonic RPC"]
     core --> use_case["use_case\nобъекты, входящий консенсус, blob, идентичность"]
     core --> service["service\nкоординатор Accord"]
     core --> repo["repository\nSQLite + файловая система"]
     core --> domain["domain\nкоманды, метаданные, консенсус, blob ID"]
+    core --> proto["proto\nprotobuf-модели и mappers"]
     core --> client["client\ntonic-клиенты узлов"]
 ```
 

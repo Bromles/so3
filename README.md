@@ -26,7 +26,8 @@ Accord-подобную реализацию консенсуса без выд�
 
 ## Возможности прототипа
 
-- S3-подобный API: маршрут `/{bucket}/{*key}` с методами `GET`, `HEAD`, `PUT` и `DELETE`.
+- Подмножество S3 API: маршрут `/{bucket}/{*key}` с методами `GET`, `HEAD`, `PUT` и `DELETE` для обработки `PutObject`, 
+  `GetObject`, `DeleteObject`.
 - Приватный RPC API на gRPC для консенсуса и передачи blob-данных.
 - Репликация: каждый узел хранит полную копию данных; шардирование по ключам не используется.
 - Хранилище состояния: метаданные объектов и журнал консенсуса хранятся в SQLite, содержимое
@@ -111,13 +112,25 @@ cargo clippy --workspace --all-targets -- -W clippy::pedantic
 
 Maelstrom-скрипты, сценарии запуска и ограничения описаны в [docs/maelstrom.md](docs/maelstrom.md).
 
-Для нагрузочных проверок следует использовать release-сборку. Скрипт k6 по умолчанию отказывается
-измерять обнаруженный debug-процесс `so3` и печатает агрегаты CPU/RSS:
+Для нагрузочных проверок следует использовать release-сборку. Общий k6 runner отказывается
+измерять non-release `so3` и печатает агрегаты CPU/RSS:
 
 ```bash
 cargo build --release -p so3
-SO3_OBJECT_ADDR=127.0.0.1:3301 SO3_RPC_ADDR=127.0.0.1:4301 target/release/so3
-SO3_ADDR=http://127.0.0.1:3301 bash scripts/k6/run-benchmark.sh --runs 30
+python scripts/k6/run-backend-benchmark.py --backend so3 --runs 30
+```
+
+Для сравнения с S3-совместимыми хранилищами используется тот же runner с тем же k6-сценарием,
+теми же настройками по умолчанию и чистой директорией данных на каждый запуск. MinIO и Garage
+запускаются через Docker Compose. По-умолчанию используются
+актуальные Docker-образы `quay.io/minio/minio:latest` и стабильный `dxflrs/garage:v2.3.0`
+(`dxflrs/garage:latest` не публикуется); конкретные образы можно переопределить через
+`MINIO_IMAGE` и `GARAGE_IMAGE`.
+
+```bash
+python scripts/k6/run-backend-benchmark.py --backend so3 --runs 30 --outdir /tmp/so3-k6-clean-30-json
+python scripts/k6/run-backend-benchmark.py --backend minio --runs 30 --outdir /tmp/minio-k6-clean-30-json
+python scripts/k6/run-backend-benchmark.py --backend garage --runs 30 --outdir /tmp/garage-k6-clean-30-json
 ```
 
 Исторические заметки по результатам находятся в [docs/results.md](docs/results.md).

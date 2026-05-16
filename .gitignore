@@ -5,5 +5,4 @@
 /.tools
 /var/maelstrom
 
-/tla/*
-!/tla/*.tla
+venv
