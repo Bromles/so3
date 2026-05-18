@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import hashlib
+import importlib
 import json
 import random
 import threading
@@ -14,9 +15,12 @@ from pathlib import Path
 from typing import Any
 
 try:
-    import boto3
-    from botocore.client import Config
-    from botocore.exceptions import BotoCoreError, ClientError
+    boto3: Any | None = importlib.import_module("boto3")
+    botocore_client = importlib.import_module("botocore.client")
+    botocore_exceptions = importlib.import_module("botocore.exceptions")
+    Config: Any | None = botocore_client.Config
+    BotoCoreError: type[Exception] = botocore_exceptions.BotoCoreError
+    ClientError: type[Exception] = botocore_exceptions.ClientError
 except ImportError:  # pragma: no cover - environment-specific failure
     boto3 = None
     Config = None
@@ -33,9 +37,10 @@ BOTO3_REQUIRED_MESSAGE = (
 )
 
 
-def require_boto3() -> None:
+def require_boto3() -> tuple[Any, Any]:
     if boto3 is None or Config is None:
         raise RuntimeError(BOTO3_REQUIRED_MESSAGE)
+    return boto3, Config
 
 
 def utc_now() -> str:
@@ -48,7 +53,8 @@ def sha256_hex(data: bytes) -> str:
 
 def status_from_exception(error: Exception) -> int | None:
     if isinstance(error, ClientError):
-        metadata = error.response.get("ResponseMetadata", {})
+        response = getattr(error, "response", {})
+        metadata = response.get("ResponseMetadata", {})
         status = metadata.get("HTTPStatusCode")
         if isinstance(status, int):
             return status
@@ -57,7 +63,8 @@ def status_from_exception(error: Exception) -> int | None:
 
 def error_code(error: Exception) -> str:
     if isinstance(error, ClientError):
-        code = error.response.get("Error", {}).get("Code")
+        response = getattr(error, "response", {})
+        code = response.get("Error", {}).get("Code")
         if code:
             return str(code)
     return type(error).__name__
@@ -97,18 +104,18 @@ class HistoryWriter:
 
 class Boto3S3ClientPool:
     def __init__(self, entry_urls: list[str]) -> None:
-        require_boto3()
+        boto3_module, config_cls = require_boto3()
         self.clients = [
             {
                 "entry_node": f"node{index + 1}",
                 "endpoint": endpoint,
-                "client": boto3.client(
+                "client": boto3_module.client(
                     "s3",
                     endpoint_url=endpoint,
                     aws_access_key_id=DEFAULT_ACCESS_KEY,
                     aws_secret_access_key=DEFAULT_SECRET_KEY,
                     region_name=DEFAULT_REGION,
-                    config=Config(
+                    config=config_cls(
                         signature_version="s3v4",
                         s3={"addressing_style": "path"},
                         retries={"total_max_attempts": 1, "mode": "standard"},

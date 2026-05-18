@@ -23,7 +23,9 @@ SO3 рассматривается как экспериментальный pro
     - создает единый каталог результата;
     - пишет `manifest.json`, `events.jsonl`, `summary.json`, `aggregate-summary.json`, `report.md`;
     - поддерживает `k6-mixed`, `e1-correctness`, `e3-degradation`, `e4-hot-key`, `e5-leaderless`, `e6-recovery` как
-      CLI-сценарии.
+      CLI-сценарии;
+    - для `e3-degradation` и `e6-recovery` умеет выполнять phase-aware crash/restart timeline:
+      `baseline -> fail -> degraded -> recover -> recovery -> restored`.
 - Реализованы базовые модули research harness:
     - `cluster.py` — start/stop/kill/restart узлов, wait-ready, resource sampling через обязательный `psutil`;
     - `topology.py` — генерация 1/3/5/7-node topology, ports, node ids, peer lists, data dirs;
@@ -58,12 +60,14 @@ SO3 рассматривается как экспериментальный pro
 
 Частично сделано / остается доработать:
 
-- В `stats.py` есть базовая агрегация числовых метрик, но phase-aware aggregation для `degraded`, `recovery`, `restored`
-  пока не реализована полноценно.
-- Fault/recovery/hot-key/leaderless сценарии пока имеют workload-файлы и CLI aliases, но полноценная оркестрация фаз,
-  fault injection timeline и normalized scenario-vs-baseline метрики еще впереди.
+- В `stats.py` есть базовая агрегация числовых метрик и phase-aware aggregation для `baseline`, `degraded`,
+  `recovery`, `restored`; доверительные интервалы пока не добавлены.
+- Fault/recovery сценарии уже имеют базовую phase-aware оркестрацию crash/restart и normalized phase-vs-baseline
+  метрики; hot-key/leaderless сценарии пока в основном представлены workload-файлами и CLI aliases.
 - Server-side observability (`fast/slow/recovery path`, conflicts, dependencies, quorum wait и т.п.) еще не реализована.
-- Maelstrom hidden-leader behavior еще не исправлен.
+- Maelstrom hidden-leader behavior исправлен для обычных client requests: узел, получивший клиентскую операцию,
+  координирует ее локально и пишет structured `tracing` log через подключенный logger с `entry_node`,
+  `coordinator_node`, `operation_id`, `operation`, `source`, `consensus_path`.
 
 ## Обязательные принципы
 
@@ -267,8 +271,8 @@ harness.
 
 ## Этап 2. Реализовать статистический модуль
 
-Статус: частично сделано. Базовый `stats.py`, `aggregate-summary.json` и markdown-таблица в `report.md` реализованы;
-phase-aware aggregation для `degraded`, `recovery`, `restored` еще нужно расширить.
+Статус: в основном сделано. Базовый `stats.py`, `aggregate-summary.json` и markdown-таблица в `report.md` реализованы;
+добавлены отдельные `phase_metrics` и `relative_metrics` для `baseline`, `degraded`, `recovery`, `restored`.
 
 Цель: все числовые результаты агрегируются одинаково и воспроизводимо.
 
@@ -384,10 +388,16 @@ phase-aware aggregation для `degraded`, `recovery`, `restored` еще нуж�
 
 ## Этап 5. Исправить Maelstrom path для leaderless-проверок
 
+Статус: базовый hidden-leader path исправлен. Обычные client requests больше не форвардятся на первый узел; каждый
+Maelstrom-узел использует свой локальный `AccordConsensusCoordinatorService`. Coordination observability пишется через
+структурированный `tracing::info!` лог с `entry_node`, `coordinator_node`, `operation_id`, `operation`, `source`,
+`consensus_path`. Осталось расширить maelstrom scripts для 30-run fault/leaderless сценариев и majority/minority
+partition checks.
+
 Цель: Maelstrom не должен скрыто превращать систему в leader-based вариант.
 
-Проблема: текущий `so3-maelstrom` форвардит client operations на первый узел. Для проверки отсутствия постоянного лидера
-это некорректно.
+Проблема была в том, что `so3-maelstrom` форвардил client operations на первый узел. Для проверки отсутствия
+постоянного лидера это некорректно.
 
 Работы:
 
@@ -462,6 +472,10 @@ phase-aware aggregation для `degraded`, `recovery`, `restored` еще нуж�
 Критерий успеха: safety-инварианты не нарушаются ни в одном supported сценарии.
 
 ## Этап 8. Реализовать E3. Degradation under node failures
+
+Статус: частично сделано. `run-scenario.py e3-degradation` выполняет последовательность фаз с crash/restart выбранного
+узла, пишет отдельные `k6-summary-<phase>.json`, timeline events и normalized phase-vs-baseline метрики. Остается
+расширить stabilization/recovery-time анализ и конфигурационные matrix-runs по 3/5/7 узлам.
 
 Цель: показать предсказуемую динамику при отказах узлов.
 
@@ -538,6 +552,10 @@ phase-aware aggregation для `degraded`, `recovery`, `restored` еще нуж�
 Критерий успеха: нет узла, отказ которого статистически и принципиально хуже остальных как отказ постоянного лидера.
 
 ## Этап 11. Реализовать E6. Recovery and lagging node
+
+Статус: частично сделано. `run-scenario.py e6-recovery` использует тот же phase-aware crash/restart runner с
+persistent data dirs внутри прогона и отдельными фазами `degraded`, `recovery`, `restored`. Остается добавить сценарии
+долгого отставания, падения во время синхронизации и verifier-проверку сохранности подтвержденных записей.
 
 Цель: проверить безопасное возвращение отставшего узла.
 

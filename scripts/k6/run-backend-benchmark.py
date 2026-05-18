@@ -12,6 +12,7 @@ Dependencies:
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import math
 import os
@@ -25,10 +26,10 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Any, Iterable, Sequence
 
 try:
-    import psutil
+    psutil: Any | None = importlib.import_module("psutil")
 except ImportError:  # pragma: no cover - environment-specific failure
     psutil = None
 
@@ -38,9 +39,10 @@ PSUTIL_REQUIRED_MESSAGE = (
 )
 
 
-def require_psutil() -> None:
+def require_psutil() -> Any:
     if psutil is None:
         raise RuntimeError(PSUTIL_REQUIRED_MESSAGE)
+    return psutil
 
 
 SUPPORTED_BACKENDS = {"so3", "so3-cluster"}
@@ -346,7 +348,7 @@ def cleanup_run_data_dir(settings: Settings) -> None:
 
 class ResourceSampler:
     def __init__(self, settings: Settings) -> None:
-        require_psutil()
+        self.psutil = require_psutil()
         self.settings = settings
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self.run, daemon=True)
@@ -375,7 +377,7 @@ class ResourceSampler:
         processes = []
         for pid in pids:
             try:
-                proc = psutil.Process(pid)
+                proc = self.psutil.Process(pid)
                 proc.cpu_percent(None)
                 processes.append(proc)
             except Exception:

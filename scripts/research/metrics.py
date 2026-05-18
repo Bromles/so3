@@ -63,7 +63,10 @@ def normalize_counter(k6: dict[str, Any], metric_name: str) -> dict[str, float]:
 def summary_from_k6_export(path: Path) -> dict[str, Any]:
     with path.open(encoding="utf-8") as f:
         k6 = json.load(f)
+    return summary_from_k6_payload(k6)
 
+
+def summary_from_k6_payload(k6: dict[str, Any]) -> dict[str, Any]:
     metrics: dict[str, Any] = {
         "latency": {},
         "throughput": {},
@@ -102,6 +105,112 @@ def summary_from_k6_export(path: Path) -> dict[str, Any]:
         )
 
     return metrics
+
+
+def safe_divide(
+    numerator: float | int | None, denominator: float | int | None
+) -> float | None:
+    if numerator is None or denominator is None:
+        return None
+    denominator = float(denominator)
+    if denominator == 0.0:
+        return None
+    return float(numerator) / denominator
+
+
+def _get_number(payload: dict[str, Any], path: tuple[str, ...]) -> float | None:
+    current: Any = payload
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    if isinstance(current, bool) or not isinstance(current, (int, float)):
+        return None
+    return float(current)
+
+
+def _put_number(
+    payload: dict[str, Any], path: tuple[str, ...], value: float | None
+) -> None:
+    if value is None:
+        return
+    current = payload
+    for key in path[:-1]:
+        current = current.setdefault(key, {})
+    current[path[-1]] = value
+
+
+def relative_to_baseline(phases: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Compute phase-vs-baseline normalized metrics for k6 phase summaries."""
+
+    baseline = phases.get("baseline")
+    if not baseline:
+        return {}
+
+    relative: dict[str, Any] = {}
+    baseline_http_rate = _get_number(baseline, ("throughput", "http_reqs", "rate"))
+    baseline_success_rate = _get_number(baseline, ("successes", "s3_successes", "rate"))
+    baseline_timeout_rate = _get_number(baseline, ("errors", "s3_timeouts", "rate"))
+
+    for phase, phase_metrics in sorted(phases.items()):
+        if phase == "baseline":
+            continue
+        phase_relative: dict[str, Any] = {}
+        _put_number(
+            phase_relative,
+            ("throughput", "http_reqs_rate_ratio"),
+            safe_divide(
+                _get_number(phase_metrics, ("throughput", "http_reqs", "rate")),
+                baseline_http_rate,
+            ),
+        )
+        _put_number(
+            phase_relative,
+            ("success", "s3_success_rate_ratio"),
+            safe_divide(
+                _get_number(phase_metrics, ("successes", "s3_successes", "rate")),
+                baseline_success_rate,
+            ),
+        )
+        _put_number(
+            phase_relative,
+            ("timeout", "s3_timeout_rate_ratio"),
+            safe_divide(
+                _get_number(phase_metrics, ("errors", "s3_timeouts", "rate")),
+                baseline_timeout_rate,
+            ),
+        )
+        for op in ("put", "get", "head", "delete"):
+            _put_number(
+                phase_relative,
+                ("latency", op, "p95_multiplier"),
+                safe_divide(
+                    _get_number(phase_metrics, ("latency", op, "p95_ms")),
+                    _get_number(baseline, ("latency", op, "p95_ms")),
+                ),
+            )
+            _put_number(
+                phase_relative,
+                ("latency", op, "p99_multiplier"),
+                safe_divide(
+                    _get_number(phase_metrics, ("latency", op, "p99_ms")),
+                    _get_number(baseline, ("latency", op, "p99_ms")),
+                ),
+            )
+        if phase_relative:
+            relative[phase] = phase_relative
+    return relative
+
+
+def summary_from_k6_phase_exports(phase_exports: dict[str, Path]) -> dict[str, Any]:
+    phases = {
+        phase: summary_from_k6_export(path)
+        for phase, path in sorted(phase_exports.items())
+    }
+    return {
+        "phases": phases,
+        "relative": relative_to_baseline(phases),
+    }
 
 
 def write_run_summary(

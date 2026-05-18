@@ -1,10 +1,8 @@
 use std::sync::Arc;
 
-use tokio::sync::oneshot;
+use so3_core::domain::error::So3Result;
 
-use so3_core::domain::error::{So3Error, So3Result};
-
-use crate::protocol::{ClientRequest, Message, RequestBody, ResponseBody, CRASH_CODE};
+use crate::protocol::{ClientRequest, Message, RequestBody, ResponseBody};
 use crate::runtime::types::SharedRuntime;
 
 pub(super) async fn handle_client_message(
@@ -13,39 +11,13 @@ pub(super) async fn handle_client_message(
     msg_id: u64,
     request: ClientRequest,
 ) -> So3Result<()> {
-    if shared.is_coordinator() {
-        let response = execute_leader_command(&shared, msg_id, request).await;
-        shared.send_message(&Message {
-            src: shared.shared.node_id.clone(),
-            dest: client,
-            body: response,
-        })
-    } else {
-        let forward_msg_id = shared.shared.next_msg_id();
-        let (tx, rx) = oneshot::channel();
-        shared
-            .pending_forwards
-            .lock()
-            .unwrap()
-            .insert(forward_msg_id, tx);
-        shared.send_message(&Message {
-            src: shared.shared.node_id.clone(),
-            dest: shared.coordinator_id().to_owned(),
-            body: RequestBody::Forward {
-                msg_id: forward_msg_id,
-                client_msg_id: msg_id,
-                request,
-            },
-        })?;
-        let response = rx
-            .await
-            .map_err(|_| So3Error::InvalidRequest("forward response channel dropped".into()))??;
-        shared.send_message(&Message {
-            src: shared.shared.node_id.clone(),
-            dest: client,
-            body: response,
-        })
-    }
+    log_coordination(&shared, msg_id, client_request_kind(&request), "client");
+    let response = execute_local_command(&shared, msg_id, request).await;
+    shared.send_message(&Message {
+        src: shared.shared.node_id.clone(),
+        dest: client,
+        body: response,
+    })
 }
 
 pub(super) async fn handle_forward(
@@ -55,19 +27,13 @@ pub(super) async fn handle_forward(
     client_msg_id: u64,
     request: ClientRequest,
 ) -> So3Result<()> {
-    if !shared.is_coordinator() {
-        return shared.send_message(&Message {
-            src: shared.shared.node_id.clone(),
-            dest: sender,
-            body: RequestBody::Error {
-                in_reply_to: msg_id,
-                code: CRASH_CODE,
-                text: "only the leader can handle forwarded client requests".to_owned(),
-            },
-        });
-    }
-
-    let response = execute_leader_command(&shared, client_msg_id, request).await;
+    log_coordination(
+        &shared,
+        client_msg_id,
+        client_request_kind(&request),
+        "forward",
+    );
+    let response = execute_local_command(&shared, client_msg_id, request).await;
     shared.send_message(&Message {
         src: shared.shared.node_id.clone(),
         dest: sender,
@@ -78,7 +44,7 @@ pub(super) async fn handle_forward(
     })
 }
 
-async fn execute_leader_command(
+async fn execute_local_command(
     shared: &Arc<SharedRuntime>,
     msg_id: u64,
     request: ClientRequest,
@@ -100,4 +66,30 @@ async fn execute_leader_command(
                 .await
         }
     }
+}
+
+fn client_request_kind(request: &ClientRequest) -> &'static str {
+    match request {
+        ClientRequest::Read { .. } => "read",
+        ClientRequest::Write { .. } => "write",
+        ClientRequest::Cas { .. } => "cas",
+    }
+}
+
+fn log_coordination(
+    shared: &SharedRuntime,
+    msg_id: u64,
+    operation: &'static str,
+    source: &'static str,
+) {
+    tracing::info!(
+        coordination_event = "client_operation",
+        source,
+        operation_id = msg_id,
+        entry_node = %shared.shared.node_id,
+        coordinator_node = %shared.shared.node_id,
+        operation,
+        consensus_path = "local",
+        "maelstrom coordination"
+    );
 }

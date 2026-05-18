@@ -33,5 +33,22 @@ def write_report(result_dir: Path, aggregate: dict[str, Any]) -> Path:
     lines.extend(
         ["## Aggregated numeric metrics", "", stats.markdown_table(aggregate), ""]
     )
+
+    phase_metrics = aggregate.get("phase_metrics", {})
+    if phase_metrics:
+        lines.extend(["## Phase-aware metrics", ""])
+        for phase, metrics in sorted(phase_metrics.items()):
+            lines.extend(
+                [f"### `{phase}`", "", stats.markdown_table_for_metrics(metrics), ""]
+            )
+
+    relative_metrics = aggregate.get("relative_metrics", {})
+    if relative_metrics:
+        lines.extend(["## Normalized phase-vs-baseline metrics", ""])
+        for phase, metrics in sorted(relative_metrics.items()):
+            lines.extend(
+                [f"### `{phase}`", "", stats.markdown_table_for_metrics(metrics), ""]
+            )
+
     report_path.write_text("\n".join(lines), encoding="utf-8")
     return report_path

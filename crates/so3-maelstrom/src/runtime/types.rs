@@ -54,7 +54,6 @@ pub(super) enum BlobResponse {
 }
 
 pub(super) struct SharedRuntime {
-    pub node_ids: Vec<String>,
     pub service: Service,
     pub local_handler: Arc<Handler>,
     pub local_blobs: Arc<BlobRepo>,
@@ -63,16 +62,6 @@ pub(super) struct SharedRuntime {
 }
 
 impl SharedRuntime {
-    pub(super) fn is_coordinator(&self) -> bool {
-        self.shared.node_id == self.coordinator_id()
-    }
-
-    pub(super) fn coordinator_id(&self) -> &str {
-        self.node_ids
-            .first()
-            .map_or(self.shared.node_id.as_str(), String::as_str)
-    }
-
     pub(super) fn send_message(&self, message: &Message<impl Serialize>) -> So3Result<()> {
         let encoded =
             serde_json::to_vec(message).map_err(|e| So3Error::Serialization(e.to_string()))?;

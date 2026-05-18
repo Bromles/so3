@@ -98,16 +98,56 @@ def flatten_numeric_values(
     return values
 
 
+def nested_numeric_buckets(payload: dict[str, Any]) -> dict[str, list[float]]:
+    buckets: dict[str, list[float]] = {}
+    for metric_name, value in flatten_numeric_values(payload).items():
+        buckets.setdefault(metric_name, []).append(value)
+    return buckets
+
+
+def merge_numeric_buckets(
+    target: dict[str, list[float]], source: dict[str, list[float]]
+) -> None:
+    for metric_name, values in source.items():
+        target.setdefault(metric_name, []).extend(values)
+
+
+def stats_by_bucket(buckets: dict[str, list[float]]) -> dict[str, Any]:
+    return {
+        metric_name: descriptive_stats(values)
+        for metric_name, values in sorted(buckets.items())
+    }
+
+
 def aggregate_run_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
     successful = [summary for summary in summaries if summary.get("status") == "passed"]
     failed = [summary for summary in summaries if summary.get("status") != "passed"]
 
     by_metric: dict[str, list[float]] = {}
+    by_phase: dict[str, dict[str, list[float]]] = {}
+    by_relative_phase: dict[str, dict[str, list[float]]] = {}
     for summary in successful:
-        for metric_name, value in flatten_numeric_values(
-            summary.get("metrics", {})
-        ).items():
+        summary_metrics = summary.get("metrics", {})
+        for metric_name, value in flatten_numeric_values(summary_metrics).items():
             by_metric.setdefault(metric_name, []).append(value)
+
+        phases = summary_metrics.get("phases", {})
+        if isinstance(phases, dict):
+            for phase, phase_metrics in phases.items():
+                if isinstance(phase_metrics, dict):
+                    merge_numeric_buckets(
+                        by_phase.setdefault(str(phase), {}),
+                        nested_numeric_buckets(phase_metrics),
+                    )
+
+        relative = summary_metrics.get("relative", {})
+        if isinstance(relative, dict):
+            for phase, phase_metrics in relative.items():
+                if isinstance(phase_metrics, dict):
+                    merge_numeric_buckets(
+                        by_relative_phase.setdefault(str(phase), {}),
+                        nested_numeric_buckets(phase_metrics),
+                    )
 
     failed_reasons: dict[str, int] = {}
     for summary in failed:
@@ -121,9 +161,14 @@ def aggregate_run_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
         "runs_failed": len(failed),
         "failed_reasons": failed_reasons,
         "verdict": "passed" if summaries and not failed else "failed",
-        "metrics": {
-            metric_name: descriptive_stats(values)
-            for metric_name, values in sorted(by_metric.items())
+        "metrics": stats_by_bucket(by_metric),
+        "phase_metrics": {
+            phase: stats_by_bucket(buckets)
+            for phase, buckets in sorted(by_phase.items())
+        },
+        "relative_metrics": {
+            phase: stats_by_bucket(buckets)
+            for phase, buckets in sorted(by_relative_phase.items())
         },
     }
 
@@ -145,12 +190,12 @@ def write_aggregate_summary(result_dir: Path) -> dict[str, Any]:
     return aggregate
 
 
-def markdown_table(aggregate: dict[str, Any]) -> str:
+def markdown_table_for_metrics(metrics: dict[str, Any]) -> str:
     lines = [
         "| metric | n | mean | median | stddev | variance | min | max | p90 | p95 | p99 | cv % |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
-    for name, stat in aggregate.get("metrics", {}).items():
+    for name, stat in metrics.items():
 
         def fmt(key: str) -> str:
             value = stat.get(key)
@@ -181,3 +226,7 @@ def markdown_table(aggregate: dict[str, Any]) -> str:
             + " |"
         )
     return "\n".join(lines)
+
+
+def markdown_table(aggregate: dict[str, Any]) -> str:
+    return markdown_table_for_metrics(aggregate.get("metrics", {}))

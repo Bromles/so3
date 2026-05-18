@@ -20,10 +20,10 @@ from typing import Any, Sequence
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[1]
-VERIFY_DIR = REPO_ROOT / "scripts" / "verify"
 sys.path.insert(0, str(SCRIPT_DIR))
-sys.path.insert(0, str(VERIFY_DIR))
+sys.path.insert(0, str(REPO_ROOT))
 
+import faults  # noqa: E402
 import manifest  # noqa: E402
 import metrics  # noqa: E402
 import report  # noqa: E402
@@ -31,7 +31,8 @@ import stats  # noqa: E402
 from cluster import ResourceSampler, So3Cluster, require_psutil  # noqa: E402
 from correctness_driver import CorrectnessDriver, require_boto3  # noqa: E402
 from topology import SUPPORTED_NODE_COUNTS, generate_topology  # noqa: E402
-from verify_history import verify_history_file  # noqa: E402
+
+from scripts.verify.verify_history import verify_history_file  # noqa: E402
 
 DEFAULT_ACCESS_KEY = "so3testkey000000"
 DEFAULT_SECRET_KEY = "so3testsecret0000000000000000000"
@@ -44,6 +45,7 @@ WORKLOAD_SCRIPTS = {
     "e5-leaderless": REPO_ROOT / "scripts" / "k6" / "workloads" / "s3_leaderless.js",
     "e6-recovery": REPO_ROOT / "scripts" / "k6" / "workloads" / "s3_recovery.js",
 }
+PHASED_FAULT_SCENARIOS = {"e3-degradation", "e6-recovery"}
 
 
 def parse_args(argv: Sequence[str]) -> tuple[argparse.Namespace, list[str]]:
@@ -83,6 +85,32 @@ def parse_args(argv: Sequence[str]) -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument("--rpc-base-port", type=int, default=4000)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--duration", default=os.environ.get("DURATION", "30s"))
+    parser.add_argument(
+        "--baseline-duration",
+        default=None,
+        help="override baseline phase duration for phased fault scenarios",
+    )
+    parser.add_argument(
+        "--degraded-duration",
+        default=None,
+        help="override degraded phase duration for phased fault scenarios",
+    )
+    parser.add_argument(
+        "--recovery-duration",
+        default=None,
+        help="override recovery phase duration for phased fault scenarios",
+    )
+    parser.add_argument(
+        "--restored-duration",
+        default=None,
+        help="override restored phase duration for phased fault scenarios",
+    )
+    parser.add_argument(
+        "--fault-node",
+        type=int,
+        default=1,
+        help="1-based node index to crash/restart in phased fault scenarios",
+    )
     parser.add_argument("--vus", type=int, default=int(os.environ.get("VUS", "10")))
     parser.add_argument(
         "--object-size", type=int, default=int(os.environ.get("OBJECT_SIZE", "64"))
@@ -150,6 +178,19 @@ def run_k6(
         subprocess.run(command, env=env, stdout=stdout, stderr=stderr, check=True)
 
 
+def phase_durations(args: argparse.Namespace) -> dict[str, str]:
+    return {
+        "baseline": args.baseline_duration or args.duration,
+        "degraded": args.degraded_duration or args.duration,
+        "recovery": args.recovery_duration or args.duration,
+        "restored": args.restored_duration or args.duration,
+    }
+
+
+def phased_scenario(args: argparse.Namespace) -> bool:
+    return args.scenario in PHASED_FAULT_SCENARIOS
+
+
 def scenario_env(
     args: argparse.Namespace, topology_json: dict[str, Any], run_seed: int
 ) -> dict[str, str]:
@@ -164,6 +205,7 @@ def scenario_env(
     env["VUS"] = str(args.vus)
     env["DURATION"] = args.duration
     env["RESEARCH_SEED"] = str(run_seed)
+    env["RESEARCH_SCENARIO"] = args.scenario
     return env
 
 
@@ -184,6 +226,110 @@ def write_failure_summary(
         status="failed",
         error=f"{type(error).__name__}: {error}",
     )
+
+
+def run_k6_phase(
+    *,
+    args: argparse.Namespace,
+    k6_script: Path,
+    run_dir: Path,
+    env: dict[str, str],
+    extra_k6_args: list[str],
+    phase: str,
+    duration: str,
+    events: manifest.EventLog,
+) -> Path:
+    phase_env = env.copy()
+    phase_env["RESEARCH_PHASE"] = phase
+    phase_env["DURATION"] = duration
+    events.record(f"{phase}_start", duration=duration)
+    export_file = run_dir / f"k6-summary-{phase}.json"
+    run_k6(
+        k6_script=k6_script,
+        export_file=export_file,
+        stdout_file=run_dir / f"k6-{phase}.stdout.log",
+        stderr_file=run_dir / f"k6-{phase}.stderr.log",
+        env=phase_env,
+        extra_args=extra_k6_args,
+        debug=args.debug_k6,
+    )
+    events.record(f"{phase}_end", duration=duration)
+    return export_file
+
+
+def run_phased_fault_k6(
+    *,
+    args: argparse.Namespace,
+    k6_script: Path,
+    run_dir: Path,
+    env: dict[str, str],
+    extra_k6_args: list[str],
+    cluster: So3Cluster,
+    events: manifest.EventLog,
+) -> dict[str, Any]:
+    cluster.node_spec(args.fault_node)
+    durations = phase_durations(args)
+    phase_exports: dict[str, Path] = {}
+
+    phase_exports["baseline"] = run_k6_phase(
+        args=args,
+        k6_script=k6_script,
+        run_dir=run_dir,
+        env=env,
+        extra_k6_args=extra_k6_args,
+        phase="baseline",
+        duration=durations["baseline"],
+        events=events,
+    )
+
+    fault = faults.crash_node(cluster, args.fault_node)
+    events.record("fail", kind=fault.kind, node_index=fault.node_index)
+    phase_exports["degraded"] = run_k6_phase(
+        args=args,
+        k6_script=k6_script,
+        run_dir=run_dir,
+        env=env,
+        extra_k6_args=extra_k6_args,
+        phase="degraded",
+        duration=durations["degraded"],
+        events=events,
+    )
+
+    recovery_start = time.monotonic()
+    recovery = faults.restart_node(cluster, args.fault_node)
+    recovery_seconds = time.monotonic() - recovery_start
+    events.record(
+        "recover",
+        kind=recovery.kind,
+        node_index=recovery.node_index,
+        recovery_seconds=recovery_seconds,
+    )
+    phase_exports["recovery"] = run_k6_phase(
+        args=args,
+        k6_script=k6_script,
+        run_dir=run_dir,
+        env=env,
+        extra_k6_args=extra_k6_args,
+        phase="recovery",
+        duration=durations["recovery"],
+        events=events,
+    )
+
+    events.record("normal_restored", node_index=args.fault_node)
+    phase_exports["restored"] = run_k6_phase(
+        args=args,
+        k6_script=k6_script,
+        run_dir=run_dir,
+        env=env,
+        extra_k6_args=extra_k6_args,
+        phase="restored",
+        duration=durations["restored"],
+        events=events,
+    )
+
+    run_metrics = metrics.summary_from_k6_phase_exports(phase_exports)
+    run_metrics.setdefault("fault", {})["recovery_seconds"] = recovery_seconds
+    return run_metrics
 
 
 def run_one(
@@ -229,7 +375,23 @@ def run_one(
         if not k6_script
         else None,
     }
-    phases = {"baseline": {"duration": args.duration}}
+    phases = (
+        {
+            phase: {"duration": duration}
+            for phase, duration in phase_durations(args).items()
+        }
+        if phased_scenario(args)
+        else {"baseline": {"duration": args.duration}}
+    )
+    fault_injection = (
+        {
+            "kind": "crash_restart",
+            "node_index": args.fault_node,
+            "unsupported": [],
+        }
+        if phased_scenario(args)
+        else None
+    )
     manifest.write_json(
         run_dir / "manifest.json",
         manifest.build_manifest(
@@ -241,6 +403,7 @@ def run_one(
             phases=phases,
             binary_path=args.so3_bin,
             repo_root=REPO_ROOT,
+            fault_injection=fault_injection,
         ),
     )
 
@@ -264,22 +427,37 @@ def run_one(
             interval_secs=args.resource_sample_interval_secs,
         )
         sampler.start()
-        events.record("baseline_start")
         if k6_script is not None:
-            run_k6(
-                k6_script=k6_script,
-                export_file=run_dir / "k6-summary.json",
-                stdout_file=run_dir / "k6.stdout.log",
-                stderr_file=run_dir / "k6.stderr.log",
-                env=env,
-                extra_args=extra_k6_args,
-                debug=args.debug_k6,
-            )
-            run_metrics = metrics.summary_from_k6_export(run_dir / "k6-summary.json")
+            if phased_scenario(args):
+                run_metrics = run_phased_fault_k6(
+                    args=args,
+                    k6_script=k6_script,
+                    run_dir=run_dir,
+                    env=env,
+                    extra_k6_args=extra_k6_args,
+                    cluster=cluster,
+                    events=events,
+                )
+            else:
+                events.record("baseline_start")
+                run_k6(
+                    k6_script=k6_script,
+                    export_file=run_dir / "k6-summary.json",
+                    stdout_file=run_dir / "k6.stdout.log",
+                    stderr_file=run_dir / "k6.stderr.log",
+                    env=env,
+                    extra_args=extra_k6_args,
+                    debug=args.debug_k6,
+                )
+                events.record("baseline_end")
+                run_metrics = metrics.summary_from_k6_export(
+                    run_dir / "k6-summary.json"
+                )
             status = "passed"
         else:
+            events.record("baseline_start")
             driver = CorrectnessDriver(
-                entry_urls=[str(url) for url in topology_json["entry_urls"]],
+                entry_urls=topology.entry_urls,
                 history_path=run_dir / "client-history.jsonl",
                 bucket=args.bucket,
                 seed=run_seed,
@@ -297,7 +475,7 @@ def run_one(
                 len(verifier_result.get("unsupported", []))
             )
             status = "passed" if verifier_result["verdict"] == "passed" else "failed"
-        events.record("baseline_end")
+            events.record("baseline_end")
         metrics.write_run_summary(
             run_dir / "summary.json",
             scenario=args.scenario,
@@ -325,6 +503,12 @@ def main(argv: Sequence[str]) -> int:
     if args.runs < 30 and not args.allow_low_runs:
         print(
             "error: research scenarios require --runs >= 30; use --allow-low-runs for debugging",
+            file=sys.stderr,
+        )
+        return 2
+    if phased_scenario(args) and not 1 <= args.fault_node <= args.node_count:
+        print(
+            f"error: --fault-node must be between 1 and --node-count ({args.node_count})",
             file=sys.stderr,
         )
         return 2

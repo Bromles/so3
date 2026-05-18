@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import shutil
@@ -19,7 +20,7 @@ from typing import Any
 from topology import NodeSpec, Topology
 
 try:
-    import psutil
+    psutil: Any | None = importlib.import_module("psutil")
 except ImportError:  # pragma: no cover - environment-specific failure
     psutil = None
 
@@ -29,9 +30,10 @@ PSUTIL_REQUIRED_MESSAGE = (
 )
 
 
-def require_psutil() -> None:
+def require_psutil() -> Any:
     if psutil is None:
         raise RuntimeError(PSUTIL_REQUIRED_MESSAGE)
+    return psutil
 
 
 @dataclass
@@ -191,7 +193,7 @@ class ResourceSampler:
     def __init__(
         self, cluster: So3Cluster, output_file: Path, interval_secs: float = 1.0
     ) -> None:
-        require_psutil()
+        self.psutil = require_psutil()
         self.cluster = cluster
         self.output_file = output_file
         self.interval_secs = interval_secs
@@ -211,7 +213,7 @@ class ResourceSampler:
         processes: dict[str, Any] = {}
         for managed in self.cluster.nodes.values():
             try:
-                proc = psutil.Process(managed.process.pid)
+                proc = self.psutil.Process(managed.process.pid)
                 proc.cpu_percent(None)
                 processes[managed.spec.name] = proc
             except Exception:

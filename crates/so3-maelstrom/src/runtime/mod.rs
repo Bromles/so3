@@ -83,7 +83,6 @@ pub async fn run(storage_roots: StorageRoots) -> So3Result<()> {
     });
 
     let shared_runtime = Arc::new(SharedRuntime {
-        node_ids,
         service: components.service,
         local_handler: components.local_handler,
         local_blobs: components.local_blobs,
