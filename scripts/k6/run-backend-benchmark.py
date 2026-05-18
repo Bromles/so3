@@ -6,7 +6,7 @@ Usage:
 
 Dependencies:
   - k6 is required for this Python runner
-  - optional: psutil for local process CPU/RSS sampling on all platforms
+  - psutil is required for local process CPU/RSS sampling on all platforms
 """
 
 from __future__ import annotations
@@ -28,9 +28,20 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 try:
-    import psutil  # type: ignore[import-not-found]
-except ImportError:  # pragma: no cover - optional runtime dependency
+    import psutil
+except ImportError:  # pragma: no cover - environment-specific failure
     psutil = None
+
+PSUTIL_REQUIRED_MESSAGE = (
+    "error: psutil is required for backend resource sampling; "
+    "activate scripts/venv or install it with `python -m pip install -r scripts/requirements.txt`"
+)
+
+
+def require_psutil() -> None:
+    if psutil is None:
+        raise RuntimeError(PSUTIL_REQUIRED_MESSAGE)
+
 
 SUPPORTED_BACKENDS = {"so3", "so3-cluster"}
 
@@ -335,6 +346,7 @@ def cleanup_run_data_dir(settings: Settings) -> None:
 
 class ResourceSampler:
     def __init__(self, settings: Settings) -> None:
+        require_psutil()
         self.settings = settings
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self.run, daemon=True)
@@ -351,12 +363,6 @@ class ResourceSampler:
             f.write(f"{int(time.time())} {cpu:.4f} {rss_kib:.4f}\n")
 
     def run(self) -> None:
-        if psutil is None:
-            print(
-                "warning: psutil is not installed; local process CPU/RSS sampling disabled",
-                file=sys.stderr,
-            )
-            return
         if self.settings.managed_processes:
             self.run_psutil([proc.pid for proc in self.settings.managed_processes])
         else:
@@ -369,7 +375,7 @@ class ResourceSampler:
         processes = []
         for pid in pids:
             try:
-                proc = psutil.Process(pid)  # type: ignore[union-attr]
+                proc = psutil.Process(pid)
                 proc.cpu_percent(None)
                 processes.append(proc)
             except Exception:
@@ -539,6 +545,12 @@ def print_summary(settings: Settings) -> None:
 
 def main(argv: Sequence[str]) -> int:
     settings = build_settings(argv)
+    try:
+        require_psutil()
+    except RuntimeError as exc:
+        print(exc, file=sys.stderr)
+        return 2
+
     print(
         f"{settings.backend} S3 benchmark - {settings.runs} runs -> {settings.out_dir}"
     )
