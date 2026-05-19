@@ -1,5 +1,5 @@
 use crate::client::interface::{BlobPeerClient, ConsensusPeerClient};
-use crate::domain::clock::{physical_millis_now, HybridLogicalClock, LogicalTimestamp};
+use crate::domain::clock::{HybridLogicalClock, LogicalTimestamp, physical_millis_now};
 use crate::domain::command::{CasResult, CommandResult, ObjectCommand, ReadResult, WriteResult};
 use crate::domain::consensus::ballot::Ballot;
 use crate::domain::consensus::command_id::{AppliedSet, CommandId, DependencySet};
@@ -18,10 +18,11 @@ use crate::repository::metadata::ObjectMetadataRepository;
 use crate::service::consensus_coordinator::ConsensusCoordinatorService;
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{Mutex, Notify};
-use tokio::time::{sleep, timeout_at, Duration, Instant};
+use tokio::time::{Duration, Instant, sleep, timeout_at};
+use tracing::info;
 
 pub struct AccordConsensusCoordinatorService<CJR, CPC, OMR, BR, BPC>
 where
@@ -382,6 +383,15 @@ where
         }
     }
 
+    fn command_operation(command: &ObjectCommand) -> &'static str {
+        match command {
+            ObjectCommand::Read { .. } => "read",
+            ObjectCommand::Write { .. } => "write",
+            ObjectCommand::Cas { .. } => "cas",
+            ObjectCommand::Delete { .. } => "delete",
+        }
+    }
+
     async fn wait_for_applied(&self, deps: &[CommandId]) -> So3Result<()> {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
@@ -458,6 +468,9 @@ where
             .iter()
             .flat_map(|s| s.wait_for.iter().cloned())
             .collect();
+        let recovery_wait_for_count = wait_for.len();
+        let recovery_response_count = successes.len();
+        let recovery_superseding_count = successes.iter().filter(|s| s.superseding).count();
         self.wait_for_applied(&wait_for).await?;
 
         // If any peer has already committed, use that decision directly.
@@ -467,7 +480,8 @@ where
                 JournalState::Committed | JournalState::Applied
             )
         }) {
-            return self
+            let dependency_count = done.dependencies.0.len();
+            let result = self
                 .complete_from_commit(
                     CommitRequest {
                         command_id: command_id.clone(),
@@ -479,7 +493,23 @@ where
                     peers,
                     quorum,
                 )
-                .await;
+                .await?;
+            info!(
+                coordination_event = "consensus_operation",
+                coordinator_node = self.node_id.as_ref(),
+                origin_node = command_id.origin_node_id.as_ref(),
+                operation_id_sequence = command_id.sequence,
+                operation = Self::command_operation(command),
+                consensus_path = "recovery",
+                quorum,
+                participating_replicas = peers.len() + 1,
+                recovery_response_count,
+                recovery_wait_for_count,
+                recovery_superseding_count,
+                dependency_count,
+                "consensus coordination"
+            );
+            return Ok(result);
         }
 
         // Determine final timestamp and deps from recovery responses.
@@ -553,18 +583,36 @@ where
             )));
         }
 
-        self.complete_from_commit(
-            CommitRequest {
-                command_id: command_id.clone(),
-                command: command.clone(),
-                timestamp_zero: timestamp_zero.clone(),
-                timestamp: final_timestamp,
-                dependencies: DependencySet(refined_deps),
-            },
-            peers,
+        let dependency_count = refined_deps.len();
+        let result = self
+            .complete_from_commit(
+                CommitRequest {
+                    command_id: command_id.clone(),
+                    command: command.clone(),
+                    timestamp_zero: timestamp_zero.clone(),
+                    timestamp: final_timestamp,
+                    dependencies: DependencySet(refined_deps),
+                },
+                peers,
+                quorum,
+            )
+            .await?;
+        info!(
+            coordination_event = "consensus_operation",
+            coordinator_node = self.node_id.as_ref(),
+            origin_node = command_id.origin_node_id.as_ref(),
+            operation_id_sequence = command_id.sequence,
+            operation = Self::command_operation(command),
+            consensus_path = "recovery",
             quorum,
-        )
-        .await
+            participating_replicas = peers.len() + 1,
+            recovery_response_count,
+            recovery_wait_for_count,
+            recovery_superseding_count,
+            dependency_count,
+            "consensus coordination"
+        );
+        Ok(result)
     }
 }
 
@@ -658,6 +706,7 @@ where
         let fast_path =
             final_timestamp == timestamp_zero && all_deps.is_empty() && pre_failures == 0;
 
+        let mut accept_ok_for_log = 0usize;
         let (commit_timestamp, commit_deps) = if fast_path {
             (timestamp_zero.clone(), all_deps)
         } else {
@@ -715,6 +764,7 @@ where
                     quorum,
                 )));
             }
+            accept_ok_for_log = accept_ok + 1;
 
             (final_timestamp, refined_deps)
         };
@@ -777,6 +827,22 @@ where
                 let _ = peer.apply(req).await;
             });
         }
+
+        info!(
+            coordination_event = "consensus_operation",
+            coordinator_node = self.node_id.as_ref(),
+            origin_node = command_id.origin_node_id.as_ref(),
+            operation_id_sequence = command_id.sequence,
+            operation = Self::command_operation(&apply_req.command),
+            consensus_path = if fast_path { "fast" } else { "slow" },
+            quorum,
+            participating_replicas = self.consensus_peer_client_map.len() + 1,
+            pre_accept_ok = pre_ok.len() + 1,
+            pre_accept_failures = pre_failures,
+            accept_ok = accept_ok_for_log,
+            dependency_count = apply_req.dependencies.0.len(),
+            "consensus coordination"
+        );
 
         Ok(result)
     }

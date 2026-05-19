@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 from typing import Any
+
+CONSENSUS_PATHS = ("fast", "slow", "recovery")
 
 K6_LATENCY_STATS = {
     "avg": "avg_ms",
@@ -214,6 +217,139 @@ def summary_from_k6_phase_exports(phase_exports: dict[str, Path]) -> dict[str, A
         "phases": phases,
         "relative": relative_to_baseline(phases),
     }
+
+
+def _parse_log_value(value: str) -> str | int | float:
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        return value
+
+
+def _parse_tracing_fields(line: str) -> dict[str, str | int | float]:
+    fields: dict[str, str | int | float] = {}
+    try:
+        parts = shlex.split(line)
+    except ValueError:
+        return fields
+    for part in parts:
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        if not key:
+            continue
+        fields[key] = _parse_log_value(value)
+    return fields
+
+
+def _inc(counter: dict[str, int], key: str) -> None:
+    counter[key] = counter.get(key, 0) + 1
+
+
+def _safe_ratio(numerator: int, denominator: int) -> float | None:
+    if denominator == 0:
+        return None
+    return numerator / denominator
+
+
+def summary_from_cluster_log(path: Path) -> dict[str, Any]:
+    """Aggregate structured consensus coordination events from cluster.log."""
+    if not path.exists():
+        return {}
+
+    path_counts: dict[str, int] = {}
+    operation_counts: dict[str, int] = {}
+    node_counts: dict[str, dict[str, int]] = {
+        "coordinator_node": {},
+        "origin_node": {},
+    }
+    numeric_buckets: dict[str, list[float]] = {
+        "dependency_count": [],
+        "pre_accept_failures": [],
+        "pre_accept_ok": [],
+        "accept_ok": [],
+        "quorum": [],
+        "participating_replicas": [],
+        "recovery_response_count": [],
+        "recovery_wait_for_count": [],
+        "recovery_superseding_count": [],
+    }
+
+    with path.open(encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if "coordination_event" not in line or "consensus_operation" not in line:
+                continue
+            fields = _parse_tracing_fields(line)
+            if fields.get("coordination_event") != "consensus_operation":
+                continue
+            path_name = fields.get("consensus_path")
+            if isinstance(path_name, str):
+                _inc(path_counts, path_name)
+            operation = fields.get("operation")
+            if isinstance(operation, str):
+                _inc(operation_counts, operation)
+            for name, counter in node_counts.items():
+                value = fields.get(name)
+                if isinstance(value, str):
+                    _inc(counter, value)
+            for name, bucket in numeric_buckets.items():
+                value = fields.get(name)
+                if isinstance(value, (int, float)):
+                    bucket.append(float(value))
+
+    total = sum(path_counts.values())
+    if total == 0:
+        return {}
+
+    path_metrics = {}
+    for path_name in sorted({*CONSENSUS_PATHS, *path_counts}):
+        count = path_counts.get(path_name, 0)
+        path_metrics[path_name] = {
+            "count": count,
+            "ratio": _safe_ratio(count, total),
+        }
+
+    return {
+        "server": {
+            "consensus": {
+                "operations_total": total,
+                "path": path_metrics,
+                "operation": {
+                    name: {"count": count, "ratio": _safe_ratio(count, total)}
+                    for name, count in sorted(operation_counts.items())
+                },
+                **{
+                    name: {
+                        node: {"count": count, "ratio": _safe_ratio(count, total)}
+                        for node, count in sorted(counter.items())
+                    }
+                    for name, counter in node_counts.items()
+                    if counter
+                },
+                **{
+                    name: {
+                        "mean": sum(values) / len(values),
+                        "max": max(values),
+                        "total": sum(values),
+                    }
+                    for name, values in numeric_buckets.items()
+                    if values
+                },
+            }
+        }
+    }
+
+
+def merge_metrics(target: dict[str, Any], source: dict[str, Any]) -> None:
+    for key, value in source.items():
+        if isinstance(value, dict) and isinstance(target.get(key), dict):
+            merge_metrics(target[key], value)
+        else:
+            target[key] = value
 
 
 def write_run_summary(

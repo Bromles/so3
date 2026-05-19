@@ -334,6 +334,60 @@ def _node_distribution_section(summaries: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
+def _server_consensus_section(aggregate: dict[str, Any]) -> list[str]:
+    metrics = aggregate.get("metrics", {})
+    if not isinstance(metrics, dict):
+        return []
+    total = _stat_mean(metrics.get("server.consensus.operations_total"))
+    if total is None:
+        return []
+
+    lines = ["## Server-side consensus metrics", ""]
+    lines.extend(
+        [
+            "| path | mean count/run | mean ratio |",
+            "| --- | ---: | ---: |",
+        ]
+    )
+    for path_name in ("fast", "slow", "recovery"):
+        count = _stat_mean(metrics.get(f"server.consensus.path.{path_name}.count"))
+        ratio = _stat_mean(metrics.get(f"server.consensus.path.{path_name}.ratio"))
+        if count is None and ratio is None:
+            continue
+        lines.append(
+            "| "
+            + " | ".join([path_name, _format_number(count), _format_number(ratio)])
+            + " |"
+        )
+    lines.append("")
+
+    detail_rows = []
+    for metric_name, label in (
+        ("server.consensus.quorum.mean", "quorum mean"),
+        ("server.consensus.participating_replicas.mean", "participating replicas mean"),
+        ("server.consensus.dependency_count.mean", "dependency count mean"),
+        ("server.consensus.dependency_count.max", "dependency count max"),
+        ("server.consensus.pre_accept_failures.total", "pre-accept failures total"),
+        ("server.consensus.recovery_response_count.mean", "recovery responses mean"),
+        ("server.consensus.recovery_wait_for_count.mean", "recovery wait-for mean"),
+        (
+            "server.consensus.recovery_superseding_count.mean",
+            "recovery superseding mean",
+        ),
+    ):
+        value = _stat_mean(metrics.get(metric_name))
+        if value is not None:
+            detail_rows.append((label, value))
+    if detail_rows:
+        lines.extend(
+            ["### Consensus details", "", "| metric | mean |", "| --- | ---: |"]
+        )
+        for label, value in detail_rows:
+            lines.append(f"| {label} | {_format_number(value)} |")
+        lines.append("")
+    return lines
+
+
 def _plot_links_section(result_dir: Path) -> list[str]:
     plots_dir = result_dir / "plots"
     if not plots_dir.exists():
@@ -382,6 +436,7 @@ def write_report(result_dir: Path, aggregate: dict[str, Any]) -> Path:
     elif scenario == "e5-leaderless":
         lines.extend(_node_distribution_section(summaries))
 
+    lines.extend(_server_consensus_section(aggregate))
     lines.extend(_plot_links_section(result_dir))
 
     lines.extend(

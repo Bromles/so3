@@ -172,6 +172,13 @@ def _aggregate_mean(
     return float(value)
 
 
+def _aggregate_metric_mean(aggregate: dict[str, Any], metric: str) -> float | None:
+    value = aggregate.get("metrics", {}).get(metric, {}).get("mean")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
 def _load_events(path: Path) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     try:
@@ -410,6 +417,29 @@ def _plot_timeline(
     ax.grid(True, alpha=0.3)
     ax.legend(loc="best")
     return _save(fig, plots_dir / "timeline.png")
+
+
+def _plot_accord_paths(
+    plt: Any, aggregate: dict[str, Any], plots_dir: Path
+) -> Path | None:
+    paths = ("fast", "slow", "recovery")
+    ratios = [
+        _aggregate_metric_mean(aggregate, f"server.consensus.path.{path_name}.ratio")
+        for path_name in paths
+    ]
+    if not any(value is not None for value in ratios):
+        return None
+
+    x = list(range(len(paths)))
+    fig, ax = plt.subplots(figsize=(7.5, 4.5))
+    ax.bar(x, [value or 0.0 for value in ratios])
+    ax.set_xticks(x)
+    ax.set_xticklabels(paths)
+    ax.set_ylim(0.0, 1.05)
+    ax.set_ylabel("operation ratio")
+    ax.set_title("Consensus path ratios")
+    ax.grid(True, axis="y", alpha=0.3)
+    return _save(fig, plots_dir / "accord_paths.png")
 
 
 def _plot_recovery(plt: Any, aggregate: dict[str, Any], plots_dir: Path) -> Path | None:
@@ -686,6 +716,7 @@ def generate_plots(
     try:
         for path in (
             _plot_repeatability(plt, summaries, plots_dir, scenario),
+            _plot_accord_paths(plt, aggregate, plots_dir),
             _plot_phases(plt, aggregate, plots_dir)
             if scenario in {"e3-degradation", "e6-recovery"}
             else None,

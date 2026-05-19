@@ -433,6 +433,10 @@ def run_one(
             run_metrics = metrics.summary_from_k6_export(run_dir / "k6-summary.json")
             status = "passed"
 
+        metrics.merge_metrics(
+            run_metrics,
+            metrics.summary_from_cluster_log(run_dir / "cluster.log"),
+        )
         metrics.write_run_summary(
             run_dir / "summary.json",
             scenario=args.scenario,

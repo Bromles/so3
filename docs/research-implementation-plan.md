@@ -83,7 +83,11 @@ SO3 рассматривается как экспериментальный pro
 
 - `e3-degradation` и `e6-recovery` пишут `time_to_degraded_secs` и `recovery_seconds`. Stabilization time
   по форме графиков — через normalized метрики в `relative_metrics`.
-- Server-side observability (`fast/slow/recovery path`, conflicts, dependencies, quorum wait и т.п.) еще не реализована.
+- Server-side observability частично реализована: обычный `so3` пишет structured `tracing` events для
+  `fast`/`slow`/`recovery` consensus path, coordinator/origin node, quorum, participating replicas,
+  dependency count, pre-accept/accept/recovery counters; research runner парсит их из `cluster.log` в
+  `server.consensus.*`. Остаются phase timings, quorum wait, dependency depth, retry count,
+  recovery backlog и in-flight operations.
 - Maelstrom hidden-leader behavior исправлен для обычных client requests: узел, получивший клиентскую операцию,
   координирует ее локально и пишет structured `tracing` log через подключенный logger с `entry_node`,
   `coordinator_node`, `operation_id`, `operation`, `source`, `consensus_path`.
@@ -701,15 +705,22 @@ research-plan.
     - `timeline.png` для E3/E6 fault timeline с normalized throughput, put p95/p99 и event markers;
     - `symmetry.png` для E3/E6 symmetry-of-failures при `--fault-node-policy round_robin`;
     - `recovery.png` для E6 recovery behavior: success ratio и put p95/p99 latency по фазам;
+    - `accord_paths.png` для server-side fast/slow/recovery consensus path ratios;
     - `hot_key.png` для E4;
     - `nodes.png` для E5.
 - `run-scenario.py` вызывает генерацию графиков перед записью `report.md`, чтобы отчет мог ссылаться на созданные PNG.
-- `run-scenario.py` поддерживает `--fault-node-policy round_robin` для E3/E6, чтобы один result-dir покрывал отказы разных узлов и строил `symmetry.png`.
+- `run-scenario.py` поддерживает `--fault-node-policy round_robin` для E3/E6, чтобы один result-dir покрывал отказы
+  разных узлов и строил `symmetry.png`.
+- Обычный `so3` пишет structured `tracing` logs `coordination_event="consensus_operation"`; research runner парсит
+  `cluster.log` в `server.consensus.*` metrics и добавляет server-side consensus section в `report.md`. Сейчас в summary
+  попадают path ratios, operation/node distribution, quorum/replica counts, dependency count и
+  pre-accept/accept/recovery counters.
 
 Остается:
 
 - recovery accumulated lag после появления server-side lag/queue observability;
-- Accord/server-side path metrics после реализации server-side observability.
+- расширенные Accord/server-side metrics: phase timings, quorum wait time, dependency depth, retry count, recovery
+  backlog и in-flight operations.
 
 ## Этап 14. Обновить документацию
 
