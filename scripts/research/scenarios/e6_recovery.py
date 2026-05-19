@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,8 @@ from typing import Any
 import faults
 import manifest
 import metrics as metrics_module
+import metrics_timeseries
+from correctness_driver import RecoverySentinel
 from runner import run_k6_phase
 
 
@@ -22,6 +25,7 @@ def run_e6_recovery(
     cluster: Any,
     events: manifest.EventLog,
     phase_durations: dict[str, str],
+    run_seed: int = 0,
 ) -> dict[str, Any]:
     """Run E6: extended-downtime recovery test.
 
@@ -32,7 +36,20 @@ def run_e6_recovery(
     Phases: baseline → (crash) → degraded → (wait) → (restart) → recovery → restored.
     """
     long_downtime_secs: float = getattr(args, "e6_long_downtime_secs", 0.0) or 0.0
+    entry_urls: list[str] = getattr(args, "entry_urls", None) or []
+    bucket: str = getattr(args, "bucket", "so3-benchmark")
     phase_exports: dict[str, Path] = {}
+
+    sentinel = RecoverySentinel(
+        entry_urls=entry_urls,
+        bucket=bucket,
+        seed=run_seed,
+    ) if entry_urls else None
+
+    confirmed_writes: dict[str, str] = {}
+    if sentinel is not None:
+        confirmed_writes = sentinel.write()
+        events.record("sentinel_write", count=len(confirmed_writes))
 
     phase_exports["baseline"], _ = run_k6_phase(
         args=args,
@@ -75,7 +92,7 @@ def run_e6_recovery(
         recovery_seconds=recovery_seconds,
     )
 
-    phase_exports["recovery"], _ = run_k6_phase(
+    phase_exports["recovery"], recovery_stream = run_k6_phase(
         args=args,
         k6_script=k6_script,
         run_dir=run_dir,
@@ -84,10 +101,11 @@ def run_e6_recovery(
         phase="recovery",
         duration=phase_durations["recovery"],
         events=events,
+        with_stream=True,
     )
 
     events.record("normal_restored", node_index=args.fault_node)
-    phase_exports["restored"], _ = run_k6_phase(
+    phase_exports["restored"], restored_stream = run_k6_phase(
         args=args,
         k6_script=k6_script,
         run_dir=run_dir,
@@ -96,7 +114,22 @@ def run_e6_recovery(
         phase="restored",
         duration=phase_durations["restored"],
         events=events,
+        with_stream=True,
     )
+
+    verifier_result: dict[str, Any] | None = None
+    if sentinel is not None and confirmed_writes:
+        verifier_result = sentinel.verify(confirmed_writes)
+        verifier_path = run_dir / "verifier-result.json"
+        verifier_path.write_text(
+            json.dumps(verifier_result, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        events.record(
+            "sentinel_verify",
+            verdict=verifier_result.get("verdict"),
+            issues=len(verifier_result.get("issues", [])),
+        )
 
     down_total_secs = recovery_start - fail_monotonic
     run_metrics = metrics_module.summary_from_k6_phase_exports(phase_exports)
@@ -104,4 +137,21 @@ def run_e6_recovery(
     run_metrics["fault"]["recovery_seconds"] = recovery_seconds
     run_metrics["fault"]["total_downtime_secs"] = down_total_secs
     run_metrics["fault"]["long_downtime_secs"] = long_downtime_secs
+
+    if verifier_result is not None:
+        run_metrics["fault"]["verifier_passed"] = verifier_result.get("verdict") == "passed"
+
+    baseline_rate = (
+        run_metrics.get("phases", {})
+        .get("baseline", {})
+        .get("throughput", {})
+        .get("http_reqs", {})
+        .get("rate")
+    )
+    if baseline_rate and recovery_stream is not None:
+        stab = metrics_timeseries.stabilization_time_secs(
+            recovery_stream, baseline_rate=float(baseline_rate)
+        )
+        run_metrics["fault"]["stabilization_secs"] = stab
+
     return run_metrics

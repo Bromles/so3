@@ -21,6 +21,7 @@ SO3 рассматривается как экспериментальный pro
     - `install.py` — кросс-платформенный установщик Maelstrom;
     - `run.py` — запуск одного Maelstrom теста;
     - `run_30.py` — пакетный запуск 30 раз с агрегацией pass/fail в `aggregate.json` и `report.md`;
+      передаёт явный `--data-dir` на каждый прогон, чтобы не накапливать 30 временных директорий;
     - `smoke.py`, `smoke_3node.py`, `fault_3node.py` — convenience wrappers.
 - Реализован общий research runner `scripts/research/run-scenario.py`:
     - поддерживает `--runs` с default `30`;
@@ -32,13 +33,24 @@ SO3 рассматривается как экспериментальный pro
     - делегирует каждый сценарий своему модулю в `scenarios/`;
     - для `e3-degradation` и `e6-recovery` умеет выполнять phase-aware crash/restart timeline:
       `baseline -> fail -> degraded -> recover -> recovery -> restored`;
-    - `e6-recovery` поддерживает `--e6-long-downtime-secs` для тестирования длительного простоя.
+    - `e6-recovery` поддерживает `--e6-long-downtime-secs` для тестирования длительного простоя;
+    - пробрасывает `args.entry_urls` из topology и `run_seed` в `run_e6_recovery`;
+    - `entry_urls` извлекаются из `topology.to_json()` и сохраняются в `args.entry_urls`.
 - Реализованы scenario-модули в `scripts/research/scenarios/`:
     - `e2_fault_safety.py` — CorrectnessDriver + ConcurrentFaultInjector параллельно;
-    - `e3_node_degradation.py` — четырёхфазный phased runner с crash/restart;
+    - `e3_node_degradation.py` — четырёхфазный phased runner с crash/restart; включены потоки
+      (`with_stream=True`) для фаз recovery и restored через `run_k6_phase(..., with_stream=True)`;
+      `stabilization_secs` вычисляется через `metrics_timeseries.stabilization_time_secs(baseline_rate)`
+      и сохраняется в `run_metrics["fault"]["stabilization_secs"]`;
     - `e4_hot_key.py` — k6 с per-tag stream metrics (`key_class`);
     - `e5_leaderless.py` — k6 с per-node entry metrics из stream; symmetry-of-failures покрыт Maelstrom;
-    - `e6_recovery.py` — как E3, но с configurable `long_downtime_secs` перед restart.
+    - `e6_recovery.py` — как E3, но с configurable `long_downtime_secs`; принимает `run_seed`;
+      пишет `e6-sentinel/key-NNNN` объекты до fault через `RecoverySentinel`, верифицирует их
+      после restored-фазы, пишет `verifier-result.json` (schema_version 1, checked/unsupported/issues/verdict)
+      и `verifier_passed` в `run_metrics["fault"]`; включены потоки для фаз recovery и restored через
+      `run_k6_phase(..., with_stream=True)`; `stabilization_secs` вычисляется через
+      `metrics_timeseries.stabilization_time_secs(baseline_rate)` так же, как в E3;
+      sentinel-события (`sentinel_write`, `sentinel_verify`) записываются в event log.
 - Реализован общий модуль `scripts/research/runner.py`:
     - `run_k6()` — subprocess wrapper для k6;
     - `run_k6_phase()` — фазовый runner с RESEARCH_PHASE/DURATION env vars;
@@ -48,8 +60,15 @@ SO3 рассматривается как экспериментальный pro
     - `topology.py` — генерация 1/3/5/7-node topology, ports, node ids, peer lists, data dirs;
     - `manifest.py` — manifest и event timeline;
     - `metrics.py` — нормализация k6 summary;
-    - `metrics_timeseries.py` — per-tag агрегация из k6 JSONL stream;
+    - `metrics_timeseries.py` — per-tag агрегация из k6 JSONL stream; добавлена
+      `stabilization_time_secs(stream_path, *, baseline_rate, threshold=0.9, window_secs=5.0)` —
+      парсит временные метки Points (RFC3339 с optional nanoseconds через `_parse_ts`),
+      разбивает на окна фиксированного размера через `bisect` и возвращает секунды от начала фазы
+      до первого окна с request rate ≥ threshold × baseline_rate;
+    - `_common.py` — общие helpers `get_nested`, `get_number`, `load_run_summaries`,
+      `detect_scenario`, `node_total_samples`, вынесенные из дубликатов в `plot.py` и `report.py`;
     - `stats.py` — descriptive statistics (scipy t.interval CI, numpy percentiles) и aggregate summary;
+      дисперсия и stddev считаются с `ddof=1` (выборочные оценки), согласованно с `scipy.stats.sem`;
     - `report.py` — markdown report;
     - `plot.py` — PNG-графики по aggregate/run summaries;
     - `faults.py` — базовые crash/restart primitives, network partition явно `unsupported` до proxy layer.
@@ -63,10 +82,18 @@ SO3 рассматривается как экспериментальный pro
 - Добавлен correctness driver через настоящий S3 SDK:
     - `scripts/research/correctness_driver.py` использует `boto3.client("s3")` и реальные S3 calls: `put_object`,
       `get_object`, `head_object`, `delete_object` (прямой import без fallback);
-    - пишет `client-history.jsonl` с `client: "boto3"` и `api: "s3"`.
+    - пишет `client-history.jsonl` с `client: "boto3"` и `api: "s3"`;
+    - счётчик `errors` не учитывает таймауты повторно (они считаются отдельно в `timeouts`);
+    - добавлен класс `RecoverySentinel`: пишет детерминированные объекты с префиксом `e6-sentinel/`
+      (нет коллизии с k6-ключами `obj/vu.../...`) до fault-события и верифицирует их сохранность
+      после восстановления; `write()` возвращает `{key: sha256_hex}` для подтверждённых PUT,
+      `verify(confirmed)` читает назад и сравнивает хеши тел; инвариант
+      `recovery_preserves_confirmed_writes` проверяется для каждого ключа, результаты включают
+      `schema_version`, `checked`, `unsupported`, `confirmed_writes`, `issues` и `verdict`.
 - Добавлен verifier:
     - `scripts/verify/verify-history.py` — CLI;
-    - `scripts/verify/verify_history.py` — импортируемый verifier;
+    - `scripts/verify/verify_history.py` — импортируемый verifier; `final_successful_get_is_explainable`
+      удалён из `SUPPORTED_INVARIANTS` как незадокументированный дубликат;
     - `scripts/verify/history-schema.md` — схема истории.
 - Проверки, которые S3 API пока не выражает (`CAS`, `If-None-Match`, idempotency key), verifier помечает как
   `unsupported`.
@@ -81,8 +108,6 @@ SO3 рассматривается как экспериментальный pro
 
 Остается доработать:
 
-- `e3-degradation` и `e6-recovery` пишут `time_to_degraded_secs` и `recovery_seconds`. Stabilization time
-  по форме графиков — через normalized метрики в `relative_metrics`.
 - Server-side observability частично реализована: обычный `so3` пишет structured `tracing` events для
   `fast`/`slow`/`recovery` consensus path, coordinator/origin node, quorum, participating replicas,
   dependency count/depth lower bound, phase timings, quorum wait, retry/commit attempts,
@@ -93,6 +118,9 @@ SO3 рассматривается как экспериментальный pro
 - Maelstrom hidden-leader behavior исправлен для обычных client requests: узел, получивший клиентскую операцию,
   координирует ее локально и пишет structured `tracing` log через подключенный logger с `entry_node`,
   `coordinator_node`, `operation_id`, `operation`, `source`, `consensus_path`.
+- E6: сценарий повторного падения узла во время синхронизации (`узел снова падает во время синхронизации`)
+  пока не реализован.
+- E3/E6: matrix-runs по 3/5/7 узлам не реализованы — требуют нескольких result-dir с разными `--node-count`.
 
 ## Обязательные принципы
 
@@ -373,7 +401,8 @@ markdown-таблицу с CI-колонкой.
 `verify-history.py`, импортируемый `verify_history.py` и `history-schema.md`; `e1-correctness` подключен к
 `run-scenario.py`. CAS/`If-None-Match`/idempotency пока маркируются как `unsupported`; E2 safety history еще предстоит
 расширить. `GET` и `HEAD` верифицируются раздельно: `GET` — через SHA-256 тела, `HEAD` — через ETag из
-PUT/GET-ответов.
+PUT/GET-ответов. Добавлен класс `RecoverySentinel` для инварианта `recovery_preserves_confirmed_writes`: пишет
+детерминированные sentinel-объекты до fault-события, верифицирует их после recovery. Используется в E6.
 
 Цель: E1 и часть E2 проверяются не latency-графиками, а историей операций и инвариантами.
 
@@ -511,9 +540,12 @@ Partition и heal через реальный кластер не реализо
 
 ## Этап 8. Реализовать E3. Degradation under node failures
 
-Статус: частично сделано. `run-scenario.py e3-degradation` выполняет последовательность фаз с crash/restart выбранного
-узла, пишет отдельные `k6-summary-<phase>.json`, timeline events и normalized phase-vs-baseline метрики. Остается
-расширить stabilization/recovery-time анализ и конфигурационные matrix-runs по 3/5/7 узлам.
+Статус: в основном сделано. `run-scenario.py e3-degradation` выполняет последовательность фаз с crash/restart
+выбранного узла, пишет отдельные `k6-summary-<phase>.json`, timeline events и normalized phase-vs-baseline
+метрики. Фазы recovery и restored записывают k6 JSONL stream через `run_k6_phase(..., with_stream=True)`;
+`stabilization_secs` вычисляется через `metrics_timeseries.stabilization_time_secs(stream, baseline_rate)`
+с порогом 0.9×baseline и окном 5 сек, и сохраняется в `run_metrics["fault"]["stabilization_secs"]`.
+Остается: конфигурационные matrix-runs по 3/5/7 узлам (требуют нескольких запусков с разными `--node-count`).
 
 Цель: показать предсказуемую динамику при отказах узлов.
 
@@ -600,10 +632,15 @@ linearizability при partition по всем узлам, что являетс
 
 ## Этап 11. Реализовать E6. Recovery and lagging node
 
-Статус: частично сделано. `scenarios/e6_recovery.py` реализован: phase-aware crash/restart runner с
-`--e6-long-downtime-secs` для тестирования длительного простоя; пишет `long_downtime_secs` и `time_to_degraded_secs`
-в fault metrics. Остается: verifier-проверка сохранности подтвержденных записей после recovery,
-сценарий падения узла во время синхронизации.
+Статус: в основном сделано. `scenarios/e6_recovery.py` реализован: phase-aware crash/restart runner с
+`--e6-long-downtime-secs` для тестирования длительного простоя; принимает `run_seed` и `entry_urls`.
+Фазы recovery и restored записывают k6 JSONL stream через `run_k6_phase(..., with_stream=True)`;
+`stabilization_secs` вычисляется через `metrics_timeseries.stabilization_time_secs(stream, baseline_rate)`.
+`RecoverySentinel` из `correctness_driver.py` пишет `e6-sentinel/key-NNNN` объекты до fault-события,
+верифицирует их после restored-фазы, пишет `verifier-result.json` (schema_version 1, инвариант
+`recovery_preserves_confirmed_writes`, verdict passed/failed) и `verifier_passed` в `run_metrics["fault"]`.
+Sentinel-события (`sentinel_write`, `sentinel_verify`) записываются в event log.
+Остается: сценарий падения узла во время синхронизации.
 
 Цель: проверить безопасное возвращение отставшего узла.
 

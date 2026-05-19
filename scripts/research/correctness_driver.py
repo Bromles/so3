@@ -365,3 +365,90 @@ class CorrectnessDriver:
                 "mean": sum(latencies) / len(latencies) if latencies else 0.0,
             },
         }
+
+
+class RecoverySentinel:
+    """Write objects before a fault and verify they persist after recovery.
+
+    Writes to the ``e6-sentinel/`` key prefix, which does not collide with
+    the k6 workload key space (``obj/vu.../...``).
+    """
+
+    def __init__(
+        self,
+        *,
+        entry_urls: list[str],
+        bucket: str,
+        seed: int,
+        count: int = 20,
+        object_size: int = 64,
+    ) -> None:
+        if not entry_urls:
+            raise ValueError("at least one entry URL is required")
+        self.bucket = bucket
+        self.seed = seed
+        self.count = count
+        self.object_size = object_size
+        self.pool = Boto3S3ClientPool(entry_urls)
+
+    def _key(self, index: int) -> str:
+        return f"e6-sentinel/key-{index:04d}"
+
+    def _body(self, index: int) -> bytes:
+        material = f"{self.seed}:e6-sentinel:{index}".encode()
+        digest = hashlib.sha256(material).digest()
+        return (digest * ((self.object_size // len(digest)) + 1))[: self.object_size]
+
+    def write(self) -> dict[str, str]:
+        """Write sentinel objects. Returns {key: sha256_hex} for every confirmed PUT."""
+        confirmed: dict[str, str] = {}
+        for index in range(self.count):
+            key = self._key(index)
+            body = self._body(index)
+            selected = self.pool.select(index)
+            try:
+                selected["client"].put_object(Bucket=self.bucket, Key=key, Body=body)
+                confirmed[key] = sha256_hex(body)
+            except Exception:
+                pass
+        return confirmed
+
+    def verify(self, confirmed: dict[str, str]) -> dict[str, Any]:
+        """Read back each confirmed write and check body hash.
+
+        Returns a verifier-result dict. Verdict is ``'passed'`` only when
+        every confirmed pre-crash write is readable and its content unchanged.
+        """
+        issues: list[dict[str, Any]] = []
+        for index, (key, expected_hash) in enumerate(confirmed.items()):
+            selected = self.pool.select(index)
+            try:
+                response = selected["client"].get_object(Bucket=self.bucket, Key=key)
+                actual_hash = sha256_hex(response["Body"].read())
+                if actual_hash != expected_hash:
+                    issues.append(
+                        {
+                            "invariant": "recovery_preserves_confirmed_writes",
+                            "key": key,
+                            "kind": "hash_mismatch",
+                            "expected_hash": expected_hash,
+                            "actual_hash": actual_hash,
+                        }
+                    )
+            except (ClientError, BotoCoreError) as error:
+                issues.append(
+                    {
+                        "invariant": "recovery_preserves_confirmed_writes",
+                        "key": key,
+                        "kind": "get_failed",
+                        "error": str(error),
+                    }
+                )
+        return {
+            "schema_version": 1,
+            "checked": ["recovery_preserves_confirmed_writes"],
+            "unsupported": [],
+            "confirmed_writes": len(confirmed),
+            "issues": issues,
+            "verdict": "passed" if not issues else "failed",
+        }

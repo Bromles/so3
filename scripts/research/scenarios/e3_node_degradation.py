@@ -9,6 +9,7 @@ from typing import Any
 import faults
 import manifest
 import metrics as metrics_module
+import metrics_timeseries
 from runner import run_k6_phase
 
 
@@ -66,7 +67,7 @@ def run_e3_node_degradation(
         recovery_seconds=recovery_seconds,
     )
 
-    phase_exports["recovery"], _ = run_k6_phase(
+    phase_exports["recovery"], recovery_stream = run_k6_phase(
         args=args,
         k6_script=k6_script,
         run_dir=run_dir,
@@ -75,10 +76,11 @@ def run_e3_node_degradation(
         phase="recovery",
         duration=phase_durations["recovery"],
         events=events,
+        with_stream=True,
     )
 
     events.record("normal_restored", node_index=args.fault_node)
-    phase_exports["restored"], _ = run_k6_phase(
+    phase_exports["restored"], restored_stream = run_k6_phase(
         args=args,
         k6_script=k6_script,
         run_dir=run_dir,
@@ -87,10 +89,25 @@ def run_e3_node_degradation(
         phase="restored",
         duration=phase_durations["restored"],
         events=events,
+        with_stream=True,
     )
 
     run_metrics = metrics_module.summary_from_k6_phase_exports(phase_exports)
     run_metrics.setdefault("fault", {})["node_index"] = args.fault_node
     run_metrics["fault"]["recovery_seconds"] = recovery_seconds
     run_metrics["fault"]["total_downtime_secs"] = recovery_start - fail_monotonic
+
+    baseline_rate = (
+        run_metrics.get("phases", {})
+        .get("baseline", {})
+        .get("throughput", {})
+        .get("http_reqs", {})
+        .get("rate")
+    )
+    if baseline_rate and recovery_stream is not None:
+        stab = metrics_timeseries.stabilization_time_secs(
+            recovery_stream, baseline_rate=float(baseline_rate)
+        )
+        run_metrics["fault"]["stabilization_secs"] = stab
+
     return run_metrics

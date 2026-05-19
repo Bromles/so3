@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import bisect
 import json
 import math
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -96,6 +98,71 @@ def per_node_entry_metrics(stream_path: Path) -> dict[str, Any]:
     Returns ``{node_name: {metric: {stats}}}``.
     """
     return tag_stats(stream_path, tag_key="entry_node", metric_names=K6_LATENCY_METRICS)
+
+
+def _parse_ts(ts_str: str) -> float:
+    """Parse k6 RFC3339 timestamp (with optional nanoseconds) to Unix timestamp."""
+    ts_str = ts_str.rstrip("Z")
+    if "." in ts_str:
+        base, frac = ts_str.split(".", 1)
+        ts_str = f"{base}.{frac[:6].ljust(6, '0')}"
+    return datetime.fromisoformat(ts_str + "+00:00").timestamp()
+
+
+def stabilization_time_secs(
+    stream_path: Path,
+    *,
+    baseline_rate: float,
+    threshold: float = 0.9,
+    window_secs: float = 5.0,
+) -> float | None:
+    """Return seconds from phase start until throughput reaches threshold * baseline_rate.
+
+    Counts latency-metric Points per fixed-size time window and returns the
+    elapsed time of the first full window whose observed request rate meets or
+    exceeds ``threshold * baseline_rate``.  Returns ``None`` when the stream
+    is empty or the threshold is never reached within a full window.
+    """
+    timestamps: list[float] = []
+    with stream_path.open(encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if record.get("type") != "Point":
+                continue
+            if record.get("metric") not in K6_LATENCY_METRICS:
+                continue
+            ts_raw = record.get("data", {}).get("time")
+            if not isinstance(ts_raw, str):
+                continue
+            try:
+                timestamps.append(_parse_ts(ts_raw))
+            except (ValueError, OSError):
+                continue
+
+    if not timestamps:
+        return None
+
+    timestamps.sort()
+    phase_start = timestamps[0]
+    target_rate = threshold * baseline_rate
+    last_ts = timestamps[-1]
+
+    t = phase_start
+    while t + window_secs <= last_ts:
+        window_end = t + window_secs
+        lo = bisect.bisect_left(timestamps, t)
+        hi = bisect.bisect_left(timestamps, window_end)
+        if (hi - lo) / window_secs >= target_rate:
+            return t - phase_start
+        t = window_end
+
+    return None
 
 
 def latency_ratio(

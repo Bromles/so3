@@ -262,6 +262,7 @@ def run_one(
         rpc_base_port=args.rpc_base_port,
     )
     topology_json = topology.to_json()
+    args.entry_urls = topology_json.get("entry_urls", [])
     so3_bin = resolve_repo_path(args.so3_bin)
     k6_script = (
         selected_k6_script(args)
@@ -414,6 +415,7 @@ def run_one(
                 cluster=cluster,
                 events=events,
                 phase_durations=phase_durations(args),
+                run_seed=run_seed,
             )
             status = "passed"
         else:
