@@ -14,7 +14,7 @@ SO3 рассматривается как экспериментальный pro
 Сделано:
 
 - Общая структура Python-инфраструктуры вынесена на уровень `scripts/`:
-    - `scripts/requirements.txt` содержит общие зависимости (`psutil`, `boto3`, `numpy`, `scipy`);
+    - `scripts/requirements.txt` содержит общие зависимости (`psutil`, `boto3`, `numpy`, `scipy`, `matplotlib`);
     - `scripts/venv/` используется как общий локальный venv для `scripts/research`, `scripts/verify` и legacy k6 runner;
     - venv больше не находится внутри `scripts/k6/`.
 - Скрипты `scripts/maelstrom/` переписаны с bash/PowerShell на Python:
@@ -51,6 +51,7 @@ SO3 рассматривается как экспериментальный pro
     - `metrics_timeseries.py` — per-tag агрегация из k6 JSONL stream;
     - `stats.py` — descriptive statistics (scipy t.interval CI, numpy percentiles) и aggregate summary;
     - `report.py` — markdown report;
+    - `plot.py` — PNG-графики по aggregate/run summaries;
     - `faults.py` — базовые crash/restart primitives, network partition явно `unsupported` до proxy layer.
 - Разделены k6 workloads:
     - `scripts/k6/lib/research.js` — общие helpers для endpoint selection, key distribution, tagging и метрик;
@@ -132,6 +133,7 @@ SO3 рассматривается как экспериментальный pro
     - `stats.py` — статистическая агрегация по 30+ прогонам;
     - `manifest.py` — описание прогона, seed, окружение, версии бинарей;
     - `report.py` — генерация markdown/JSON summaries;
+    - `plot.py` — генерация PNG-графиков для reports;
     - `runner.py` — общий `run_k6()` и `run_k6_phase()`, импортируется scenario-модулями;
     - `scenarios/` — отдельные модули сценариев:
         - `e1_correctness.py`;
@@ -651,6 +653,8 @@ research-plan.
 
 ## Этап 13. Реализовать отчеты и графики
 
+Статус: частично реализовано в `scripts/research/report.py` и `scripts/research/plot.py`.
+
 Цель: каждый сценарий должен давать готовые данные для отчета.
 
 Нужные графики:
@@ -684,6 +688,26 @@ research-plan.
 - statistical confidence across 30+ runs;
 - verifier verdicts;
 - unsupported checks.
+
+Реализовано сейчас:
+
+- `report.md` добавляет scenario-specific секции:
+    - для `e3-degradation`/`e6-recovery` — compact phase summary, normalized phase-vs-baseline summary и fault timing;
+    - для `e4-hot-key` — comparison hot vs independent key class и explicit p95 ratio;
+    - для `e5-leaderless` — per-node entry distribution.
+- `plot.generate_plots()` создает `plots/*.png`:
+    - `repeatability.png` для доступных per-run метрик;
+    - `phases.png` для E3/E6 normalized phase behavior;
+    - `hot_key.png` для E4;
+    - `nodes.png` для E5.
+- `run-scenario.py` вызывает генерацию графиков перед записью `report.md`, чтобы отчет мог ссылаться на созданные PNG.
+
+Остается:
+
+- хронология с event markers `fail`/`degraded`/`recover`/`restored` по единой временной оси;
+- symmetry-of-failures график по отказу каждого узла;
+- recovery accumulated lag;
+- Accord/server-side path metrics после реализации server-side observability.
 
 ## Этап 14. Обновить документацию
 

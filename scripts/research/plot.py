@@ -1,0 +1,356 @@
+"""Plot generation for SO3 research scenario outputs."""
+
+from __future__ import annotations
+
+import importlib
+import json
+from pathlib import Path
+from typing import Any
+
+PHASE_ORDER = ("baseline", "degraded", "recovery", "restored")
+K6_STREAM_LATENCY_METRICS = ("s3_put_ms", "s3_get_ms", "s3_head_ms", "s3_delete_ms")
+
+
+def _pyplot() -> Any:
+    matplotlib = importlib.import_module("matplotlib")
+    matplotlib.use("Agg")
+    return importlib.import_module("matplotlib.pyplot")
+
+
+def _load_run_summaries(result_dir: Path) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    for path in sorted(result_dir.glob("run-*/summary.json")):
+        try:
+            with path.open(encoding="utf-8") as f:
+                summaries.append(json.load(f))
+        except (OSError, json.JSONDecodeError):
+            continue
+    return summaries
+
+
+def _detect_scenario(summaries: list[dict[str, Any]]) -> str | None:
+    for summary in summaries:
+        scenario = summary.get("scenario")
+        if isinstance(scenario, str):
+            return scenario
+    return None
+
+
+def _get_nested(payload: dict[str, Any], path: tuple[str, ...]) -> Any:
+    current: Any = payload
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _get_number(payload: dict[str, Any], path: tuple[str, ...]) -> float | None:
+    value = _get_nested(payload, path)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _mean(values: list[float]) -> float | None:
+    return sum(values) / len(values) if values else None
+
+
+def _mean_nested(
+    summaries: list[dict[str, Any]], path: tuple[str, ...]
+) -> float | None:
+    values = []
+    for summary in summaries:
+        value = _get_number(summary, path)
+        if value is not None:
+            values.append(value)
+    return _mean(values)
+
+
+def _ordered_phases(phases: set[str], *, include_baseline: bool) -> list[str]:
+    preferred = [
+        phase for phase in PHASE_ORDER if include_baseline or phase != "baseline"
+    ]
+    ordered = [phase for phase in preferred if phase in phases]
+    ordered.extend(sorted(phases - set(ordered)))
+    return ordered
+
+
+def _non_none_pairs(
+    summaries: list[dict[str, Any]], path: tuple[str, ...]
+) -> tuple[list[int], list[float]]:
+    xs: list[int] = []
+    ys: list[float] = []
+    for fallback_index, summary in enumerate(summaries, start=1):
+        value = _get_number(summary, path)
+        if value is None:
+            continue
+        run_index = summary.get("run_index")
+        xs.append(int(run_index) if isinstance(run_index, int) else fallback_index)
+        ys.append(value)
+    return xs, ys
+
+
+def _save(fig: Any, path: Path) -> Path:
+    fig.tight_layout()
+    fig.savefig(path, dpi=160)
+    return path
+
+
+def _plot_repeatability(
+    plt: Any, summaries: list[dict[str, Any]], plots_dir: Path, scenario: str | None
+) -> Path | None:
+    if not summaries:
+        return None
+
+    if scenario in {"e3-degradation", "e6-recovery"}:
+        latency_path = (
+            "metrics",
+            "relative",
+            "degraded",
+            "latency",
+            "put",
+            "p95_multiplier",
+        )
+        throughput_path = (
+            "metrics",
+            "relative",
+            "degraded",
+            "throughput",
+            "http_reqs_rate_ratio",
+        )
+        latency_label = "degraded put p95 multiplier"
+        throughput_label = "degraded throughput ratio"
+    else:
+        latency_path = ("metrics", "latency", "put", "p95_ms")
+        throughput_path = ("metrics", "throughput", "http_reqs", "rate")
+        latency_label = "put p95 ms"
+        throughput_label = "http req/s"
+
+    latency_x, latency_y = _non_none_pairs(summaries, latency_path)
+    throughput_x, throughput_y = _non_none_pairs(summaries, throughput_path)
+    if not latency_y and not throughput_y:
+        return None
+
+    fig, axes = plt.subplots(2, 1, figsize=(9, 6), sharex=True)
+    if latency_y:
+        axes[0].plot(latency_x, latency_y, marker="o", linewidth=1.5)
+        axes[0].set_ylabel(latency_label)
+        axes[0].grid(True, alpha=0.3)
+    else:
+        axes[0].axis("off")
+    if throughput_y:
+        axes[1].plot(throughput_x, throughput_y, marker="o", linewidth=1.5)
+        axes[1].set_ylabel(throughput_label)
+        axes[1].set_xlabel("run")
+        axes[1].grid(True, alpha=0.3)
+    else:
+        axes[1].axis("off")
+    fig.suptitle("Repeatability across runs")
+    return _save(fig, plots_dir / "repeatability.png")
+
+
+def _aggregate_mean(
+    aggregate: dict[str, Any], section: str, phase: str, metric: str
+) -> float | None:
+    value = aggregate.get(section, {}).get(phase, {}).get(metric, {}).get("mean")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _plot_phases(plt: Any, aggregate: dict[str, Any], plots_dir: Path) -> Path | None:
+    relative_metrics = aggregate.get("relative_metrics", {})
+    if not isinstance(relative_metrics, dict) or not relative_metrics:
+        return None
+
+    phases = _ordered_phases(set(relative_metrics), include_baseline=False)
+    throughput = [
+        _aggregate_mean(
+            aggregate, "relative_metrics", phase, "throughput.http_reqs_rate_ratio"
+        )
+        for phase in phases
+    ]
+    put_p95 = [
+        _aggregate_mean(
+            aggregate, "relative_metrics", phase, "latency.put.p95_multiplier"
+        )
+        for phase in phases
+    ]
+    get_p95 = [
+        _aggregate_mean(
+            aggregate, "relative_metrics", phase, "latency.get.p95_multiplier"
+        )
+        for phase in phases
+    ]
+    if not any(value is not None for value in [*throughput, *put_p95, *get_p95]):
+        return None
+
+    x = list(range(len(phases)))
+    width = 0.25
+    fig, ax = plt.subplots(figsize=(9, 4.8))
+    ax.bar(
+        [value - width for value in x],
+        [value or 0.0 for value in throughput],
+        width,
+        label="throughput ratio",
+    )
+    ax.bar(x, [value or 0.0 for value in put_p95], width, label="put p95 multiplier")
+    ax.bar(
+        [value + width for value in x],
+        [value or 0.0 for value in get_p95],
+        width,
+        label="get p95 multiplier",
+    )
+    ax.axhline(1.0, color="black", linestyle="--", linewidth=1, alpha=0.5)
+    ax.set_xticks(x)
+    ax.set_xticklabels(phases)
+    ax.set_ylabel("normalized to baseline")
+    ax.set_title("Phase behavior vs baseline")
+    ax.grid(True, axis="y", alpha=0.3)
+    ax.legend()
+    return _save(fig, plots_dir / "phases.png")
+
+
+def _plot_hot_key(
+    plt: Any, summaries: list[dict[str, Any]], plots_dir: Path
+) -> Path | None:
+    metrics = []
+    hot_values = []
+    independent_values = []
+    for metric in K6_STREAM_LATENCY_METRICS:
+        hot = _mean_nested(
+            summaries, ("metrics", "key_class_metrics", "hot", metric, "p95")
+        )
+        independent = _mean_nested(
+            summaries,
+            ("metrics", "key_class_metrics", "independent", metric, "p95"),
+        )
+        if hot is None and independent is None:
+            continue
+        metrics.append(metric.replace("s3_", "").replace("_ms", ""))
+        hot_values.append(hot or 0.0)
+        independent_values.append(independent or 0.0)
+    if not metrics:
+        return None
+
+    x = list(range(len(metrics)))
+    width = 0.35
+    fig, ax = plt.subplots(figsize=(9, 4.8))
+    ax.bar([value - width / 2 for value in x], hot_values, width, label="hot")
+    ax.bar(
+        [value + width / 2 for value in x],
+        independent_values,
+        width,
+        label="independent",
+    )
+    ax.set_xticks(x)
+    ax.set_xticklabels(metrics)
+    ax.set_ylabel("p95 latency, ms")
+    ax.set_title("Hot-key vs independent-key latency")
+    ax.grid(True, axis="y", alpha=0.3)
+    ax.legend()
+    return _save(fig, plots_dir / "hot_key.png")
+
+
+def _node_total_samples(summary: dict[str, Any], node: str) -> float | None:
+    node_metrics = _get_nested(summary, ("metrics", "entry_node_metrics", node))
+    if not isinstance(node_metrics, dict):
+        return None
+    total = 0.0
+    for metric_stats in node_metrics.values():
+        if not isinstance(metric_stats, dict):
+            continue
+        count = metric_stats.get("n")
+        if isinstance(count, (int, float)):
+            total += float(count)
+    return total if total > 0.0 else None
+
+
+def _plot_nodes(
+    plt: Any, summaries: list[dict[str, Any]], plots_dir: Path
+) -> Path | None:
+    node_names: set[str] = set()
+    for summary in summaries:
+        node_metrics = _get_nested(summary, ("metrics", "entry_node_metrics"))
+        if isinstance(node_metrics, dict):
+            node_names.update(str(key) for key in node_metrics)
+    if not node_names:
+        return None
+
+    nodes = sorted(node_names)
+    sample_means = []
+    put_p95_means = []
+    for node in nodes:
+        sample_values = [
+            value
+            for summary in summaries
+            if (value := _node_total_samples(summary, node)) is not None
+        ]
+        sample_means.append(_mean(sample_values) or 0.0)
+        put_p95_means.append(
+            _mean_nested(
+                summaries,
+                ("metrics", "entry_node_metrics", node, "s3_put_ms", "p95"),
+            )
+            or 0.0
+        )
+
+    total_samples = sum(sample_means)
+    shares = [
+        value / total_samples * 100.0 if total_samples else 0.0
+        for value in sample_means
+    ]
+
+    x = list(range(len(nodes)))
+    fig, axes = plt.subplots(2, 1, figsize=(9, 6), sharex=True)
+    axes[0].bar(x, shares)
+    axes[0].set_ylabel("request share, %")
+    axes[0].set_title("Per-node entry distribution")
+    axes[0].grid(True, axis="y", alpha=0.3)
+    axes[1].bar(x, put_p95_means)
+    axes[1].set_ylabel("put p95 latency, ms")
+    axes[1].set_xticks(x)
+    axes[1].set_xticklabels(nodes)
+    axes[1].grid(True, axis="y", alpha=0.3)
+    return _save(fig, plots_dir / "nodes.png")
+
+
+def generate_plots(
+    result_dir: Path, aggregate: dict[str, Any] | None = None
+) -> list[Path]:
+    """Generate applicable PNG plots for a research result directory.
+
+    The function is intentionally best-effort: missing metrics simply skip the
+    corresponding chart, while import/runtime errors from matplotlib are allowed
+    to propagate to the caller so CLI output can report the plotting failure.
+    """
+    summaries = _load_run_summaries(result_dir)
+    if not summaries:
+        return []
+
+    aggregate = aggregate or {}
+    scenario = _detect_scenario(summaries)
+    plots_dir = result_dir / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    plt = _pyplot()
+    generated: list[Path] = []
+    try:
+        for path in (
+            _plot_repeatability(plt, summaries, plots_dir, scenario),
+            _plot_phases(plt, aggregate, plots_dir)
+            if scenario in {"e3-degradation", "e6-recovery"}
+            else None,
+            _plot_hot_key(plt, summaries, plots_dir)
+            if scenario == "e4-hot-key"
+            else None,
+            _plot_nodes(plt, summaries, plots_dir)
+            if scenario == "e5-leaderless"
+            else None,
+        ):
+            if path is not None:
+                generated.append(path)
+    finally:
+        plt.close("all")
+    return generated

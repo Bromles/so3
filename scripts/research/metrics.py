@@ -24,7 +24,10 @@ def k6_metric_values(k6: dict[str, Any], metric_name: str) -> dict[str, Any]:
     values = metric.get("values")
     if isinstance(values, dict):
         return values
-    return {}
+    # k6 summary-export formats differ across versions. Some versions store
+    # metric values directly under the metric name instead of nesting them in a
+    # `values` object, e.g. `{"s3_put_ms": {"avg": ..., "p(95)": ...}}`.
+    return metric
 
 
 def normalize_trend(k6: dict[str, Any], metric_name: str) -> dict[str, float]:

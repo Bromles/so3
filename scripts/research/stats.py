@@ -21,9 +21,16 @@ def descriptive_stats(
     xs = np.asarray(list(values), dtype=float)
     n = int(xs.size)
     empty: dict[str, float | int | None] = {
-        "n": 0, "mean": None, "ci_lower": None, "ci_upper": None,
-        "ci_confidence": ci_confidence, "median": None,
-        "variance": None, "stddev": None, "min": None, "max": None,
+        "n": 0,
+        "mean": None,
+        "ci_lower": None,
+        "ci_upper": None,
+        "ci_confidence": ci_confidence,
+        "median": None,
+        "variance": None,
+        "stddev": None,
+        "min": None,
+        "max": None,
         "cv_percent": None,
         **{f"p{p}": None for p in DEFAULT_PERCENTILES if p != 50},
     }
@@ -36,10 +43,16 @@ def descriptive_stats(
     stddev = float(np.std(xs, ddof=0))
 
     if n >= 2:
-        lo, hi = scipy_stats.t.interval(
-            ci_confidence, df=n - 1, loc=mean, scale=scipy_stats.sem(xs)
-        )
-        ci_lower, ci_upper = float(lo), float(hi)
+        sem = float(scipy_stats.sem(xs))
+        if sem == 0.0:
+            ci_lower, ci_upper = mean, mean
+        else:
+            lo, hi = scipy_stats.t.interval(
+                ci_confidence, df=n - 1, loc=mean, scale=sem
+            )
+            ci_lower, ci_upper = float(lo), float(hi)
+            if math.isnan(ci_lower) or math.isnan(ci_upper):
+                ci_lower, ci_upper = None, None
     else:
         ci_lower, ci_upper = None, None
 
@@ -142,7 +155,9 @@ def aggregate_run_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
         "runs_successful": len(successful),
         "runs_failed": len(failed),
         "failed_reasons": failed_reasons,
-        "verdict": "no_runs" if not summaries else ("passed" if not failed else "failed"),
+        "verdict": "no_runs"
+        if not summaries
+        else ("passed" if not failed else "failed"),
         "metrics": stats_by_bucket(by_metric),
         "phase_metrics": {
             phase: stats_by_bucket(buckets)
@@ -190,11 +205,22 @@ def markdown_table_for_metrics(metrics: dict[str, Any]) -> str:
 
         lines.append(
             "| "
-            + " | ".join([
-                name, fmt("n"), fmt("mean"), ci_str, fmt("median"),
-                fmt("stddev"), fmt("cv_percent"),
-                fmt("p90"), fmt("p95"), fmt("p99"), fmt("min"), fmt("max"),
-            ])
+            + " | ".join(
+                [
+                    name,
+                    fmt("n"),
+                    fmt("mean"),
+                    ci_str,
+                    fmt("median"),
+                    fmt("stddev"),
+                    fmt("cv_percent"),
+                    fmt("p90"),
+                    fmt("p95"),
+                    fmt("p99"),
+                    fmt("min"),
+                    fmt("max"),
+                ]
+            )
             + " |"
         )
     return "\n".join(lines)

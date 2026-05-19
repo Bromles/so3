@@ -22,6 +22,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 import manifest  # noqa: E402
 import metrics  # noqa: E402
+import plot  # noqa: E402
 import report  # noqa: E402
 import stats  # noqa: E402
 from cluster import ResourceSampler, So3Cluster  # noqa: E402
@@ -252,14 +253,20 @@ def run_one(
             k6_script.relative_to(REPO_ROOT)
             if k6_script is not None and k6_script.is_relative_to(REPO_ROOT)
             else k6_script
-        ) if k6_script is not None else None,
-        "mix": "s3_put_get_head_delete" if k6_script else "concurrent_s3_object_correctness",
+        )
+        if k6_script is not None
+        else None,
+        "mix": "s3_put_get_head_delete"
+        if k6_script
+        else "concurrent_s3_object_correctness",
         "bucket": args.bucket,
         "object_size": args.object_size,
         "vus": args.vus,
         "duration": args.duration,
         "correctness_ops": args.correctness_ops if not k6_script else None,
-        "correctness_concurrency": args.correctness_concurrency if not k6_script else None,
+        "correctness_concurrency": args.correctness_concurrency
+        if not k6_script
+        else None,
     }
 
     if phased_scenario(args):
@@ -339,6 +346,7 @@ def run_one(
             )
             status = "passed" if verifier_result["verdict"] == "passed" else "failed"
         elif args.scenario == "e3-degradation":
+            assert k6_script is not None
             run_metrics = run_e3_node_degradation(
                 args=args,
                 k6_script=k6_script,
@@ -351,6 +359,7 @@ def run_one(
             )
             status = "passed"
         elif args.scenario == "e4-hot-key":
+            assert k6_script is not None
             run_metrics = run_e4_hot_key(
                 args=args,
                 k6_script=k6_script,
@@ -361,6 +370,7 @@ def run_one(
             )
             status = "passed"
         elif args.scenario == "e5-leaderless":
+            assert k6_script is not None
             run_metrics = run_e5_leaderless(
                 args=args,
                 k6_script=k6_script,
@@ -371,6 +381,7 @@ def run_one(
             )
             status = "passed"
         elif args.scenario == "e6-recovery":
+            assert k6_script is not None
             run_metrics = run_e6_recovery(
                 args=args,
                 k6_script=k6_script,
@@ -384,6 +395,7 @@ def run_one(
             status = "passed"
         else:
             # k6-mixed: single-phase k6 run
+            assert k6_script is not None
             events.record("baseline_start")
             run_k6(
                 k6_script=k6_script,
@@ -459,9 +471,19 @@ def main(argv: Sequence[str]) -> int:
         return 130
 
     aggregate = stats.write_aggregate_summary(result_dir)
+    try:
+        plot_paths = plot.generate_plots(result_dir, aggregate)
+        plot_error = None
+    except Exception as error:
+        plot_paths = []
+        plot_error = f"{type(error).__name__}: {error}"
     report_path = report.write_report(result_dir, aggregate)
     print()
     print(f"aggregate: {result_dir / 'aggregate-summary.json'}")
+    if plot_paths:
+        print(f"plots:     {result_dir / 'plots'}")
+    if plot_error:
+        print(f"plots:     skipped ({plot_error})", file=sys.stderr)
     print(f"report:    {report_path}")
     print(f"verdict:   {aggregate.get('verdict')}")
     return 0 if aggregate.get("runs_failed", 0) == 0 else 1
