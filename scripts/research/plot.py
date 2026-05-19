@@ -9,6 +9,19 @@ from typing import Any
 
 PHASE_ORDER = ("baseline", "degraded", "recovery", "restored")
 K6_STREAM_LATENCY_METRICS = ("s3_put_ms", "s3_get_ms", "s3_head_ms", "s3_delete_ms")
+TIMELINE_EVENT_LABELS = {
+    "fail": "fail",
+    "degraded_start": "degraded",
+    "recover": "recover",
+    "normal_restored": "restored",
+    "restored_start": "restored",
+}
+TIMELINE_FALLBACK_POSITIONS = {
+    "fail": 0.5,
+    "degraded": 1.0,
+    "recover": 2.0,
+    "restored": 3.0,
+}
 
 
 def _pyplot() -> Any:
@@ -159,6 +172,93 @@ def _aggregate_mean(
     return float(value)
 
 
+def _load_events(path: Path) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    try:
+        with path.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(event, dict):
+                    events.append(event)
+    except OSError:
+        return []
+    return events
+
+
+def _event_time(event: dict[str, Any]) -> float | None:
+    value = event.get("monotonic_secs")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _interpolate_event_position(
+    event_time: float,
+    phase_times: list[tuple[float, float]],
+) -> float | None:
+    if not phase_times:
+        return None
+    if event_time <= phase_times[0][0]:
+        return phase_times[0][1]
+    for (left_time, left_x), (right_time, right_x) in zip(
+        phase_times, phase_times[1:], strict=False
+    ):
+        if event_time <= right_time:
+            span = right_time - left_time
+            if span <= 0.0:
+                return right_x
+            return left_x + (event_time - left_time) / span * (right_x - left_x)
+    return phase_times[-1][1]
+
+
+def _timeline_event_positions(result_dir: Path, phases: list[str]) -> dict[str, float]:
+    by_label: dict[str, list[float]] = {}
+    phase_x = {phase: float(index) for index, phase in enumerate(phases)}
+
+    for events_path in sorted(result_dir.glob("run-*/events.jsonl")):
+        events = _load_events(events_path)
+        phase_times: list[tuple[float, float]] = []
+        for event in events:
+            event_name = event.get("event")
+            if not isinstance(event_name, str) or not event_name.endswith("_start"):
+                continue
+            phase = event_name[: -len("_start")]
+            if phase not in phase_x:
+                continue
+            event_time = _event_time(event)
+            if event_time is not None:
+                phase_times.append((event_time, phase_x[phase]))
+        phase_times.sort()
+
+        for event in events:
+            event_name = event.get("event")
+            if not isinstance(event_name, str):
+                continue
+            label = TIMELINE_EVENT_LABELS.get(event_name)
+            if label is None:
+                continue
+            event_time = _event_time(event)
+            position = (
+                _interpolate_event_position(event_time, phase_times)
+                if event_time is not None
+                else None
+            )
+            if position is not None:
+                by_label.setdefault(label, []).append(position)
+
+    return {
+        label: mean
+        for label, values in by_label.items()
+        if (mean := _mean(values)) is not None
+    }
+
+
 def _plot_phases(plt: Any, aggregate: dict[str, Any], plots_dir: Path) -> Path | None:
     relative_metrics = aggregate.get("relative_metrics", {})
     if not isinstance(relative_metrics, dict) or not relative_metrics:
@@ -210,6 +310,106 @@ def _plot_phases(plt: Any, aggregate: dict[str, Any], plots_dir: Path) -> Path |
     ax.grid(True, axis="y", alpha=0.3)
     ax.legend()
     return _save(fig, plots_dir / "phases.png")
+
+
+def _plot_timeline(
+    plt: Any, aggregate: dict[str, Any], result_dir: Path, plots_dir: Path
+) -> Path | None:
+    relative_metrics = aggregate.get("relative_metrics", {})
+    if not isinstance(relative_metrics, dict) or not relative_metrics:
+        return None
+
+    phases = [
+        phase
+        for phase in PHASE_ORDER
+        if phase == "baseline" or phase in relative_metrics
+    ]
+    if len(phases) <= 1:
+        return None
+
+    x = list(range(len(phases)))
+    throughput: list[float | None] = []
+    put_p95: list[float | None] = []
+    put_p99: list[float | None] = []
+    for phase in phases:
+        if phase == "baseline":
+            throughput.append(1.0)
+            put_p95.append(1.0)
+            put_p99.append(1.0)
+            continue
+        throughput.append(
+            _aggregate_mean(
+                aggregate,
+                "relative_metrics",
+                phase,
+                "throughput.http_reqs_rate_ratio",
+            )
+        )
+        put_p95.append(
+            _aggregate_mean(
+                aggregate,
+                "relative_metrics",
+                phase,
+                "latency.put.p95_multiplier",
+            )
+        )
+        put_p99.append(
+            _aggregate_mean(
+                aggregate,
+                "relative_metrics",
+                phase,
+                "latency.put.p99_multiplier",
+            )
+        )
+
+    if not any(value is not None for value in [*throughput, *put_p95, *put_p99]):
+        return None
+
+    fig, ax = plt.subplots(figsize=(10, 5.2))
+    for values, label, marker in (
+        (throughput, "throughput ratio", "o"),
+        (put_p95, "put p95 multiplier", "s"),
+        (put_p99, "put p99 multiplier", "^"),
+    ):
+        if any(value is not None for value in values):
+            ax.plot(
+                x,
+                [value if value is not None else float("nan") for value in values],
+                marker=marker,
+                linewidth=1.8,
+                label=label,
+            )
+
+    event_positions = {
+        **{
+            label: position
+            for label, position in TIMELINE_FALLBACK_POSITIONS.items()
+            if position <= float(len(phases) - 1)
+        },
+        **_timeline_event_positions(result_dir, phases),
+    }
+    y_top = ax.get_ylim()[1]
+    for label, position in sorted(event_positions.items(), key=lambda item: item[1]):
+        ax.axvline(position, linestyle="--", linewidth=1, alpha=0.45)
+        ax.text(
+            position,
+            y_top,
+            label,
+            rotation=90,
+            va="top",
+            ha="right",
+            fontsize=8,
+            alpha=0.8,
+        )
+
+    ax.axhline(1.0, color="black", linestyle=":", linewidth=1, alpha=0.6)
+    ax.set_xticks(x)
+    ax.set_xticklabels(phases)
+    ax.set_ylabel("normalized to baseline")
+    ax.set_title("Fault timeline")
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="best")
+    return _save(fig, plots_dir / "timeline.png")
 
 
 def _plot_hot_key(
@@ -340,6 +540,9 @@ def generate_plots(
         for path in (
             _plot_repeatability(plt, summaries, plots_dir, scenario),
             _plot_phases(plt, aggregate, plots_dir)
+            if scenario in {"e3-degradation", "e6-recovery"}
+            else None,
+            _plot_timeline(plt, aggregate, result_dir, plots_dir)
             if scenario in {"e3-degradation", "e6-recovery"}
             else None,
             _plot_hot_key(plt, summaries, plots_dir)

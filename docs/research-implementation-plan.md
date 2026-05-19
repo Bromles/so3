@@ -698,13 +698,13 @@ research-plan.
 - `plot.generate_plots()` создает `plots/*.png`:
     - `repeatability.png` для доступных per-run метрик;
     - `phases.png` для E3/E6 normalized phase behavior;
+    - `timeline.png` для E3/E6 fault timeline с normalized throughput, put p95/p99 и event markers;
     - `hot_key.png` для E4;
     - `nodes.png` для E5.
 - `run-scenario.py` вызывает генерацию графиков перед записью `report.md`, чтобы отчет мог ссылаться на созданные PNG.
 
 Остается:
 
-- хронология с event markers `fail`/`degraded`/`recover`/`restored` по единой временной оси;
 - symmetry-of-failures график по отказу каждого узла;
 - recovery accumulated lag;
 - Accord/server-side path metrics после реализации server-side observability.
