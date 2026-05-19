@@ -11,6 +11,11 @@ use crate::repository::consensus_journal::ConsensusJournalRepository;
 use crate::repository::metadata::ObjectMetadataRepository;
 use crate::use_case::inbound_consensus::use_case::InboundConsensusUseCaseImpl;
 use tokio::time::{timeout_at, Duration, Instant};
+use tracing::info;
+
+fn elapsed_ms(start: Instant) -> u64 {
+    u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
 
 impl<CJR, OMR, BR, BPC> InboundConsensusUseCaseImpl<CJR, OMR, BR, BPC>
 where
@@ -20,6 +25,7 @@ where
     BPC: BlobPeerClient,
 {
     pub(super) async fn apply_internal(&self, req: ApplyRequest) -> So3Result<ApplyResponse> {
+        let apply_started = Instant::now();
         // Idempotency; synthesize row if we missed PreAccept/Accept/Commit entirely.
         match self.journal.load(&req.command_id).await? {
             Some(e) if e.state == JournalState::Applied => {
@@ -45,14 +51,23 @@ where
         // avoid the TOCTOU race where an entry is removed between the check and the await.
         // The deadline is a single shared budget across all iterations of the wait loop.
         let deadline = Instant::now() + Duration::from_secs(30);
+        let (apply_reorder_buffer_size_start, mut earlier_blocking_count) = {
+            let buf = self.reorder_buffer.lock().await;
+            (buf.len(), buf.range(..req.timestamp.clone()).count())
+        };
+        let reorder_wait_started = Instant::now();
+        let mut reorder_wait_iterations = 0usize;
         loop {
             let notified = self.apply_notify.notified();
-            {
+            let blocking_count = {
                 let buf = self.reorder_buffer.lock().await;
-                if buf.range(..req.timestamp.clone()).next().is_none() {
-                    break;
-                }
+                buf.range(..req.timestamp.clone()).count()
+            };
+            earlier_blocking_count = earlier_blocking_count.max(blocking_count);
+            if blocking_count == 0 {
+                break;
             }
+            reorder_wait_iterations += 1;
             timeout_at(deadline, notified).await.map_err(|_| {
                 So3Error::PeerUnavailable(
                     "reorder buffer: deadline exceeded waiting for earlier committed command"
@@ -60,25 +75,33 @@ where
                 )
             })?;
         }
+        let reorder_wait_ms = elapsed_ms(reorder_wait_started);
 
         // Wait for explicit dependencies to be applied.
         // Register Notify before checking to avoid the TOCTOU where a dep is applied
         // between the check and the await. Reuses the same deadline as the reorder buffer.
+        let explicit_dependency_count = req.dependencies.0.len();
+        let dependency_wait_started = Instant::now();
+        let mut pending_dependency_count = 0usize;
+        let mut dependency_wait_iterations = 0usize;
         loop {
             let notified = self.apply_notify.notified();
-            let mut pending = None;
+            let mut pending_count = 0usize;
+            let mut first_pending_sequence = None;
             for dep_id in &req.dependencies.0 {
                 match self.journal.load(dep_id).await? {
                     Some(e) if e.state == JournalState::Applied => {}
                     _ => {
-                        pending = Some(dep_id.sequence);
-                        break;
+                        pending_count += 1;
+                        first_pending_sequence.get_or_insert(dep_id.sequence);
                     }
                 }
             }
-            match pending {
+            pending_dependency_count = pending_dependency_count.max(pending_count);
+            match first_pending_sequence {
                 None => break,
                 Some(seq) => {
+                    dependency_wait_iterations += 1;
                     timeout_at(deadline, notified).await.map_err(|_| {
                         So3Error::PeerUnavailable(format!(
                             "dependency seq={seq} not applied within deadline"
@@ -87,6 +110,7 @@ where
                 }
             }
         }
+        let dependency_wait_ms = elapsed_ms(dependency_wait_started);
 
         // Compute result — blob I/O is safe here (idempotent), but object metadata is NOT
         // mutated yet. Separating computation from persistence lets us journal-first below.
@@ -156,11 +180,14 @@ where
         // Journal-first: persist the result before mutating object metadata.
         // On a crash after this line the idempotency check above returns the stored result;
         // the startup reconciliation pass in Node::new re-applies any missing metadata changes.
+        let journal_apply_started = Instant::now();
         self.journal
             .record_applied(&req.command_id, &result)
             .await?;
+        let journal_apply_ms = elapsed_ms(journal_apply_started);
 
         // Apply object metadata side effects.
+        let metadata_apply_started = Instant::now();
         match (&req.command, &result) {
             (ObjectCommand::Write { .. }, CommandResult::Write(WriteResult { metadata })) => {
                 self.object_metadata_repository.store(metadata).await?;
@@ -173,9 +200,36 @@ where
             }
             _ => {}
         }
+        let metadata_apply_ms = elapsed_ms(metadata_apply_started);
 
-        self.reorder_buffer.lock().await.remove(&req.timestamp);
+        let apply_reorder_buffer_size_end = {
+            let mut buffer = self.reorder_buffer.lock().await;
+            buffer.remove(&req.timestamp);
+            buffer.len()
+        };
         self.apply_notify.notify_waiters();
+
+        info!(
+            coordination_event = "apply_backlog",
+            backlog_event = "apply",
+            node = self.node_id.as_ref(),
+            origin_node = req.command_id.origin_node_id.as_ref(),
+            operation_id_sequence = req.command_id.sequence,
+            operation = Self::command_operation(&req.command),
+            apply_reorder_buffer_size_start,
+            apply_reorder_buffer_size_end,
+            earlier_blocking_count,
+            explicit_dependency_count,
+            pending_dependency_count,
+            reorder_wait_iterations,
+            dependency_wait_iterations,
+            reorder_wait_ms,
+            dependency_wait_ms,
+            journal_apply_ms,
+            metadata_apply_ms,
+            apply_total_ms = elapsed_ms(apply_started),
+            "inbound apply backlog"
+        );
 
         Ok(ApplyResponse { result })
     }

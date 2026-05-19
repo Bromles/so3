@@ -85,9 +85,11 @@ SO3 рассматривается как экспериментальный pro
   по форме графиков — через normalized метрики в `relative_metrics`.
 - Server-side observability частично реализована: обычный `so3` пишет structured `tracing` events для
   `fast`/`slow`/`recovery` consensus path, coordinator/origin node, quorum, participating replicas,
-  dependency count, pre-accept/accept/recovery counters; research runner парсит их из `cluster.log` в
-  `server.consensus.*`. Остаются phase timings, quorum wait, dependency depth, retry count,
-  recovery backlog и in-flight operations.
+  dependency count/depth lower bound, phase timings, quorum wait, retry/commit attempts,
+  in-flight operations, pre-accept/accept/recovery counters; research runner парсит их из
+  `cluster.log` в `server.consensus.*`. Inbound apply path пишет `apply_backlog` events для reorder buffer,
+  dependency wait и apply latency; runner парсит их в `server.apply.*`. Остаются полноценный dependency depth
+  по графу зависимостей и более детальные recovery-specific backlog breakdowns.
 - Maelstrom hidden-leader behavior исправлен для обычных client requests: узел, получивший клиентскую операцию,
   координирует ее локально и пишет structured `tracing` log через подключенный logger с `entry_node`,
   `coordinator_node`, `operation_id`, `operation`, `source`, `consensus_path`.
@@ -713,14 +715,16 @@ research-plan.
   разных узлов и строил `symmetry.png`.
 - Обычный `so3` пишет structured `tracing` logs `coordination_event="consensus_operation"`; research runner парсит
   `cluster.log` в `server.consensus.*` metrics и добавляет server-side consensus section в `report.md`. Сейчас в summary
-  попадают path ratios, operation/node distribution, quorum/replica counts, dependency count и
-  pre-accept/accept/recovery counters.
+  попадают path ratios, operation/node distribution, quorum/replica counts, dependency count/depth lower bound,
+  phase timings, quorum wait, retry/commit attempts, in-flight operations и pre-accept/accept/recovery counters.
+  Inbound apply path дополнительно пишет `coordination_event="apply_backlog"`; runner агрегирует reorder buffer size,
+  blocking earlier commands, pending dependency count, reorder/dependency wait и apply timings в `server.apply.*`, а
+  `report.md` добавляет server-side apply backlog section.
 
 Остается:
 
-- recovery accumulated lag после появления server-side lag/queue observability;
-- расширенные Accord/server-side metrics: phase timings, quorum wait time, dependency depth, retry count, recovery
-  backlog и in-flight operations.
+- полноценный dependency depth по графу зависимостей;
+- более детальный recovery-specific backlog/lag breakdown, если потребуется отделять общий apply backlog от recovery.
 
 ## Этап 14. Обновить документацию
 

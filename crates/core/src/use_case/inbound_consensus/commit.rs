@@ -5,6 +5,7 @@ use crate::repository::blob::BlobRepository;
 use crate::repository::consensus_journal::ConsensusJournalRepository;
 use crate::repository::metadata::ObjectMetadataRepository;
 use crate::use_case::inbound_consensus::use_case::InboundConsensusUseCaseImpl;
+use tracing::info;
 
 impl<CJR, OMR, BR, BPC> InboundConsensusUseCaseImpl<CJR, OMR, BR, BPC>
 where
@@ -31,10 +32,27 @@ where
             .record_committed(&req.command_id, &req.timestamp, &req.dependencies)
             .await?;
 
-        self.reorder_buffer
-            .lock()
-            .await
-            .insert(req.timestamp, req.command_id);
+        let commit_dependency_count = req.dependencies.0.len();
+        let operation = Self::command_operation(&req.command);
+        let origin_node = req.command_id.origin_node_id.clone();
+        let operation_id_sequence = req.command_id.sequence;
+        let commit_reorder_buffer_size = {
+            let mut buffer = self.reorder_buffer.lock().await;
+            buffer.insert(req.timestamp, req.command_id);
+            buffer.len()
+        };
+
+        info!(
+            coordination_event = "apply_backlog",
+            backlog_event = "commit",
+            node = self.node_id.as_ref(),
+            origin_node = origin_node.as_ref(),
+            operation_id_sequence,
+            operation,
+            commit_dependency_count,
+            commit_reorder_buffer_size,
+            "inbound apply backlog"
+        );
 
         Ok(CommitResponse)
     }

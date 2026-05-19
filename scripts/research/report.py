@@ -365,8 +365,21 @@ def _server_consensus_section(aggregate: dict[str, Any]) -> list[str]:
     for metric_name, label in (
         ("server.consensus.quorum.mean", "quorum mean"),
         ("server.consensus.participating_replicas.mean", "participating replicas mean"),
+        ("server.consensus.pre_accept_ms.mean", "pre-accept mean, ms"),
+        ("server.consensus.accept_ms.mean", "accept mean, ms"),
+        ("server.consensus.commit_ms.mean", "commit mean, ms"),
+        ("server.consensus.apply_ms.mean", "apply mean, ms"),
+        ("server.consensus.recover_ms.mean", "recover mean, ms"),
+        ("server.consensus.total_ms.mean", "operation total mean, ms"),
+        ("server.consensus.quorum_wait_ms.mean", "quorum wait mean, ms"),
+        ("server.consensus.retry_count.mean", "retry count mean"),
+        ("server.consensus.commit_attempts.mean", "commit attempts mean"),
+        ("server.consensus.commit_ok.mean", "commit quorum responses mean"),
+        ("server.consensus.in_flight_operations.max", "max in-flight operations"),
         ("server.consensus.dependency_count.mean", "dependency count mean"),
         ("server.consensus.dependency_count.max", "dependency count max"),
+        ("server.consensus.dependency_depth.mean", "dependency depth mean"),
+        ("server.consensus.dependency_depth.max", "dependency depth max"),
         ("server.consensus.pre_accept_failures.total", "pre-accept failures total"),
         ("server.consensus.recovery_response_count.mean", "recovery responses mean"),
         ("server.consensus.recovery_wait_for_count.mean", "recovery wait-for mean"),
@@ -385,6 +398,46 @@ def _server_consensus_section(aggregate: dict[str, Any]) -> list[str]:
         for label, value in detail_rows:
             lines.append(f"| {label} | {_format_number(value)} |")
         lines.append("")
+    return lines
+
+
+def _server_apply_section(aggregate: dict[str, Any]) -> list[str]:
+    metrics = aggregate.get("metrics", {})
+    if not isinstance(metrics, dict):
+        return []
+    total = _stat_mean(metrics.get("server.apply.events_total"))
+    if total is None:
+        return []
+
+    rows = []
+    for metric_name, label in (
+        ("server.apply.commit_reorder_buffer_size.max", "max commit reorder buffer"),
+        (
+            "server.apply.apply_reorder_buffer_size_start.max",
+            "max apply reorder buffer at start",
+        ),
+        (
+            "server.apply.apply_reorder_buffer_size_end.max",
+            "max apply reorder buffer at end",
+        ),
+        ("server.apply.earlier_blocking_count.max", "max earlier blocking commands"),
+        ("server.apply.explicit_dependency_count.mean", "explicit dependencies mean"),
+        ("server.apply.pending_dependency_count.max", "max pending dependencies"),
+        ("server.apply.reorder_wait_ms.mean", "reorder wait mean, ms"),
+        ("server.apply.dependency_wait_ms.mean", "dependency wait mean, ms"),
+        ("server.apply.apply_total_ms.mean", "inbound apply total mean, ms"),
+    ):
+        value = _stat_mean(metrics.get(metric_name))
+        if value is not None:
+            rows.append((label, value))
+    if not rows:
+        return []
+
+    lines = ["## Server-side apply backlog metrics", ""]
+    lines.extend(["| metric | mean/max |", "| --- | ---: |"])
+    for label, value in rows:
+        lines.append(f"| {label} | {_format_number(value)} |")
+    lines.append("")
     return lines
 
 
@@ -437,6 +490,7 @@ def write_report(result_dir: Path, aggregate: dict[str, Any]) -> Path:
         lines.extend(_node_distribution_section(summaries))
 
     lines.extend(_server_consensus_section(aggregate))
+    lines.extend(_server_apply_section(aggregate))
     lines.extend(_plot_links_section(result_dir))
 
     lines.extend(

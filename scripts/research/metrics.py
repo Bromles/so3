@@ -269,79 +269,157 @@ def summary_from_cluster_log(path: Path) -> dict[str, Any]:
     }
     numeric_buckets: dict[str, list[float]] = {
         "dependency_count": [],
+        "dependency_depth": [],
         "pre_accept_failures": [],
         "pre_accept_ok": [],
         "accept_ok": [],
         "quorum": [],
         "participating_replicas": [],
+        "pre_accept_ms": [],
+        "accept_ms": [],
+        "commit_ms": [],
+        "apply_ms": [],
+        "recover_ms": [],
+        "total_ms": [],
+        "quorum_wait_ms": [],
+        "retry_count": [],
+        "commit_attempts": [],
+        "commit_ok": [],
+        "in_flight_operations": [],
         "recovery_response_count": [],
         "recovery_wait_for_count": [],
         "recovery_superseding_count": [],
     }
+    apply_event_counts: dict[str, int] = {}
+    apply_operation_counts: dict[str, int] = {}
+    apply_node_counts: dict[str, dict[str, int]] = {
+        "node": {},
+        "origin_node": {},
+    }
+    apply_numeric_buckets: dict[str, list[float]] = {
+        "commit_dependency_count": [],
+        "commit_reorder_buffer_size": [],
+        "apply_reorder_buffer_size_start": [],
+        "apply_reorder_buffer_size_end": [],
+        "earlier_blocking_count": [],
+        "explicit_dependency_count": [],
+        "pending_dependency_count": [],
+        "reorder_wait_iterations": [],
+        "dependency_wait_iterations": [],
+        "reorder_wait_ms": [],
+        "dependency_wait_ms": [],
+        "journal_apply_ms": [],
+        "metadata_apply_ms": [],
+        "apply_total_ms": [],
+    }
 
     with path.open(encoding="utf-8", errors="replace") as f:
         for line in f:
-            if "coordination_event" not in line or "consensus_operation" not in line:
+            if "coordination_event" not in line:
                 continue
             fields = _parse_tracing_fields(line)
-            if fields.get("coordination_event") != "consensus_operation":
-                continue
-            path_name = fields.get("consensus_path")
-            if isinstance(path_name, str):
-                _inc(path_counts, path_name)
-            operation = fields.get("operation")
-            if isinstance(operation, str):
-                _inc(operation_counts, operation)
-            for name, counter in node_counts.items():
-                value = fields.get(name)
-                if isinstance(value, str):
-                    _inc(counter, value)
-            for name, bucket in numeric_buckets.items():
-                value = fields.get(name)
-                if isinstance(value, (int, float)):
-                    bucket.append(float(value))
+            event_name = fields.get("coordination_event")
+            if event_name == "consensus_operation":
+                path_name = fields.get("consensus_path")
+                if isinstance(path_name, str):
+                    _inc(path_counts, path_name)
+                operation = fields.get("operation")
+                if isinstance(operation, str):
+                    _inc(operation_counts, operation)
+                for name, counter in node_counts.items():
+                    value = fields.get(name)
+                    if isinstance(value, str):
+                        _inc(counter, value)
+                for name, bucket in numeric_buckets.items():
+                    value = fields.get(name)
+                    if isinstance(value, (int, float)):
+                        bucket.append(float(value))
+            elif event_name == "apply_backlog":
+                backlog_event = fields.get("backlog_event")
+                if isinstance(backlog_event, str):
+                    _inc(apply_event_counts, backlog_event)
+                operation = fields.get("operation")
+                if isinstance(operation, str):
+                    _inc(apply_operation_counts, operation)
+                for name, counter in apply_node_counts.items():
+                    value = fields.get(name)
+                    if isinstance(value, str):
+                        _inc(counter, value)
+                for name, bucket in apply_numeric_buckets.items():
+                    value = fields.get(name)
+                    if isinstance(value, (int, float)):
+                        bucket.append(float(value))
+
+    result: dict[str, Any] = {"server": {}}
 
     total = sum(path_counts.values())
-    if total == 0:
-        return {}
-
-    path_metrics = {}
-    for path_name in sorted({*CONSENSUS_PATHS, *path_counts}):
-        count = path_counts.get(path_name, 0)
-        path_metrics[path_name] = {
-            "count": count,
-            "ratio": _safe_ratio(count, total),
-        }
-
-    return {
-        "server": {
-            "consensus": {
-                "operations_total": total,
-                "path": path_metrics,
-                "operation": {
-                    name: {"count": count, "ratio": _safe_ratio(count, total)}
-                    for name, count in sorted(operation_counts.items())
-                },
-                **{
-                    name: {
-                        node: {"count": count, "ratio": _safe_ratio(count, total)}
-                        for node, count in sorted(counter.items())
-                    }
-                    for name, counter in node_counts.items()
-                    if counter
-                },
-                **{
-                    name: {
-                        "mean": sum(values) / len(values),
-                        "max": max(values),
-                        "total": sum(values),
-                    }
-                    for name, values in numeric_buckets.items()
-                    if values
-                },
+    if total > 0:
+        path_metrics = {}
+        for path_name in sorted({*CONSENSUS_PATHS, *path_counts}):
+            count = path_counts.get(path_name, 0)
+            path_metrics[path_name] = {
+                "count": count,
+                "ratio": _safe_ratio(count, total),
             }
+
+        result["server"]["consensus"] = {
+            "operations_total": total,
+            "path": path_metrics,
+            "operation": {
+                name: {"count": count, "ratio": _safe_ratio(count, total)}
+                for name, count in sorted(operation_counts.items())
+            },
+            **{
+                name: {
+                    node: {"count": count, "ratio": _safe_ratio(count, total)}
+                    for node, count in sorted(counter.items())
+                }
+                for name, counter in node_counts.items()
+                if counter
+            },
+            **{
+                name: {
+                    "mean": sum(values) / len(values),
+                    "max": max(values),
+                    "total": sum(values),
+                }
+                for name, values in numeric_buckets.items()
+                if values
+            },
         }
-    }
+
+    apply_total = sum(apply_event_counts.values())
+    if apply_total > 0:
+        result["server"]["apply"] = {
+            "events_total": apply_total,
+            "event": {
+                name: {"count": count, "ratio": _safe_ratio(count, apply_total)}
+                for name, count in sorted(apply_event_counts.items())
+            },
+            "operation": {
+                name: {"count": count, "ratio": _safe_ratio(count, apply_total)}
+                for name, count in sorted(apply_operation_counts.items())
+            },
+            **{
+                name: {
+                    node: {"count": count, "ratio": _safe_ratio(count, apply_total)}
+                    for node, count in sorted(counter.items())
+                }
+                for name, counter in apply_node_counts.items()
+                if counter
+            },
+            **{
+                name: {
+                    "mean": sum(values) / len(values),
+                    "max": max(values),
+                    "total": sum(values),
+                }
+                for name, values in apply_numeric_buckets.items()
+                if values
+            },
+        }
+
+    return result if result["server"] else {}
 
 
 def merge_metrics(target: dict[str, Any], source: dict[str, Any]) -> None:

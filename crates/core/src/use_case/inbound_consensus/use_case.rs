@@ -1,6 +1,7 @@
 use crate::client::interface::BlobPeerClient;
 use crate::domain::blob::id::BlobId;
 use crate::domain::clock::{HybridLogicalClock, LogicalTimestamp};
+use crate::domain::command::ObjectCommand;
 use crate::domain::consensus::command_id::CommandId;
 use crate::domain::consensus::journal::JournalState;
 use crate::domain::consensus::transport::{
@@ -86,6 +87,15 @@ where
             .lock()
             .await
             .observe(self.epoch.load(Ordering::Acquire), remote)
+    }
+
+    pub(super) fn command_operation(command: &ObjectCommand) -> &'static str {
+        match command {
+            ObjectCommand::Read { .. } => "read",
+            ObjectCommand::Write { .. } => "write",
+            ObjectCommand::Cas { .. } => "cas",
+            ObjectCommand::Delete { .. } => "delete",
+        }
     }
 
     pub(super) async fn fetch_blob_from_any_peer(&self, blob_id: &BlobId) -> So3Result<()> {

@@ -1,5 +1,5 @@
 use crate::client::interface::{BlobPeerClient, ConsensusPeerClient};
-use crate::domain::clock::{HybridLogicalClock, LogicalTimestamp, physical_millis_now};
+use crate::domain::clock::{physical_millis_now, HybridLogicalClock, LogicalTimestamp};
 use crate::domain::command::{CasResult, CommandResult, ObjectCommand, ReadResult, WriteResult};
 use crate::domain::consensus::ballot::Ballot;
 use crate::domain::consensus::command_id::{AppliedSet, CommandId, DependencySet};
@@ -18,10 +18,10 @@ use crate::repository::metadata::ObjectMetadataRepository;
 use crate::service::consensus_coordinator::ConsensusCoordinatorService;
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
-use tokio::time::{Duration, Instant, sleep, timeout_at};
+use tokio::time::{sleep, timeout_at, Duration, Instant};
 use tracing::info;
 
 pub struct AccordConsensusCoordinatorService<CJR, CPC, OMR, BR, BPC>
@@ -43,6 +43,36 @@ where
     blob_repository: Arc<BR>,
     blob_peer_clients: HashMap<NodeId, Arc<BPC>>,
     apply_notify: Arc<Notify>,
+    in_flight_operations: AtomicU64,
+}
+
+struct InFlightOperationGuard<'a> {
+    counter: &'a AtomicU64,
+}
+
+impl<'a> InFlightOperationGuard<'a> {
+    fn new(counter: &'a AtomicU64) -> Self {
+        counter.fetch_add(1, Ordering::AcqRel);
+        Self { counter }
+    }
+}
+
+impl Drop for InFlightOperationGuard<'_> {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+struct CompletionMetrics {
+    result: CommandResult,
+    commit_ms: u64,
+    apply_ms: u64,
+    commit_attempts: u32,
+    commit_ok: usize,
+}
+
+fn elapsed_ms(start: Instant) -> u64 {
+    u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 impl<CJR, CPC, OMR, BR, BPC> AccordConsensusCoordinatorService<CJR, CPC, OMR, BR, BPC>
@@ -82,6 +112,7 @@ where
             blob_repository,
             blob_peer_clients,
             apply_notify,
+            in_flight_operations: AtomicU64::new(0),
         })
     }
 
@@ -275,7 +306,8 @@ where
         commit_req: CommitRequest,
         peers: &[Arc<CPC>],
         quorum: usize,
-    ) -> So3Result<CommandResult> {
+    ) -> So3Result<CompletionMetrics> {
+        let commit_started = Instant::now();
         self.consensus_journal_repository
             .record_committed(
                 &commit_req.command_id,
@@ -287,13 +319,17 @@ where
         const MAX_COMMIT_ATTEMPTS: u32 = 10;
         let mut delay_ms = 10u64;
         let mut commit_reached_quorum = false;
-        for _ in 0..MAX_COMMIT_ATTEMPTS {
+        let mut commit_attempts = 0u32;
+        let mut final_commit_ok = 1usize;
+        for attempt in 1..=MAX_COMMIT_ATTEMPTS {
+            commit_attempts = attempt;
             let mut commit_ok = 1usize;
             for peer in peers {
                 if peer.commit(commit_req.clone()).await.is_ok() {
                     commit_ok += 1;
                 }
             }
+            final_commit_ok = commit_ok;
             if commit_ok >= quorum {
                 commit_reached_quorum = true;
                 break;
@@ -301,6 +337,7 @@ where
             sleep(Duration::from_millis(delay_ms)).await;
             delay_ms = (delay_ms * 2).min(1_000);
         }
+        let commit_ms = elapsed_ms(commit_started);
         if !commit_reached_quorum {
             return Err(So3Error::PeerUnavailable(format!(
                 "commit quorum not reached after {MAX_COMMIT_ATTEMPTS} attempts"
@@ -314,14 +351,22 @@ where
             timestamp: commit_req.timestamp.clone(),
             dependencies: commit_req.dependencies.clone(),
         };
+        let apply_started = Instant::now();
         let result = self.apply_local(&apply_req).await?;
+        let apply_ms = elapsed_ms(apply_started);
         for peer in peers.iter().cloned() {
             let req = apply_req.clone();
             tokio::spawn(async move {
                 let _ = peer.apply(req).await;
             });
         }
-        Ok(result)
+        Ok(CompletionMetrics {
+            result,
+            commit_ms,
+            apply_ms,
+            commit_attempts,
+            commit_ok: final_commit_ok,
+        })
     }
 
     async fn unapplied_deps_local(&self, deps: &DependencySet) -> So3Result<Vec<CommandId>> {
@@ -429,6 +474,8 @@ where
         quorum: usize,
         last_applied: &AppliedSet,
     ) -> So3Result<CommandResult> {
+        let operation_started = Instant::now();
+        let recovery_started = Instant::now();
         let recovery_ballot = ballot.next(self.node_id.clone());
 
         self.consensus_journal_repository
@@ -472,6 +519,7 @@ where
         let recovery_response_count = successes.len();
         let recovery_superseding_count = successes.iter().filter(|s| s.superseding).count();
         self.wait_for_applied(&wait_for).await?;
+        let recover_ms = elapsed_ms(recovery_started);
 
         // If any peer has already committed, use that decision directly.
         if let Some(done) = successes.iter().find(|s| {
@@ -481,7 +529,7 @@ where
             )
         }) {
             let dependency_count = done.dependencies.0.len();
-            let result = self
+            let completion = self
                 .complete_from_commit(
                     CommitRequest {
                         command_id: command_id.clone(),
@@ -507,9 +555,20 @@ where
                 recovery_wait_for_count,
                 recovery_superseding_count,
                 dependency_count,
+                dependency_depth = dependency_count,
+                recover_ms,
+                accept_ms = 0u64,
+                commit_ms = completion.commit_ms,
+                apply_ms = completion.apply_ms,
+                total_ms = elapsed_ms(operation_started),
+                quorum_wait_ms = recover_ms + completion.commit_ms,
+                retry_count = completion.commit_attempts.saturating_sub(1),
+                commit_attempts = completion.commit_attempts,
+                commit_ok = completion.commit_ok,
+                in_flight_operations = self.in_flight_operations.load(Ordering::Acquire),
                 "consensus coordination"
             );
-            return Ok(result);
+            return Ok(completion.result);
         }
 
         // Determine final timestamp and deps from recovery responses.
@@ -543,6 +602,7 @@ where
         };
 
         // Accept phase with recovery ballot.
+        let accept_started = Instant::now();
         self.consensus_journal_repository
             .record_accepted(
                 command_id,
@@ -582,9 +642,10 @@ where
                 quorum,
             )));
         }
+        let accept_ms = elapsed_ms(accept_started);
 
         let dependency_count = refined_deps.len();
-        let result = self
+        let completion = self
             .complete_from_commit(
                 CommitRequest {
                     command_id: command_id.clone(),
@@ -610,9 +671,20 @@ where
             recovery_wait_for_count,
             recovery_superseding_count,
             dependency_count,
+            dependency_depth = dependency_count,
+            recover_ms,
+            accept_ms,
+            commit_ms = completion.commit_ms,
+            apply_ms = completion.apply_ms,
+            total_ms = elapsed_ms(operation_started),
+            quorum_wait_ms = recover_ms + accept_ms + completion.commit_ms,
+            retry_count = completion.commit_attempts.saturating_sub(1),
+            commit_attempts = completion.commit_attempts,
+            commit_ok = completion.commit_ok,
+            in_flight_operations = self.in_flight_operations.load(Ordering::Acquire),
             "consensus coordination"
         );
-        Ok(result)
+        Ok(completion.result)
     }
 }
 
@@ -627,6 +699,8 @@ where
     BPC: BlobPeerClient,
 {
     async fn coordinate(&self, command: ObjectCommand) -> So3Result<CommandResult> {
+        let operation_started = Instant::now();
+        let _in_flight_guard = InFlightOperationGuard::new(&self.in_flight_operations);
         let command_id = self.next_command_id();
         let ballot = Ballot::initial(self.node_id.clone());
         let timestamp_zero = self
@@ -636,6 +710,7 @@ where
             .tick(self.epoch.load(Ordering::Acquire), self.network_skew_ms);
         let last_applied = self.last_applied().await?;
 
+        let pre_accept_started = Instant::now();
         // Coordinator is also a replica — atomically check local conflicts and record locally.
         let DependencySet(local_deps) = self
             .consensus_journal_repository
@@ -686,6 +761,7 @@ where
                 pre_failures,
             )));
         }
+        let pre_accept_ms = elapsed_ms(pre_accept_started);
 
         // Final timestamp = max of self + all responding peers.
         let final_timestamp =
@@ -707,10 +783,12 @@ where
             final_timestamp == timestamp_zero && all_deps.is_empty() && pre_failures == 0;
 
         let mut accept_ok_for_log = 0usize;
+        let mut accept_ms = 0u64;
         let (commit_timestamp, commit_deps) = if fast_path {
             (timestamp_zero.clone(), all_deps)
         } else {
             // --- Slow path: Accept (TODO: parallelize) ---
+            let accept_started = Instant::now();
             self.consensus_journal_repository
                 .record_accepted(
                     &command_id,
@@ -765,6 +843,7 @@ where
                 )));
             }
             accept_ok_for_log = accept_ok + 1;
+            accept_ms = elapsed_ms(accept_started);
 
             (final_timestamp, refined_deps)
         };
@@ -776,74 +855,41 @@ where
             timestamp: commit_timestamp,
             dependencies: DependencySet(commit_deps),
         };
-
-        // Record committed locally with the final timestamp and deps.
-        self.consensus_journal_repository
-            .record_committed(&command_id, &commit_req.timestamp, &commit_req.dependencies)
+        let operation = Self::command_operation(&commit_req.command);
+        let dependency_count = commit_req.dependencies.0.len();
+        let dependency_depth = dependency_count;
+        let completion = self
+            .complete_from_commit(commit_req, &peers, quorum)
             .await?;
-
-        // Commit must reach a quorum before applying — CASSANDRA-18365.
-        const MAX_COMMIT_ATTEMPTS: u32 = 10;
-        let mut delay_ms = 10u64;
-        let mut commit_reached_quorum = false;
-        for _ in 0..MAX_COMMIT_ATTEMPTS {
-            let mut commit_ok = 1usize;
-            for peer in &peers {
-                if peer.commit(commit_req.clone()).await.is_ok() {
-                    commit_ok += 1;
-                }
-            }
-            if commit_ok >= quorum {
-                commit_reached_quorum = true;
-                break;
-            }
-            sleep(Duration::from_millis(delay_ms)).await;
-            delay_ms = (delay_ms * 2).min(1_000);
-        }
-
-        if !commit_reached_quorum {
-            return Err(So3Error::PeerUnavailable(format!(
-                "commit quorum not reached after {MAX_COMMIT_ATTEMPTS} attempts"
-            )));
-        }
-
-        // --- Apply ---
-        // Apply locally to produce the CommandResult returned to the client.
-        // Peers receive Apply fire-and-forget — they apply independently once their
-        // reorder buffer and dependency checks pass.
-        let apply_req = ApplyRequest {
-            command_id: command_id.clone(),
-            command: commit_req.command.clone(),
-            timestamp_zero: commit_req.timestamp_zero.clone(),
-            timestamp: commit_req.timestamp.clone(),
-            dependencies: commit_req.dependencies.clone(),
-        };
-
-        let result = self.apply_local(&apply_req).await?;
-
-        for peer in peers {
-            let req = apply_req.clone();
-            tokio::spawn(async move {
-                let _ = peer.apply(req).await;
-            });
-        }
 
         info!(
             coordination_event = "consensus_operation",
             coordinator_node = self.node_id.as_ref(),
             origin_node = command_id.origin_node_id.as_ref(),
             operation_id_sequence = command_id.sequence,
-            operation = Self::command_operation(&apply_req.command),
+            operation,
             consensus_path = if fast_path { "fast" } else { "slow" },
             quorum,
             participating_replicas = self.consensus_peer_client_map.len() + 1,
             pre_accept_ok = pre_ok.len() + 1,
             pre_accept_failures = pre_failures,
             accept_ok = accept_ok_for_log,
-            dependency_count = apply_req.dependencies.0.len(),
+            dependency_count,
+            dependency_depth,
+            pre_accept_ms,
+            accept_ms,
+            commit_ms = completion.commit_ms,
+            apply_ms = completion.apply_ms,
+            recover_ms = 0u64,
+            total_ms = elapsed_ms(operation_started),
+            quorum_wait_ms = pre_accept_ms + accept_ms + completion.commit_ms,
+            retry_count = completion.commit_attempts.saturating_sub(1),
+            commit_attempts = completion.commit_attempts,
+            commit_ok = completion.commit_ok,
+            in_flight_operations = self.in_flight_operations.load(Ordering::Acquire),
             "consensus coordination"
         );
 
-        Ok(result)
+        Ok(completion.result)
     }
 }
