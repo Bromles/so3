@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -58,6 +59,7 @@ def run_once(args: argparse.Namespace, run_index: int, run_dir: Path) -> dict:
         "--time-limit", str(args.time_limit),
         "--rate", str(args.rate),
         "--concurrency", args.concurrency,
+        "--data-dir", str(run_dir / "maelstrom-data"),
         "--no-build",
     ]
     if args.nemesis:
@@ -157,7 +159,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     outdir.mkdir(parents=True, exist_ok=True)
 
     if not args.no_build:
-        import subprocess
         result = subprocess.run(
             ["cargo", "build", "-p", "so3-maelstrom"],
             cwd=REPO_ROOT,

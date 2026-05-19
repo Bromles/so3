@@ -38,9 +38,8 @@ def descriptive_stats(
         return empty
 
     mean = float(np.mean(xs))
-    # Population variance/stddev (ddof=0) to stay consistent with prior behaviour.
-    variance = float(np.var(xs, ddof=0))
-    stddev = float(np.std(xs, ddof=0))
+    variance = float(np.var(xs, ddof=1))
+    stddev = float(np.std(xs, ddof=1))
 
     if n >= 2:
         sem = float(scipy_stats.sem(xs))

@@ -11,7 +11,6 @@ SUPPORTED_INVARIANTS = [
     "reads_return_only_successfully_written_values",
     "head_etag_matches_successfully_written_values",
     "successful_delete_hides_prior_value_until_next_successful_put",
-    "final_successful_get_is_explainable",
 ]
 
 UNSUPPORTED_INVARIANTS = [

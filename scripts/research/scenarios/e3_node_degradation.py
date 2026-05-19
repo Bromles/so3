@@ -92,5 +92,5 @@ def run_e3_node_degradation(
     run_metrics = metrics_module.summary_from_k6_phase_exports(phase_exports)
     run_metrics.setdefault("fault", {})["node_index"] = args.fault_node
     run_metrics["fault"]["recovery_seconds"] = recovery_seconds
-    run_metrics["fault"]["time_to_degraded_secs"] = recovery_start - fail_monotonic
+    run_metrics["fault"]["total_downtime_secs"] = recovery_start - fail_monotonic
     return run_metrics

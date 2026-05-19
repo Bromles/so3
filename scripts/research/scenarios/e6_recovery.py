@@ -102,6 +102,6 @@ def run_e6_recovery(
     run_metrics = metrics_module.summary_from_k6_phase_exports(phase_exports)
     run_metrics.setdefault("fault", {})["node_index"] = args.fault_node
     run_metrics["fault"]["recovery_seconds"] = recovery_seconds
-    run_metrics["fault"]["time_to_degraded_secs"] = down_total_secs
+    run_metrics["fault"]["total_downtime_secs"] = down_total_secs
     run_metrics["fault"]["long_downtime_secs"] = long_downtime_secs
     return run_metrics

@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
-import importlib
 import json
 from pathlib import Path
 from typing import Any
+
+from _common import (
+    detect_scenario as _detect_scenario,
+    get_nested as _get_nested,
+    get_number as _get_number,
+    load_run_summaries as _load_run_summaries,
+    node_total_samples as _node_total_samples,
+)
 
 PHASE_ORDER = ("baseline", "degraded", "recovery", "restored")
 K6_STREAM_LATENCY_METRICS = ("s3_put_ms", "s3_get_ms", "s3_head_ms", "s3_delete_ms")
@@ -25,44 +32,10 @@ TIMELINE_FALLBACK_POSITIONS = {
 
 
 def _pyplot() -> Any:
-    matplotlib = importlib.import_module("matplotlib")
+    import matplotlib
     matplotlib.use("Agg")
-    return importlib.import_module("matplotlib.pyplot")
-
-
-def _load_run_summaries(result_dir: Path) -> list[dict[str, Any]]:
-    summaries: list[dict[str, Any]] = []
-    for path in sorted(result_dir.glob("run-*/summary.json")):
-        try:
-            with path.open(encoding="utf-8") as f:
-                summaries.append(json.load(f))
-        except (OSError, json.JSONDecodeError):
-            continue
-    return summaries
-
-
-def _detect_scenario(summaries: list[dict[str, Any]]) -> str | None:
-    for summary in summaries:
-        scenario = summary.get("scenario")
-        if isinstance(scenario, str):
-            return scenario
-    return None
-
-
-def _get_nested(payload: dict[str, Any], path: tuple[str, ...]) -> Any:
-    current: Any = payload
-    for key in path:
-        if not isinstance(current, dict):
-            return None
-        current = current.get(key)
-    return current
-
-
-def _get_number(payload: dict[str, Any], path: tuple[str, ...]) -> float | None:
-    value = _get_nested(payload, path)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    return float(value)
+    import matplotlib.pyplot as plt
+    return plt
 
 
 def _mean(values: list[float]) -> float | None:
@@ -628,20 +601,6 @@ def _plot_hot_key(
     ax.grid(True, axis="y", alpha=0.3)
     ax.legend()
     return _save(fig, plots_dir / "hot_key.png")
-
-
-def _node_total_samples(summary: dict[str, Any], node: str) -> float | None:
-    node_metrics = _get_nested(summary, ("metrics", "entry_node_metrics", node))
-    if not isinstance(node_metrics, dict):
-        return None
-    total = 0.0
-    for metric_stats in node_metrics.values():
-        if not isinstance(metric_stats, dict):
-            continue
-        count = metric_stats.get("n")
-        if isinstance(count, (int, float)):
-            total += float(count)
-    return total if total > 0.0 else None
 
 
 def _plot_nodes(

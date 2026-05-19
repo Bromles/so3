@@ -346,7 +346,7 @@ class CorrectnessDriver:
         attempted = len(records)
         successful = sum(1 for record in records if record["success"])
         timeouts = sum(1 for record in records if record["timeout"])
-        errors = sum(1 for record in records if record["error"])
+        errors = sum(1 for record in records if record["error"] and not record["timeout"])
         latencies = [float(record["latency_ms"]) for record in records]
         return {
             "attempted_ops": attempted,
