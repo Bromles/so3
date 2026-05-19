@@ -24,7 +24,7 @@ def k6_metric_values(k6: dict[str, Any], metric_name: str) -> dict[str, Any]:
     values = metric.get("values")
     if isinstance(values, dict):
         return values
-    return metric
+    return {}
 
 
 def normalize_trend(k6: dict[str, Any], metric_name: str) -> dict[str, float]:

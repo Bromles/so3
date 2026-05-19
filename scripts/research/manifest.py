@@ -35,12 +35,11 @@ def git_revision(repo_root: Path) -> str | None:
 
 def binary_version(binary_path: Path, repo_root: Path) -> dict[str, Any]:
     resolved = binary_path if binary_path.is_absolute() else repo_root / binary_path
-    return {
-        "path": str(binary_path),
-        "exists": resolved.exists(),
-        "mtime": resolved.stat().st_mtime if resolved.exists() else None,
-        "size_bytes": resolved.stat().st_size if resolved.exists() else None,
-    }
+    try:
+        st = resolved.stat()
+        return {"path": str(binary_path), "exists": True, "mtime": st.st_mtime, "size_bytes": st.st_size}
+    except OSError:
+        return {"path": str(binary_path), "exists": False, "mtime": None, "size_bytes": None}
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:

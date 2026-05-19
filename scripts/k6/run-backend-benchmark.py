@@ -166,7 +166,7 @@ def build_settings(argv: Sequence[str]) -> Settings:
         so3_require_release=env_get_bool(env, "SO3_REQUIRE_RELEASE", True),
         so3_addr=so3_addr,
     )
-    settings.resource_file.write_text("")
+    settings.resource_file.write_text("", encoding="utf-8")
     return settings
 
 
@@ -291,7 +291,7 @@ def start_backend(settings: Settings, run_index: int) -> None:
     settings.run_log_file = (
         settings.out_dir / f"{settings.backend}_run_{run_index:03d}.log"
     )
-    settings.run_log_file.write_text("")
+    settings.run_log_file.write_text("", encoding="utf-8")
     settings.managed_processes = []
 
     if settings.backend == "so3":
@@ -435,10 +435,15 @@ def metric_value(run: dict, metric_key: str, stat: str) -> float | None:
     metric = run.get("metrics", {}).get(metric_key)
     if not isinstance(metric, dict):
         return None
-    if stat in metric:
-        return float(metric[stat])
-    if stat == "rate" and "value" in metric:
-        return float(metric["value"])
+    # Modern k6 summary-export nests stats under "values"; fall back to flat metric for older versions.
+    values = metric.get("values", {})
+    if not isinstance(values, dict):
+        values = {}
+    for d in (values, metric):
+        if stat in d:
+            return float(d[stat])
+        if stat == "rate" and "value" in d:
+            return float(d["value"])
     return None
 
 

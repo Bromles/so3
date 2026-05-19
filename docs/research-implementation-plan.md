@@ -64,8 +64,14 @@ SO3 рассматривается как экспериментальный pro
 
 - В `stats.py` есть базовая агрегация числовых метрик и phase-aware aggregation для `baseline`, `degraded`,
   `recovery`, `restored`; доверительные интервалы пока не добавлены.
-- Fault/recovery сценарии уже имеют базовую phase-aware оркестрацию crash/restart и normalized phase-vs-baseline
-  метрики; hot-key/leaderless сценарии пока в основном представлены workload-файлами и CLI aliases.
+- `e3-degradation` и `e6-recovery` пишут `time_to_degraded_secs` (время от crash до начала degraded-фазы)
+  и `recovery_seconds` (время рестарта узла). Stabilization time по форме графиков — через normalized метрики
+  в `relative_metrics`.
+- `e4-hot-key` и `e5-leaderless` используют `--out json` k6 stream для per-tag агрегации:
+  `metrics_timeseries.py` группирует data points по `key_class` (E4) и `entry_node` (E5).
+  `hot_vs_independent_p95_ratio` и `entry_node_metrics` добавляются в `run_metrics`.
+- `e2-fault-safety` реализован: `scenarios/e2_fault_safety.py` запускает `CorrectnessDriver` и
+  `ConcurrentFaultInjector` (background-поток) параллельно, после чего ждёт кластер и запускает verifier.
 - Server-side observability (`fast/slow/recovery path`, conflicts, dependencies, quorum wait и т.п.) еще не реализована.
 - Maelstrom hidden-leader behavior исправлен для обычных client requests: узел, получивший клиентскую операцию,
   координирует ее локально и пишет structured `tracing` log через подключенный logger с `entry_node`,
@@ -447,6 +453,11 @@ partition checks.
 
 ## Этап 7. Реализовать E2. Fault safety
 
+Статус: базовый crash/restart вариант реализован в `scenarios/e2_fault_safety.py`.
+`ConcurrentFaultInjector` крашит и рестартует узлы round-robin пока работает `CorrectnessDriver`.
+Partition и heal через реальный кластер не реализованы — для этого нужен proxy-слой; для проверки partition
+использовать Maelstrom (`fault-3-node-lin-kv.sh`).
+
 Цель: доказать, что crash, restart и partition не ломают safety.
 
 Сценарии:
@@ -514,6 +525,10 @@ partition checks.
 
 ## Этап 9. Реализовать E4. Hot key conflict behavior
 
+Статус: частично сделано. Workload `s3_hot_key.js` и CLI alias `e4-hot-key` реализованы.
+Добавлена per-tag агрегация через `metrics_timeseries.py`: `hot_vs_independent_p95_ratio`
+и `key_class_metrics` (hot / independent) пишутся в `run_metrics` через k6 `--out json` stream.
+
 Цель: проверить, что конкуренция за горячий ключ деградирует локально, а не валит весь кластер.
 
 Сценарии:
@@ -534,6 +549,11 @@ partition checks.
 Критерий успеха: hot key деградирует объяснимо, independent keys продолжают работать без глобального коллапса.
 
 ## Этап 10. Реализовать E5. Leaderless behavior
+
+Статус: частично сделано. Workload `s3_leaderless.js` и CLI alias `e5-leaderless` реализованы.
+Per-node entry metrics (`entry_node_metrics`) через k6 `--out json` stream добавлены в `run_metrics`.
+Symmetry of failures (сравнение degradation factor при отказе каждого узла по очереди) еще не реализована —
+требует E5-специфичного многофазного runner'а аналогично E3.
 
 Цель: показать, что нет постоянного лидера как единственной точки координации.
 

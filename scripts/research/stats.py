@@ -160,7 +160,7 @@ def aggregate_run_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
         "runs_successful": len(successful),
         "runs_failed": len(failed),
         "failed_reasons": failed_reasons,
-        "verdict": "passed" if summaries and not failed else "failed",
+        "verdict": "no_runs" if not summaries else ("passed" if not failed else "failed"),
         "metrics": stats_by_bucket(by_metric),
         "phase_metrics": {
             phase: stats_by_bucket(buckets)

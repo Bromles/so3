@@ -26,10 +26,12 @@ sys.path.insert(0, str(REPO_ROOT))
 import faults  # noqa: E402
 import manifest  # noqa: E402
 import metrics  # noqa: E402
+import metrics_timeseries  # noqa: E402
 import report  # noqa: E402
 import stats  # noqa: E402
 from cluster import ResourceSampler, So3Cluster, require_psutil  # noqa: E402
 from correctness_driver import CorrectnessDriver, require_boto3  # noqa: E402
+from scenarios.e2_fault_safety import run_e2_fault_safety  # noqa: E402
 from topology import SUPPORTED_NODE_COUNTS, generate_topology  # noqa: E402
 
 from scripts.verify.verify_history import verify_history_file  # noqa: E402
@@ -37,7 +39,8 @@ from scripts.verify.verify_history import verify_history_file  # noqa: E402
 DEFAULT_ACCESS_KEY = "so3testkey000000"
 DEFAULT_SECRET_KEY = "so3testsecret0000000000000000000"
 DEFAULT_RESULTS_DIR = REPO_ROOT / "results" / "research"
-CORRECTNESS_SCENARIOS = {"e1-correctness"}
+CORRECTNESS_SCENARIOS = {"e1-correctness", "e2-fault-safety"}
+TAG_STREAM_SCENARIOS = {"e4-hot-key", "e5-leaderless"}
 WORKLOAD_SCRIPTS = {
     "k6-mixed": REPO_ROOT / "scripts" / "k6" / "workloads" / "s3_mixed.js",
     "e3-degradation": REPO_ROOT / "scripts" / "k6" / "workloads" / "s3_degradation.js",
@@ -46,6 +49,20 @@ WORKLOAD_SCRIPTS = {
     "e6-recovery": REPO_ROOT / "scripts" / "k6" / "workloads" / "s3_recovery.js",
 }
 PHASED_FAULT_SCENARIOS = {"e3-degradation", "e6-recovery"}
+
+
+def _extract_tag_metrics(scenario: str, stream_file: Path) -> dict[str, Any]:
+    if scenario == "e4-hot-key":
+        by_class = metrics_timeseries.hot_vs_independent_metrics(stream_file)
+        result: dict[str, Any] = {"key_class_metrics": by_class}
+        ratio = metrics_timeseries.latency_ratio(by_class, "hot", "independent")
+        if ratio is not None:
+            result["hot_vs_independent_p95_ratio"] = ratio
+        return result
+    if scenario == "e5-leaderless":
+        by_node = metrics_timeseries.per_node_entry_metrics(stream_file)
+        return {"entry_node_metrics": by_node}
+    return {}
 
 
 def parse_args(argv: Sequence[str]) -> tuple[argparse.Namespace, list[str]]:
@@ -122,6 +139,24 @@ def parse_args(argv: Sequence[str]) -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument("--resource-sample-interval-secs", type=float, default=1.0)
     parser.add_argument("--correctness-ops", type=int, default=120)
     parser.add_argument("--correctness-concurrency", type=int, default=12)
+    parser.add_argument(
+        "--e2-fault-cycles",
+        type=int,
+        default=None,
+        help="number of crash/restart cycles for e2-fault-safety (default: node-count)",
+    )
+    parser.add_argument(
+        "--e2-cycle-interval-secs",
+        type=float,
+        default=10.0,
+        help="seconds between fault cycles in e2-fault-safety",
+    )
+    parser.add_argument(
+        "--e2-crash-duration-secs",
+        type=float,
+        default=5.0,
+        help="seconds a node stays crashed per cycle in e2-fault-safety",
+    )
     parser.add_argument("--keep-data-dirs", action="store_true")
     parser.add_argument(
         "--debug-k6",
@@ -160,6 +195,7 @@ def run_k6(
     env: dict[str, str],
     extra_args: list[str],
     debug: bool,
+    stream_file: Path | None = None,
 ) -> None:
     command = [
         "k6",
@@ -167,9 +203,12 @@ def run_k6(
         "--quiet",
         "--no-color",
         f"--summary-export={export_file}",
-        *extra_args,
-        str(k6_script),
     ]
+    if stream_file is not None:
+        command.append(f"--out=json={stream_file}")
+    command.extend(extra_args)
+    command.append(str(k6_script))
+
     if debug:
         subprocess.run(command, env=env, check=True)
         return
@@ -235,12 +274,14 @@ def run_k6_phase(
     phase: str,
     duration: str,
     events: manifest.EventLog,
-) -> Path:
+    with_stream: bool = False,
+) -> tuple[Path, Path | None]:
     phase_env = env.copy()
     phase_env["RESEARCH_PHASE"] = phase
     phase_env["DURATION"] = duration
     events.record(f"{phase}_start", duration=duration)
     export_file = run_dir / f"k6-summary-{phase}.json"
+    stream_file = run_dir / f"k6-stream-{phase}.jsonl" if with_stream else None
     run_k6(
         k6_script=k6_script,
         export_file=export_file,
@@ -249,9 +290,10 @@ def run_k6_phase(
         env=phase_env,
         extra_args=extra_k6_args,
         debug=args.debug_k6,
+        stream_file=stream_file,
     )
     events.record(f"{phase}_end", duration=duration)
-    return export_file
+    return export_file, stream_file
 
 
 def run_phased_fault_k6(
@@ -267,7 +309,7 @@ def run_phased_fault_k6(
     durations = phase_durations(args)
     phase_exports: dict[str, Path] = {}
 
-    phase_exports["baseline"] = run_k6_phase(
+    phase_exports["baseline"], _ = run_k6_phase(
         args=args,
         k6_script=k6_script,
         run_dir=run_dir,
@@ -278,9 +320,10 @@ def run_phased_fault_k6(
         events=events,
     )
 
+    fail_monotonic = time.monotonic()
     fault = faults.crash_node(cluster, args.fault_node)
     events.record("fail", kind=fault.kind, node_index=fault.node_index)
-    phase_exports["degraded"] = run_k6_phase(
+    phase_exports["degraded"], _ = run_k6_phase(
         args=args,
         k6_script=k6_script,
         run_dir=run_dir,
@@ -300,7 +343,7 @@ def run_phased_fault_k6(
         node_index=recovery.node_index,
         recovery_seconds=recovery_seconds,
     )
-    phase_exports["recovery"] = run_k6_phase(
+    phase_exports["recovery"], _ = run_k6_phase(
         args=args,
         k6_script=k6_script,
         run_dir=run_dir,
@@ -312,7 +355,7 @@ def run_phased_fault_k6(
     )
 
     events.record("normal_restored", node_index=args.fault_node)
-    phase_exports["restored"] = run_k6_phase(
+    phase_exports["restored"], _ = run_k6_phase(
         args=args,
         k6_script=k6_script,
         run_dir=run_dir,
@@ -325,6 +368,7 @@ def run_phased_fault_k6(
 
     run_metrics = metrics.summary_from_k6_phase_exports(phase_exports)
     run_metrics.setdefault("fault", {})["recovery_seconds"] = recovery_seconds
+    run_metrics["fault"]["time_to_degraded_secs"] = recovery_start - fail_monotonic
     return run_metrics
 
 
@@ -354,11 +398,9 @@ def run_one(
     )
     workload = {
         "driver": "k6" if k6_script else "boto3",
-        "script": (
-            str(k6_script.relative_to(REPO_ROOT))
-            if k6_script is not None and k6_script.is_relative_to(REPO_ROOT)
-            else (str(k6_script) if k6_script is not None else None)
-        ),
+        "script": str(
+            k6_script.relative_to(REPO_ROOT) if k6_script is not None and k6_script.is_relative_to(REPO_ROOT) else k6_script
+        ) if k6_script is not None else None,
         "mix": "s3_put_get_head_delete"
         if k6_script
         else "concurrent_s3_object_correctness",
@@ -371,23 +413,29 @@ def run_one(
         if not k6_script
         else None,
     }
-    phases = (
-        {
-            phase: {"duration": duration}
-            for phase, duration in phase_durations(args).items()
-        }
-        if phased_scenario(args)
-        else {"baseline": {"duration": args.duration}}
-    )
-    fault_injection = (
-        {
+    if phased_scenario(args):
+        phases = {phase: {"duration": duration} for phase, duration in phase_durations(args).items()}
+        fault_injection: dict[str, Any] | None = {
             "kind": "crash_restart",
             "node_index": args.fault_node,
-            "unsupported": [],
         }
-        if phased_scenario(args)
-        else None
-    )
+    elif args.scenario == "e2-fault-safety":
+        phases = {
+            "baseline": {
+                "driver": "boto3",
+                "operations": args.correctness_ops,
+                "concurrency": args.correctness_concurrency,
+            }
+        }
+        fault_injection = {
+            "kind": "concurrent_crash_restart",
+            "fault_cycles": args.e2_fault_cycles or args.node_count,
+            "cycle_interval_secs": args.e2_cycle_interval_secs,
+            "crash_duration_secs": args.e2_crash_duration_secs,
+        }
+    else:
+        phases = {"baseline": {"duration": args.duration}}
+        fault_injection = None
     manifest.write_json(
         run_dir / "manifest.json",
         manifest.build_manifest(
@@ -435,6 +483,8 @@ def run_one(
                     events=events,
                 )
             else:
+                needs_stream = args.scenario in TAG_STREAM_SCENARIOS
+                stream_file = run_dir / "k6-stream.jsonl" if needs_stream else None
                 events.record("baseline_start")
                 run_k6(
                     k6_script=k6_script,
@@ -444,16 +494,32 @@ def run_one(
                     env=env,
                     extra_args=extra_k6_args,
                     debug=args.debug_k6,
+                    stream_file=stream_file,
                 )
                 events.record("baseline_end")
                 run_metrics = metrics.summary_from_k6_export(
                     run_dir / "k6-summary.json"
                 )
+                if stream_file is not None and stream_file.exists():
+                    run_metrics.update(
+                        _extract_tag_metrics(args.scenario, stream_file)
+                    )
             status = "passed"
+        elif args.scenario == "e2-fault-safety":
+            run_metrics, verifier_result = run_e2_fault_safety(
+                args=args,
+                cluster=cluster,
+                events=events,
+                run_dir=run_dir,
+                topology_json=topology_json,
+                bucket=args.bucket,
+                run_seed=run_seed,
+            )
+            status = "passed" if verifier_result["verdict"] == "passed" else "failed"
         else:
             events.record("baseline_start")
             driver = CorrectnessDriver(
-                entry_urls=topology.entry_urls,
+                entry_urls=topology_json["entry_urls"],
                 history_path=run_dir / "client-history.jsonl",
                 bucket=args.bucket,
                 seed=run_seed,
