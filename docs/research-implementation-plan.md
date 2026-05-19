@@ -700,6 +700,7 @@ research-plan.
     - `phases.png` для E3/E6 normalized phase behavior;
     - `timeline.png` для E3/E6 fault timeline с normalized throughput, put p95/p99 и event markers;
     - `symmetry.png` для E3/E6 symmetry-of-failures при `--fault-node-policy round_robin`;
+    - `recovery.png` для E6 recovery behavior: success ratio и put p95/p99 latency по фазам;
     - `hot_key.png` для E4;
     - `nodes.png` для E5.
 - `run-scenario.py` вызывает генерацию графиков перед записью `report.md`, чтобы отчет мог ссылаться на созданные PNG.
@@ -707,7 +708,7 @@ research-plan.
 
 Остается:
 
-- recovery accumulated lag;
+- recovery accumulated lag после появления server-side lag/queue observability;
 - Accord/server-side path metrics после реализации server-side observability.
 
 ## Этап 14. Обновить документацию

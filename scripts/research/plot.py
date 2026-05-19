@@ -412,6 +412,76 @@ def _plot_timeline(
     return _save(fig, plots_dir / "timeline.png")
 
 
+def _plot_recovery(plt: Any, aggregate: dict[str, Any], plots_dir: Path) -> Path | None:
+    phase_metrics = aggregate.get("phase_metrics", {})
+    if not isinstance(phase_metrics, dict) or not phase_metrics:
+        return None
+
+    phases = [phase for phase in PHASE_ORDER if phase in phase_metrics]
+    if len(phases) <= 1:
+        return None
+
+    put_p95 = [
+        _aggregate_mean(aggregate, "phase_metrics", phase, "latency.put.p95_ms")
+        for phase in phases
+    ]
+    put_p99 = [
+        _aggregate_mean(aggregate, "phase_metrics", phase, "latency.put.p99_ms")
+        for phase in phases
+    ]
+    success_ratio = [
+        _aggregate_mean(
+            aggregate, "phase_metrics", phase, "successes.s3_successes.rate"
+        )
+        for phase in phases
+    ]
+    if not any(value is not None for value in [*put_p95, *put_p99, *success_ratio]):
+        return None
+
+    x = list(range(len(phases)))
+    fig, ax_latency = plt.subplots(figsize=(10, 5.2))
+    for values, label, marker in (
+        (put_p95, "put p95 latency", "o"),
+        (put_p99, "put p99 latency", "s"),
+    ):
+        if any(value is not None for value in values):
+            ax_latency.plot(
+                x,
+                [value if value is not None else float("nan") for value in values],
+                marker=marker,
+                linewidth=1.8,
+                label=label,
+            )
+    ax_latency.set_ylabel("latency, ms")
+    ax_latency.grid(True, alpha=0.3)
+
+    ax_success = ax_latency.twinx()
+    if any(value is not None for value in success_ratio):
+        ax_success.plot(
+            x,
+            [value if value is not None else float("nan") for value in success_ratio],
+            marker="^",
+            linewidth=1.8,
+            color="tab:green",
+            label="success ratio",
+        )
+    ax_success.set_ylabel("success ratio")
+    ax_success.set_ylim(0.0, 1.05)
+
+    ax_latency.set_xticks(x)
+    ax_latency.set_xticklabels(phases)
+    ax_latency.set_title("Recovery behavior")
+
+    latency_handles, latency_labels = ax_latency.get_legend_handles_labels()
+    success_handles, success_labels = ax_success.get_legend_handles_labels()
+    ax_latency.legend(
+        [*latency_handles, *success_handles],
+        [*latency_labels, *success_labels],
+        loc="best",
+    )
+    return _save(fig, plots_dir / "recovery.png")
+
+
 def _plot_symmetry(
     plt: Any, summaries: list[dict[str, Any]], plots_dir: Path
 ) -> Path | None:
@@ -624,6 +694,9 @@ def generate_plots(
             else None,
             _plot_symmetry(plt, summaries, plots_dir)
             if scenario in {"e3-degradation", "e6-recovery"}
+            else None,
+            _plot_recovery(plt, aggregate, plots_dir)
+            if scenario == "e6-recovery"
             else None,
             _plot_hot_key(plt, summaries, plots_dir)
             if scenario == "e4-hot-key"
