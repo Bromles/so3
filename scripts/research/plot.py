@@ -412,6 +412,83 @@ def _plot_timeline(
     return _save(fig, plots_dir / "timeline.png")
 
 
+def _plot_symmetry(
+    plt: Any, summaries: list[dict[str, Any]], plots_dir: Path
+) -> Path | None:
+    by_node: dict[int, dict[str, list[float]]] = {}
+    for summary in summaries:
+        node_index = _get_number(summary, ("metrics", "fault", "node_index"))
+        if node_index is None:
+            continue
+        node = int(node_index)
+        bucket = by_node.setdefault(
+            node,
+            {"put_p95_multiplier": [], "throughput_degradation_factor": []},
+        )
+        put_p95 = _get_number(
+            summary,
+            (
+                "metrics",
+                "relative",
+                "degraded",
+                "latency",
+                "put",
+                "p95_multiplier",
+            ),
+        )
+        throughput_ratio = _get_number(
+            summary,
+            (
+                "metrics",
+                "relative",
+                "degraded",
+                "throughput",
+                "http_reqs_rate_ratio",
+            ),
+        )
+        if put_p95 is not None:
+            bucket["put_p95_multiplier"].append(put_p95)
+        if throughput_ratio is not None and throughput_ratio > 0.0:
+            bucket["throughput_degradation_factor"].append(1.0 / throughput_ratio)
+
+    if len(by_node) < 2:
+        return None
+
+    nodes = sorted(by_node)
+    put_p95_values = [
+        _mean(by_node[node]["put_p95_multiplier"]) or 0.0 for node in nodes
+    ]
+    throughput_values = [
+        _mean(by_node[node]["throughput_degradation_factor"]) or 0.0 for node in nodes
+    ]
+    if not any([*put_p95_values, *throughput_values]):
+        return None
+
+    x = list(range(len(nodes)))
+    width = 0.35
+    fig, ax = plt.subplots(figsize=(9, 4.8))
+    ax.bar(
+        [value - width / 2 for value in x],
+        put_p95_values,
+        width,
+        label="put p95 multiplier",
+    )
+    ax.bar(
+        [value + width / 2 for value in x],
+        throughput_values,
+        width,
+        label="throughput degradation factor",
+    )
+    ax.axhline(1.0, color="black", linestyle="--", linewidth=1, alpha=0.5)
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"node{node}" for node in nodes])
+    ax.set_ylabel("degradation factor vs baseline")
+    ax.set_title("Symmetry of node failures")
+    ax.grid(True, axis="y", alpha=0.3)
+    ax.legend()
+    return _save(fig, plots_dir / "symmetry.png")
+
+
 def _plot_hot_key(
     plt: Any, summaries: list[dict[str, Any]], plots_dir: Path
 ) -> Path | None:
@@ -543,6 +620,9 @@ def generate_plots(
             if scenario in {"e3-degradation", "e6-recovery"}
             else None,
             _plot_timeline(plt, aggregate, result_dir, plots_dir)
+            if scenario in {"e3-degradation", "e6-recovery"}
+            else None,
+            _plot_symmetry(plt, summaries, plots_dir)
             if scenario in {"e3-degradation", "e6-recovery"}
             else None,
             _plot_hot_key(plt, summaries, plots_dir)

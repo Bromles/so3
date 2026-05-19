@@ -85,6 +85,8 @@ def flatten_numeric_values(
         metric_name = f"{prefix}.{key}" if prefix else key
         if isinstance(value, bool):
             continue
+        if key == "node_index":
+            continue
         if isinstance(value, (int, float)) and math.isfinite(float(value)):
             values[metric_name] = float(value)
         elif isinstance(value, dict):

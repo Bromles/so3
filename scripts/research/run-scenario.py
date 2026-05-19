@@ -111,6 +111,12 @@ def parse_args(argv: Sequence[str]) -> tuple[argparse.Namespace, list[str]]:
         default=1,
         help="1-based node index to crash/restart in phased fault scenarios",
     )
+    parser.add_argument(
+        "--fault-node-policy",
+        choices=("fixed", "round_robin"),
+        default="fixed",
+        help="fault node selection policy for phased fault scenarios",
+    )
     parser.add_argument("--vus", type=int, default=int(os.environ.get("VUS", "10")))
     parser.add_argument(
         "--object-size", type=int, default=int(os.environ.get("OBJECT_SIZE", "64"))
@@ -188,6 +194,12 @@ def phased_scenario(args: argparse.Namespace) -> bool:
     return args.scenario in PHASED_FAULT_SCENARIOS
 
 
+def fault_node_for_run(args: argparse.Namespace, run_index: int) -> int:
+    if getattr(args, "fault_node_policy", "fixed") == "round_robin":
+        return ((args.fault_node - 1 + run_index - 1) % args.node_count) + 1
+    return args.fault_node
+
+
 def scenario_env(
     args: argparse.Namespace, topology_json: dict[str, Any], run_seed: int
 ) -> dict[str, str]:
@@ -231,6 +243,16 @@ def run_one(
     data_dir = run_dir / "data"
     events = manifest.EventLog(run_dir / "events.jsonl")
     events.record("run_start", run_index=run_index, seed=run_seed)
+
+    run_args = argparse.Namespace(**vars(args))
+    if phased_scenario(args):
+        run_args.fault_node = fault_node_for_run(args, run_index)
+        events.record(
+            "fault_node_selected",
+            node_index=run_args.fault_node,
+            policy=args.fault_node_policy,
+        )
+    args = run_args
 
     topology = generate_topology(
         args.node_count,
@@ -277,6 +299,7 @@ def run_one(
         fault_injection: dict[str, Any] | None = {
             "kind": "crash_restart",
             "node_index": args.fault_node,
+            "node_policy": args.fault_node_policy,
         }
         if args.scenario == "e6-recovery":
             fault_injection["long_downtime_secs"] = args.e6_long_downtime_secs
@@ -453,6 +476,8 @@ def main(argv: Sequence[str]) -> int:
     print(f"SO3 research scenario: {args.scenario}")
     print(f"runs:      {args.runs}")
     print(f"nodes:     {args.node_count}")
+    if phased_scenario(args):
+        print(f"faults:    node {args.fault_node} ({args.fault_node_policy})")
     print(f"results:   {result_dir}")
     if args.scenario in WORKLOAD_SCRIPTS or args.k6_script is not None:
         k6_script = selected_k6_script(args)
