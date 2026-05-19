@@ -14,24 +14,42 @@ SO3 рассматривается как экспериментальный pro
 Сделано:
 
 - Общая структура Python-инфраструктуры вынесена на уровень `scripts/`:
-    - `scripts/requirements.txt` содержит общие зависимости (`psutil`, `boto3`);
+    - `scripts/requirements.txt` содержит общие зависимости (`psutil`, `boto3`, `numpy`, `scipy`);
     - `scripts/venv/` используется как общий локальный venv для `scripts/research`, `scripts/verify` и legacy k6 runner;
     - venv больше не находится внутри `scripts/k6/`.
+- Скрипты `scripts/maelstrom/` переписаны с bash/PowerShell на Python:
+    - `install.py` — кросс-платформенный установщик Maelstrom;
+    - `run.py` — запуск одного Maelstrom теста;
+    - `run_30.py` — пакетный запуск 30 раз с агрегацией pass/fail в `aggregate.json` и `report.md`;
+    - `smoke.py`, `smoke_3node.py`, `fault_3node.py` — convenience wrappers.
 - Реализован общий research runner `scripts/research/run-scenario.py`:
     - поддерживает `--runs` с default `30`;
     - запрещает `runs < 30` без `--allow-low-runs`;
     - создает единый каталог результата;
     - пишет `manifest.json`, `events.jsonl`, `summary.json`, `aggregate-summary.json`, `report.md`;
-    - поддерживает `k6-mixed`, `e1-correctness`, `e3-degradation`, `e4-hot-key`, `e5-leaderless`, `e6-recovery` как
-      CLI-сценарии;
+    - поддерживает `k6-mixed`, `e1-correctness`, `e2-fault-safety`, `e3-degradation`, `e4-hot-key`,
+      `e5-leaderless`, `e6-recovery` как CLI-сценарии;
+    - делегирует каждый сценарий своему модулю в `scenarios/`;
     - для `e3-degradation` и `e6-recovery` умеет выполнять phase-aware crash/restart timeline:
-      `baseline -> fail -> degraded -> recover -> recovery -> restored`.
+      `baseline -> fail -> degraded -> recover -> recovery -> restored`;
+    - `e6-recovery` поддерживает `--e6-long-downtime-secs` для тестирования длительного простоя.
+- Реализованы scenario-модули в `scripts/research/scenarios/`:
+    - `e2_fault_safety.py` — CorrectnessDriver + ConcurrentFaultInjector параллельно;
+    - `e3_node_degradation.py` — четырёхфазный phased runner с crash/restart;
+    - `e4_hot_key.py` — k6 с per-tag stream metrics (`key_class`);
+    - `e5_leaderless.py` — k6 с per-node entry metrics из stream; symmetry-of-failures покрыт Maelstrom;
+    - `e6_recovery.py` — как E3, но с configurable `long_downtime_secs` перед restart.
+- Реализован общий модуль `scripts/research/runner.py`:
+    - `run_k6()` — subprocess wrapper для k6;
+    - `run_k6_phase()` — фазовый runner с RESEARCH_PHASE/DURATION env vars;
+    - импортируется всеми scenario-модулями напрямую.
 - Реализованы базовые модули research harness:
-    - `cluster.py` — start/stop/kill/restart узлов, wait-ready, resource sampling через обязательный `psutil`;
+    - `cluster.py` — start/stop/kill/restart узлов, wait-ready, resource sampling через `psutil` (прямой import);
     - `topology.py` — генерация 1/3/5/7-node topology, ports, node ids, peer lists, data dirs;
     - `manifest.py` — manifest и event timeline;
     - `metrics.py` — нормализация k6 summary;
-    - `stats.py` — descriptive statistics и aggregate summary;
+    - `metrics_timeseries.py` — per-tag агрегация из k6 JSONL stream;
+    - `stats.py` — descriptive statistics (scipy t.interval CI, numpy percentiles) и aggregate summary;
     - `report.py` — markdown report;
     - `faults.py` — базовые crash/restart primitives, network partition явно `unsupported` до proxy layer.
 - Разделены k6 workloads:
@@ -43,7 +61,7 @@ SO3 рассматривается как экспериментальный pro
     - `scripts/k6/workloads/s3_recovery.js`.
 - Добавлен correctness driver через настоящий S3 SDK:
     - `scripts/research/correctness_driver.py` использует `boto3.client("s3")` и реальные S3 calls: `put_object`,
-      `get_object`, `head_object`, `delete_object`;
+      `get_object`, `head_object`, `delete_object` (прямой import без fallback);
     - пишет `client-history.jsonl` с `client: "boto3"` и `api: "s3"`.
 - Добавлен verifier:
     - `scripts/verify/verify-history.py` — CLI;
@@ -60,18 +78,10 @@ SO3 рассматривается как экспериментальный pro
     - `e1-correctness` smoke через `boto3` driver проходит на 1-node и коротком 3-node запуске;
     - `client-history.jsonl`, `resources.jsonl` и `verifier-result.json` создаются.
 
-Частично сделано / остается доработать:
+Остается доработать:
 
-- В `stats.py` есть базовая агрегация числовых метрик и phase-aware aggregation для `baseline`, `degraded`,
-  `recovery`, `restored`; доверительные интервалы пока не добавлены.
-- `e3-degradation` и `e6-recovery` пишут `time_to_degraded_secs` (время от crash до начала degraded-фазы)
-  и `recovery_seconds` (время рестарта узла). Stabilization time по форме графиков — через normalized метрики
-  в `relative_metrics`.
-- `e4-hot-key` и `e5-leaderless` используют `--out json` k6 stream для per-tag агрегации:
-  `metrics_timeseries.py` группирует data points по `key_class` (E4) и `entry_node` (E5).
-  `hot_vs_independent_p95_ratio` и `entry_node_metrics` добавляются в `run_metrics`.
-- `e2-fault-safety` реализован: `scenarios/e2_fault_safety.py` запускает `CorrectnessDriver` и
-  `ConcurrentFaultInjector` (background-поток) параллельно, после чего ждёт кластер и запускает verifier.
+- `e3-degradation` и `e6-recovery` пишут `time_to_degraded_secs` и `recovery_seconds`. Stabilization time
+  по форме графиков — через normalized метрики в `relative_metrics`.
 - Server-side observability (`fast/slow/recovery path`, conflicts, dependencies, quorum wait и т.п.) еще не реализована.
 - Maelstrom hidden-leader behavior исправлен для обычных client requests: узел, получивший клиентскую операцию,
   координирует ее локально и пишет structured `tracing` log через подключенный logger с `entry_node`,
@@ -122,8 +132,8 @@ SO3 рассматривается как экспериментальный pro
     - `stats.py` — статистическая агрегация по 30+ прогонам;
     - `manifest.py` — описание прогона, seed, окружение, версии бинарей;
     - `report.py` — генерация markdown/JSON summaries;
-    - `scenarios/` — запланированные отдельные модули сценариев; пока содержит только `__init__.py`,
-      логика всех сценариев находится в `run-scenario.py`:
+    - `runner.py` — общий `run_k6()` и `run_k6_phase()`, импортируется scenario-модулями;
+    - `scenarios/` — отдельные модули сценариев:
         - `e1_correctness.py`;
         - `e2_fault_safety.py`;
         - `e3_node_degradation.py`;
@@ -280,8 +290,9 @@ harness.
 
 ## Этап 2. Реализовать статистический модуль
 
-Статус: в основном сделано. Базовый `stats.py`, `aggregate-summary.json` и markdown-таблица в `report.md` реализованы;
-добавлены отдельные `phase_metrics` и `relative_metrics` для `baseline`, `degraded`, `recovery`, `restored`.
+Статус: сделано. `stats.py` использует `numpy`/`scipy`: scipy t.interval для 95% CI, numpy percentiles; добавлены
+`phase_metrics` и `relative_metrics` для `baseline`, `degraded`, `recovery`, `restored`; `report.md` содержит
+markdown-таблицу с CI-колонкой.
 
 Цель: все числовые результаты агрегируются одинаково и воспроизводимо.
 
@@ -398,11 +409,10 @@ PUT/GET-ответов.
 
 ## Этап 5. Исправить Maelstrom path для leaderless-проверок
 
-Статус: базовый hidden-leader path исправлен. Обычные client requests больше не форвардятся на первый узел; каждый
-Maelstrom-узел использует свой локальный `AccordConsensusCoordinatorService`. Coordination observability пишется через
-структурированный `tracing::info!` лог с `entry_node`, `coordinator_node`, `operation_id`, `operation`, `source`,
-`consensus_path`. Осталось расширить maelstrom scripts для 30-run fault/leaderless сценариев и majority/minority
-partition checks.
+Статус: в основном сделано. Скрипты `scripts/maelstrom/` переписаны на Python. `run_30.py` запускает Maelstrom 30 раз
+и пишет `aggregate.json` + `report.md` с pass_rate и per-run verdict. `fault_3node.py` использует `nemesis=partition`
+и покрывает partition/leaderless symmetry. Hidden-leader path исправлен: каждый узел координирует локально.
+Остается: majority/minority partition split через отдельный nemesis config.
 
 Цель: Maelstrom не должен скрыто превращать систему в leader-based вариант.
 
@@ -428,7 +438,12 @@ partition checks.
 
 Результат этапа: Maelstrom можно использовать для E2 и E5 без искажения архитектурного свойства leaderless.
 
-## Этап 6. Реализовать E1. Correctness under concurrency
+## Этап 6. E1. Correctness under concurrency → Maelstrom
+
+Статус: покрыт Maelstrom. Линеаризуемость проверяется через `scripts/maelstrom/run_30.py`
+(30 прогонов, `--nemesis partition`) и `smoke_3node.py` (без фейлов). Knossos checker даёт
+формально строгую гарантию linearizability. Отдельный boto3 correctness driver для E1 удалён —
+S3 API-level correctness (PUT/GET/DELETE семантика) покрывает E2 fault safety driver под нагрузкой.
 
 Цель: доказать object-level correctness без fault injection.
 
@@ -550,10 +565,10 @@ Partition и heal через реальный кластер не реализо
 
 ## Этап 10. Реализовать E5. Leaderless behavior
 
-Статус: частично сделано. Workload `s3_leaderless.js` и CLI alias `e5-leaderless` реализованы.
+Статус: частично сделано. Workload `s3_leaderless.js` и `scenarios/e5_leaderless.py` реализованы.
 Per-node entry metrics (`entry_node_metrics`) через k6 `--out json` stream добавлены в `run_metrics`.
-Symmetry of failures (сравнение degradation factor при отказе каждого узла по очереди) еще не реализована —
-требует E5-специфичного многофазного runner'а аналогично E3.
+Symmetry of failures покрыта Maelstrom (`fault_3node.py` / `run_30.py`) — Knossos checker проверяет
+linearizability при partition по всем узлам, что является более строгой гарантией.
 
 Цель: показать, что нет постоянного лидера как единственной точки координации.
 
@@ -577,9 +592,10 @@ Symmetry of failures (сравнение degradation factor при отказе 
 
 ## Этап 11. Реализовать E6. Recovery and lagging node
 
-Статус: частично сделано. `run-scenario.py e6-recovery` использует тот же phase-aware crash/restart runner с
-persistent data dirs внутри прогона и отдельными фазами `degraded`, `recovery`, `restored`. Остается добавить сценарии
-долгого отставания, падения во время синхронизации и verifier-проверку сохранности подтвержденных записей.
+Статус: частично сделано. `scenarios/e6_recovery.py` реализован: phase-aware crash/restart runner с
+`--e6-long-downtime-secs` для тестирования длительного простоя; пишет `long_downtime_secs` и `time_to_degraded_secs`
+в fault metrics. Остается: verifier-проверка сохранности подтвержденных записей после recovery,
+сценарий падения узла во время синхронизации.
 
 Цель: проверить безопасное возвращение отставшего узла.
 

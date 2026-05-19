@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import concurrent.futures
 import hashlib
-import importlib
 import json
 import random
 import threading
@@ -14,33 +13,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-try:
-    boto3: Any | None = importlib.import_module("boto3")
-    botocore_client = importlib.import_module("botocore.client")
-    botocore_exceptions = importlib.import_module("botocore.exceptions")
-    Config: Any | None = botocore_client.Config
-    BotoCoreError: type[Exception] = botocore_exceptions.BotoCoreError
-    ClientError: type[Exception] = botocore_exceptions.ClientError
-except ImportError:  # pragma: no cover - environment-specific failure
-    boto3 = None
-    Config = None
-    BotoCoreError = Exception
-    ClientError = Exception
+import boto3
+from botocore.client import Config
+from botocore.exceptions import BotoCoreError, ClientError
 
 DEFAULT_ACCESS_KEY = "so3testkey000000"
 DEFAULT_SECRET_KEY = "so3testsecret0000000000000000000"
 DEFAULT_REGION = "us-east-1"
-
-BOTO3_REQUIRED_MESSAGE = (
-    "error: boto3 is required for correctness scenarios; "
-    "activate scripts/venv or install it with `python -m pip install -r scripts/requirements.txt`"
-)
-
-
-def require_boto3() -> tuple[Any, Any]:
-    if boto3 is None or Config is None:
-        raise RuntimeError(BOTO3_REQUIRED_MESSAGE)
-    return boto3, Config
 
 
 def utc_now() -> str:
@@ -104,18 +83,17 @@ class HistoryWriter:
 
 class Boto3S3ClientPool:
     def __init__(self, entry_urls: list[str]) -> None:
-        boto3_module, config_cls = require_boto3()
         self.clients = [
             {
                 "entry_node": f"node{index + 1}",
                 "endpoint": endpoint,
-                "client": boto3_module.client(
+                "client": boto3.client(
                     "s3",
                     endpoint_url=endpoint,
                     aws_access_key_id=DEFAULT_ACCESS_KEY,
                     aws_secret_access_key=DEFAULT_SECRET_KEY,
                     region_name=DEFAULT_REGION,
-                    config=config_cls(
+                    config=Config(
                         signature_version="s3v4",
                         s3={"addressing_style": "path"},
                         retries={"total_max_attempts": 1, "mode": "standard"},

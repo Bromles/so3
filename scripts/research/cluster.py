@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import json
 import os
 import shutil
@@ -17,23 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import psutil
 from topology import NodeSpec, Topology
-
-try:
-    psutil: Any | None = importlib.import_module("psutil")
-except ImportError:  # pragma: no cover - environment-specific failure
-    psutil = None
-
-PSUTIL_REQUIRED_MESSAGE = (
-    "error: psutil is required for research resource sampling; "
-    "activate scripts/venv or install it with `python -m pip install -r scripts/requirements.txt`"
-)
-
-
-def require_psutil() -> Any:
-    if psutil is None:
-        raise RuntimeError(PSUTIL_REQUIRED_MESSAGE)
-    return psutil
 
 
 @dataclass
@@ -193,7 +177,6 @@ class ResourceSampler:
     def __init__(
         self, cluster: So3Cluster, output_file: Path, interval_secs: float = 1.0
     ) -> None:
-        self.psutil = require_psutil()
         self.cluster = cluster
         self.output_file = output_file
         self.interval_secs = interval_secs
@@ -213,7 +196,7 @@ class ResourceSampler:
         processes: dict[str, Any] = {}
         for managed in self.cluster.nodes.values():
             try:
-                proc = self.psutil.Process(managed.process.pid)
+                proc = psutil.Process(managed.process.pid)
                 proc.cpu_percent(None)
                 processes[managed.spec.name] = proc
             except Exception:

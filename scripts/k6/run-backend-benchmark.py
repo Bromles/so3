@@ -12,9 +12,7 @@ Dependencies:
 from __future__ import annotations
 
 import argparse
-import importlib
 import json
-import math
 import os
 import shutil
 import subprocess
@@ -26,23 +24,10 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Iterable, Sequence
 
-try:
-    psutil: Any | None = importlib.import_module("psutil")
-except ImportError:  # pragma: no cover - environment-specific failure
-    psutil = None
-
-PSUTIL_REQUIRED_MESSAGE = (
-    "error: psutil is required for backend resource sampling; "
-    "activate scripts/venv or install it with `python -m pip install -r scripts/requirements.txt`"
-)
-
-
-def require_psutil() -> Any:
-    if psutil is None:
-        raise RuntimeError(PSUTIL_REQUIRED_MESSAGE)
-    return psutil
+import numpy as np
+import psutil
 
 
 SUPPORTED_BACKENDS = {"so3", "so3-cluster"}
@@ -348,7 +333,6 @@ def cleanup_run_data_dir(settings: Settings) -> None:
 
 class ResourceSampler:
     def __init__(self, settings: Settings) -> None:
-        self.psutil = require_psutil()
         self.settings = settings
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self.run, daemon=True)
@@ -377,7 +361,7 @@ class ResourceSampler:
         processes = []
         for pid in pids:
             try:
-                proc = self.psutil.Process(pid)
+                proc = psutil.Process(pid)
                 proc.cpu_percent(None)
                 processes.append(proc)
             except Exception:
@@ -450,15 +434,15 @@ def metric_value(run: dict, metric_key: str, stat: str) -> float | None:
 def aggregate_values(
     values: Iterable[float],
 ) -> tuple[int, float, float, float, float, float, float]:
-    xs = list(values)
-    n = len(xs)
+    xs = np.asarray(list(values), dtype=float)
+    n = int(xs.size)
     if n == 0:
         return 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
-    mean = sum(xs) / n
-    var = sum((x - mean) ** 2 for x in xs) / n
-    sd = math.sqrt(max(0.0, var))
+    mean = float(np.mean(xs))
+    var = float(np.var(xs))
+    sd = float(np.std(xs))
     cv = sd / mean * 100 if mean else 0.0
-    return n, mean, sd, var, cv, min(xs), max(xs)
+    return n, mean, sd, var, cv, float(np.min(xs)), float(np.max(xs))
 
 
 def print_header(title: str) -> None:
@@ -552,12 +536,6 @@ def print_summary(settings: Settings) -> None:
 
 def main(argv: Sequence[str]) -> int:
     settings = build_settings(argv)
-    try:
-        require_psutil()
-    except RuntimeError as exc:
-        print(exc, file=sys.stderr)
-        return 2
-
     print(
         f"{settings.backend} S3 benchmark - {settings.runs} runs -> {settings.out_dir}"
     )

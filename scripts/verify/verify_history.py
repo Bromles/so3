@@ -209,15 +209,15 @@ def verify_history(records: list[dict[str, Any]]) -> VerificationResult:
 
 
 def read_after_delete_without_later_put(
-    records: list[dict[str, Any]], key: str, read_start: float
+        records: list[dict[str, Any]], key: str, read_start: float
 ) -> bool:
     deletes = [
         float(record.get("end_monotonic_secs", 0.0))
         for record in records
         if record.get("key") == key
-        and record.get("operation_type") == "DELETE"
-        and is_success(record)
-        and float(record.get("end_monotonic_secs", 0.0)) < read_start
+           and record.get("operation_type") == "DELETE"
+           and is_success(record)
+           and float(record.get("end_monotonic_secs", 0.0)) < read_start
     ]
     if not deletes:
         return False

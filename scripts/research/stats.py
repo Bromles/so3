@@ -7,85 +7,66 @@ import math
 from pathlib import Path
 from typing import Any, Iterable
 
+import numpy as np
+from scipy import stats as scipy_stats
+
 DEFAULT_PERCENTILES = (10, 25, 50, 75, 90, 95, 99)
 
 
-def percentile(values: Iterable[float], p: float) -> float | None:
-    """Return a linearly interpolated percentile for p in [0, 100]."""
-
-    xs = sorted(float(value) for value in values)
-    if not xs:
-        return None
-    if p <= 0:
-        return xs[0]
-    if p >= 100:
-        return xs[-1]
-    rank = (len(xs) - 1) * (p / 100.0)
-    lo = math.floor(rank)
-    hi = math.ceil(rank)
-    if lo == hi:
-        return xs[lo]
-    weight = rank - lo
-    return xs[lo] * (1.0 - weight) + xs[hi] * weight
-
-
-def descriptive_stats(values: Iterable[float]) -> dict[str, float | int | None]:
-    xs = [float(value) for value in values]
-    n = len(xs)
+def descriptive_stats(
+    values: Iterable[float],
+    *,
+    ci_confidence: float = 0.95,
+) -> dict[str, float | int | None]:
+    xs = np.asarray(list(values), dtype=float)
+    n = int(xs.size)
+    empty: dict[str, float | int | None] = {
+        "n": 0, "mean": None, "ci_lower": None, "ci_upper": None,
+        "ci_confidence": ci_confidence, "median": None,
+        "variance": None, "stddev": None, "min": None, "max": None,
+        "cv_percent": None,
+        **{f"p{p}": None for p in DEFAULT_PERCENTILES if p != 50},
+    }
     if n == 0:
-        return {
-            "n": 0,
-            "mean": None,
-            "median": None,
-            "variance": None,
-            "stddev": None,
-            "min": None,
-            "max": None,
-            "cv_percent": None,
-            "p10": None,
-            "p25": None,
-            "p75": None,
-            "p90": None,
-            "p95": None,
-            "p99": None,
-        }
+        return empty
 
-    mean = sum(xs) / n
-    variance = sum((value - mean) ** 2 for value in xs) / n
-    stddev = math.sqrt(max(0.0, variance))
+    mean = float(np.mean(xs))
+    # Population variance/stddev (ddof=0) to stay consistent with prior behaviour.
+    variance = float(np.var(xs, ddof=0))
+    stddev = float(np.std(xs, ddof=0))
+
+    if n >= 2:
+        lo, hi = scipy_stats.t.interval(
+            ci_confidence, df=n - 1, loc=mean, scale=scipy_stats.sem(xs)
+        )
+        ci_lower, ci_upper = float(lo), float(hi)
+    else:
+        ci_lower, ci_upper = None, None
+
     result: dict[str, float | int | None] = {
         "n": n,
         "mean": mean,
-        "median": percentile(xs, 50),
+        "ci_lower": ci_lower,
+        "ci_upper": ci_upper,
+        "ci_confidence": ci_confidence,
+        "median": float(np.median(xs)),
         "variance": variance,
         "stddev": stddev,
-        "min": min(xs),
-        "max": max(xs),
+        "min": float(np.min(xs)),
+        "max": float(np.max(xs)),
         "cv_percent": stddev / mean * 100.0 if mean != 0 else None,
     }
     for p in DEFAULT_PERCENTILES:
         if p == 50:
             continue
-        result[f"p{p}"] = percentile(xs, p)
+        result[f"p{p}"] = float(np.percentile(xs, p))
     return result
-
-
-def safe_ratio(
-    numerator: float | int | None, denominator: float | int | None
-) -> float | None:
-    if numerator is None or denominator is None:
-        return None
-    denominator = float(denominator)
-    if denominator == 0.0:
-        return None
-    return float(numerator) / denominator
 
 
 def flatten_numeric_values(
     payload: dict[str, Any], prefix: str = ""
 ) -> dict[str, float]:
     """Flatten numeric leaves into dotted metric names."""
-
     values: dict[str, float] = {}
     for key, value in payload.items():
         metric_name = f"{prefix}.{key}" if prefix else key
@@ -120,12 +101,13 @@ def stats_by_bucket(buckets: dict[str, list[float]]) -> dict[str, Any]:
 
 
 def aggregate_run_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
-    successful = [summary for summary in summaries if summary.get("status") == "passed"]
-    failed = [summary for summary in summaries if summary.get("status") != "passed"]
+    successful = [s for s in summaries if s.get("status") == "passed"]
+    failed = [s for s in summaries if s.get("status") != "passed"]
 
     by_metric: dict[str, list[float]] = {}
     by_phase: dict[str, dict[str, list[float]]] = {}
     by_relative_phase: dict[str, dict[str, list[float]]] = {}
+
     for summary in successful:
         summary_metrics = summary.get("metrics", {})
         for metric_name, value in flatten_numeric_values(summary_metrics).items():
@@ -192,37 +174,27 @@ def write_aggregate_summary(result_dir: Path) -> dict[str, Any]:
 
 def markdown_table_for_metrics(metrics: dict[str, Any]) -> str:
     lines = [
-        "| metric | n | mean | median | stddev | variance | min | max | p90 | p95 | p99 | cv % |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| metric | n | mean | 95% CI | median | stddev | cv % | p90 | p95 | p99 | min | max |",
+        "| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for name, stat in metrics.items():
 
         def fmt(key: str) -> str:
-            value = stat.get(key)
-            if value is None:
+            v = stat.get(key)
+            if v is None:
                 return ""
-            if isinstance(value, int):
-                return str(value)
-            return f"{value:.6g}"
+            return str(v) if isinstance(v, int) else f"{v:.6g}"
+
+        lo, hi = stat.get("ci_lower"), stat.get("ci_upper")
+        ci_str = f"[{lo:.6g}, {hi:.6g}]" if lo is not None and hi is not None else ""
 
         lines.append(
             "| "
-            + " | ".join(
-                [
-                    name,
-                    fmt("n"),
-                    fmt("mean"),
-                    fmt("median"),
-                    fmt("stddev"),
-                    fmt("variance"),
-                    fmt("min"),
-                    fmt("max"),
-                    fmt("p90"),
-                    fmt("p95"),
-                    fmt("p99"),
-                    fmt("cv_percent"),
-                ]
-            )
+            + " | ".join([
+                name, fmt("n"), fmt("mean"), ci_str, fmt("median"),
+                fmt("stddev"), fmt("cv_percent"),
+                fmt("p90"), fmt("p95"), fmt("p99"), fmt("min"), fmt("max"),
+            ])
             + " |"
         )
     return "\n".join(lines)

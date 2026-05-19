@@ -1,6 +1,7 @@
 # SO3 client history schema
 
-`client-history.jsonl` is an append-only JSON Lines file. Each line describes one client-visible S3 operation issued by the correctness driver.
+`client-history.jsonl` is an append-only JSON Lines file. Each line describes one client-visible S3 operation issued by
+the correctness driver.
 
 Required fields:
 
@@ -10,7 +11,8 @@ Required fields:
 - `operation_type`: `PUT`, `GET`, `HEAD` or `DELETE`.
 - `key`: S3 object key.
 - `input_value_hash`: SHA-256 hex of the uploaded payload for `PUT`, otherwise `null`.
-- `returned_value_hash`: for `GET` — SHA-256 hex of the returned body; for `HEAD` — ETag stripped of quotes; `null` for other operations or when unavailable.
+- `returned_value_hash`: for `GET` — SHA-256 hex of the returned body; for `HEAD` — ETag stripped of quotes; `null` for
+  other operations or when unavailable.
 - `observed_version`: value of `x-amz-version-id` when the server returns it.
 - `etag`: S3 ETag when returned.
 - `start_timestamp` / `end_timestamp`: UTC timestamps.
@@ -25,4 +27,5 @@ Required fields:
 - `client`: currently `boto3` for Python correctness scenarios.
 - `api`: currently `s3`.
 
-Unsupported checks such as CAS, `If-None-Match` and idempotency are reported by the verifier as `unsupported` until the S3 API exposes those semantics.
+Unsupported checks such as CAS, `If-None-Match` and idempotency are reported by the verifier as `unsupported` until the
+S3 API exposes those semantics.
