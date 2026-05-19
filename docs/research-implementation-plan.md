@@ -51,7 +51,8 @@ SO3 рассматривается как экспериментальный pro
     - `e6_recovery.py` — как E3, но с configurable `long_downtime_secs`; принимает `run_seed`;
       пишет `e6-sentinel/key-NNNN` объекты до fault через `RecoverySentinel`, верифицирует их
       после restored-фазы, пишет `verifier-result.json` (schema_version 1, checked/unsupported/issues/verdict)
-      и `verifier_passed` в `run_metrics["fault"]`; включены потоки для фаз recovery и restored через
+      и `verifier_passed` (как `1.0`/`0.0` для корректной статистической агрегации) в `run_metrics["fault"]`; включены
+      потоки для фаз recovery и restored через
       `run_k6_phase(..., with_stream=True)`; `stabilization_secs` вычисляется через
       `metrics_timeseries.stabilization_time_secs(baseline_rate)` так же, как в E3;
       sentinel-события (`sentinel_write`, `sentinel_verify`) записываются в event log.
@@ -753,7 +754,9 @@ research-plan.
 Реализовано сейчас:
 
 - `report.md` добавляет scenario-specific секции:
-    - для `e3-degradation`/`e6-recovery` — compact phase summary, normalized phase-vs-baseline summary и fault timing;
+    - для `e3-degradation`/`e6-recovery` — compact phase summary, normalized phase-vs-baseline summary, fault timing
+      (включая `stabilization_secs`), verifier pass rate (для E6, доля passed/total) и re-crash timing
+      (`re_crash_downtime_secs`, `re_crash_recovery_seconds`, `re_crash_stabilization_secs` при наличии);
     - для `e4-hot-key` — comparison hot vs independent key class и explicit p95 ratio;
     - для `e5-leaderless` — per-node entry distribution.
 - `plot.generate_plots()` создает `plots/*.png`:
@@ -783,17 +786,16 @@ research-plan.
 
 ## Этап 14. Обновить документацию
 
-Работы:
+Статус: сделано.
 
-1. Обновить `docs/results.md` или добавить отдельный research-results документ.
-2. Описать методику запуска каждого сценария.
-3. Описать формат результатов.
-4. Описать интерпретацию статистики.
-5. Описать ограничения:
-    - какие проверки не покрыты;
-    - какие операции пока не поддерживаются S3 API;
-    - какие fault scenarios проверяются только через Maelstrom;
-    - какие сценарии требуют proxy-based network partition.
+- Создан `docs/research-results.md` (886 строк) — полное руководство по исследовательской инфраструктуре:
+  быстрый старт, описание каждого сценария, формат результатов (структура каталогов, JSON-схемы),
+  интерпретация метрик (нормализация, стабилизация, статистическая агрегация), верификатор корректности
+  (инварианты, unsupported проверки), server-side observability (консенсус, apply backlog), описание всех
+  8 типов графиков, matrix-runs по 3/5/7 узлам, ограничения (CAS, partition, proxy) и примеры команд.
+- Обновлён `docs/results.md`: раздел «Следующие результаты, которые нужны для PoC» заменён на таблицу
+  соответствия между прежними плановыми отчётами и реализованными командами `run-scenario.py`;
+  добавлена ссылка на `docs/research-results.md`.
 
 ## Минимальная последовательность реализации
 

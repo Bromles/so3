@@ -8,13 +8,29 @@ from typing import Any
 
 from _common import (
     detect_scenario as _detect_scenario,
+)
+from _common import (
     get_nested as _get_nested,
+)
+from _common import (
     get_number as _get_number,
+)
+from _common import (
     load_run_summaries as _load_run_summaries,
+)
+from _common import (
     node_total_samples as _node_total_samples,
 )
 
-PHASE_ORDER = ("baseline", "degraded", "recovery", "restored")
+PHASE_ORDER = (
+    "baseline",
+    "degraded",
+    "recovery",
+    "re_crash_degraded",
+    "re_recovery",
+    "restored",
+    "re_restored",
+)
 K6_STREAM_LATENCY_METRICS = ("s3_put_ms", "s3_get_ms", "s3_head_ms", "s3_delete_ms")
 TIMELINE_EVENT_LABELS = {
     "fail": "fail",
@@ -22,19 +38,27 @@ TIMELINE_EVENT_LABELS = {
     "recover": "recover",
     "normal_restored": "restored",
     "restored_start": "restored",
+    "re_crash": "re-crash",
+    "re_recovery": "re-recover",
+    "normal_re_restored": "re-restored",
 }
 TIMELINE_FALLBACK_POSITIONS = {
     "fail": 0.5,
     "degraded": 1.0,
     "recover": 2.0,
     "restored": 3.0,
+    "re_crash": 3.5,
+    "re_recovery": 4.5,
+    "re_restored": 5.0,
 }
 
 
 def _pyplot() -> Any:
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+
     return plt
 
 

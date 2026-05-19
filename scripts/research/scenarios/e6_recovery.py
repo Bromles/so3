@@ -212,7 +212,7 @@ def run_e6_recovery(
 
     if verifier_result is not None:
         run_metrics["fault"]["verifier_passed"] = (
-            verifier_result.get("verdict") == "passed"
+            1.0 if verifier_result.get("verdict") == "passed" else 0.0
         )
 
     baseline_rate = (

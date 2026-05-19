@@ -8,13 +8,29 @@ from typing import Any
 import stats
 from _common import (
     detect_scenario as _detect_scenario,
+)
+from _common import (
     get_nested as _get_nested,
+)
+from _common import (
     get_number as _get_number,
+)
+from _common import (
     load_run_summaries as _load_run_summaries,
+)
+from _common import (
     node_total_samples as _node_total_samples,
 )
 
-PHASE_ORDER = ("baseline", "degraded", "recovery", "restored")
+PHASE_ORDER = (
+    "baseline",
+    "degraded",
+    "recovery",
+    "re_crash_degraded",
+    "re_recovery",
+    "restored",
+    "re_restored",
+)
 K6_STREAM_LATENCY_METRICS = ("s3_put_ms", "s3_get_ms", "s3_head_ms", "s3_delete_ms")
 
 
@@ -152,6 +168,7 @@ def _phase_summary_section(aggregate: dict[str, Any]) -> list[str]:
             ("fault.total_downtime_secs", "total downtime, s"),
             ("fault.recovery_seconds", "restart recovery command, s"),
             ("fault.long_downtime_secs", "configured long downtime, s"),
+            ("fault.stabilization_secs", "stabilization time, s"),
         ):
             mean = _stat_mean(aggregate_metrics.get(name))
             if mean is not None:
@@ -166,6 +183,46 @@ def _phase_summary_section(aggregate: dict[str, Any]) -> list[str]:
                 ]
             )
             for label, mean in fault_rows:
+                lines.append(f"| {label} | {_format_number(mean)} |")
+            lines.append("")
+
+        # Verifier pass rate for E6
+        verifier_stats = aggregate_metrics.get("fault.verifier_passed")
+        if isinstance(verifier_stats, dict) and verifier_stats.get("n"):
+            v_mean = verifier_stats.get("mean", 0.0) or 0.0
+            v_n = int(verifier_stats.get("n", 0))
+            v_passed = int(round(v_mean * v_n))
+            lines.extend(
+                [
+                    "### Verifier",
+                    "",
+                    "| metric | passed / total |",
+                    "| --- | ---: |",
+                    f"| recovery sentinel | {v_passed} / {v_n} |",
+                    "",
+                ]
+            )
+
+        # Re-crash metrics
+        re_crash_rows = []
+        for name, label in (
+            ("fault.re_crash_downtime_secs", "re-crash downtime, s"),
+            ("fault.re_crash_recovery_seconds", "re-crash restart, s"),
+            ("fault.re_crash_stabilization_secs", "re-crash stabilization, s"),
+        ):
+            mean = _stat_mean(aggregate_metrics.get(name))
+            if mean is not None:
+                re_crash_rows.append((label, mean))
+        if re_crash_rows:
+            lines.extend(
+                [
+                    "### Re-crash timing",
+                    "",
+                    "| metric | mean |",
+                    "| --- | ---: |",
+                ]
+            )
+            for label, mean in re_crash_rows:
                 lines.append(f"| {label} | {_format_number(mean)} |")
             lines.append("")
 
