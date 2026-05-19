@@ -96,6 +96,10 @@ def summary_from_k6_payload(k6: dict[str, Any]) -> dict[str, Any]:
     if s3_errors:
         metrics["errors"]["s3_errors"] = s3_errors
 
+    http_req_failed = normalize_rate(k6, "http_req_failed")
+    if http_req_failed:
+        metrics["errors"]["http_req_failed"] = http_req_failed
+
     s3_timeouts = normalize_rate(k6, "s3_timeouts")
     if s3_timeouts:
         metrics["errors"]["s3_timeouts"] = s3_timeouts

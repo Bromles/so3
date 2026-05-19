@@ -16,8 +16,8 @@ use crate::repository::metadata::ObjectMetadataRepository;
 use crate::use_case::inbound_consensus::InboundConsensusUseCase;
 use async_trait::async_trait;
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{Mutex, Notify};
 use tokio_stream::StreamExt;
 

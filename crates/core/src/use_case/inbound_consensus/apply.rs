@@ -10,7 +10,7 @@ use crate::repository::blob::BlobRepository;
 use crate::repository::consensus_journal::ConsensusJournalRepository;
 use crate::repository::metadata::ObjectMetadataRepository;
 use crate::use_case::inbound_consensus::use_case::InboundConsensusUseCaseImpl;
-use tokio::time::{timeout_at, Duration, Instant};
+use tokio::time::{Duration, Instant, timeout_at};
 use tracing::info;
 
 fn elapsed_ms(start: Instant) -> u64 {

@@ -38,6 +38,7 @@ from topology import SUPPORTED_NODE_COUNTS, generate_topology  # noqa: E402
 DEFAULT_ACCESS_KEY = "so3testkey000000"
 DEFAULT_SECRET_KEY = "so3testsecret0000000000000000000"
 DEFAULT_RESULTS_DIR = REPO_ROOT / "results" / "research"
+MAX_K6_ERROR_RATE = 0.01
 CORRECTNESS_SCENARIOS = {"e2-fault-safety"}
 PHASED_FAULT_SCENARIOS = {"e3-degradation", "e6-recovery"}
 WORKLOAD_SCRIPTS = {
@@ -260,6 +261,24 @@ def write_failure_summary(
     )
 
 
+def metric_rate(run_metrics: dict[str, Any], category: str, name: str) -> float | None:
+    value = run_metrics.get(category, {}).get(name, {}).get("rate")
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def status_from_k6_metrics(run_metrics: dict[str, Any]) -> tuple[str, str | None]:
+    for metric_name in ("s3_errors", "http_req_failed"):
+        rate = metric_rate(run_metrics, "errors", metric_name)
+        if rate is not None and rate >= MAX_K6_ERROR_RATE:
+            return (
+                "failed",
+                f"{metric_name} rate {rate:.6g} exceeded limit {MAX_K6_ERROR_RATE}",
+            )
+    return "passed", None
+
+
 def run_one(
     args: argparse.Namespace, extra_k6_args: list[str], run_index: int, result_dir: Path
 ) -> None:
@@ -376,6 +395,7 @@ def run_one(
         stop_timeout_secs=args.stop_timeout_secs,
     )
     sampler: ResourceSampler | None = None
+    status_error: str | None = None
     try:
         events.record("cluster_start")
         cluster.start()
@@ -398,6 +418,7 @@ def run_one(
                 run_seed=run_seed,
             )
             status = "passed" if verifier_result["verdict"] == "passed" else "failed"
+            status_error = None if status == "passed" else "verifier failed"
         elif args.scenario == "e3-degradation":
             assert k6_script is not None
             run_metrics = run_e3_node_degradation(
@@ -410,7 +431,7 @@ def run_one(
                 events=events,
                 phase_durations=phase_durations(args),
             )
-            status = "passed"
+            status, status_error = status_from_k6_metrics(run_metrics)
         elif args.scenario == "e4-hot-key":
             assert k6_script is not None
             run_metrics = run_e4_hot_key(
@@ -421,7 +442,7 @@ def run_one(
                 extra_k6_args=extra_k6_args,
                 events=events,
             )
-            status = "passed"
+            status, status_error = status_from_k6_metrics(run_metrics)
         elif args.scenario == "e5-leaderless":
             assert k6_script is not None
             run_metrics = run_e5_leaderless(
@@ -432,7 +453,7 @@ def run_one(
                 extra_k6_args=extra_k6_args,
                 events=events,
             )
-            status = "passed"
+            status, status_error = status_from_k6_metrics(run_metrics)
         elif args.scenario == "e6-recovery":
             assert k6_script is not None
             run_metrics = run_e6_recovery(
@@ -446,7 +467,7 @@ def run_one(
                 phase_durations=phase_durations(args),
                 run_seed=run_seed,
             )
-            status = "passed"
+            status, status_error = status_from_k6_metrics(run_metrics)
         else:
             # k6-mixed: single-phase k6 run
             assert k6_script is not None
@@ -462,7 +483,7 @@ def run_one(
             )
             events.record("baseline_end")
             run_metrics = metrics.summary_from_k6_export(run_dir / "k6-summary.json")
-            status = "passed"
+            status, status_error = status_from_k6_metrics(run_metrics)
 
         metrics.merge_metrics(
             run_metrics,
@@ -474,7 +495,7 @@ def run_one(
             run_index=run_index,
             status=status,
             metrics=run_metrics,
-            error=None if status == "passed" else "verifier failed",
+            error=status_error,
         )
     except Exception as error:
         events.record("run_error", error=f"{type(error).__name__}: {error}")

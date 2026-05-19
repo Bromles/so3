@@ -37,12 +37,17 @@ export const s3Errors = new Rate("s3_errors");
 export const s3Timeouts = new Rate("s3_timeouts");
 export const s3Successes = new Rate("s3_successes");
 
+const defaultThresholds = {
+  s3_errors: ["rate<0.01"],
+  http_req_failed: ["rate<0.01"],
+};
+
 export function researchOptions(defaults = {}) {
   return {
     summaryTrendStats,
     vus: parseInt(__ENV.VUS || `${defaults.vus || 10}`, 10),
     duration: __ENV.DURATION || defaults.duration || "30s",
-    thresholds: defaults.thresholds || {},
+    thresholds: { ...defaultThresholds, ...(defaults.thresholds || {}) },
   };
 }
 

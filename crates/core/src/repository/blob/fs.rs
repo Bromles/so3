@@ -1,3 +1,4 @@
+#[cfg(not(windows))]
 use std::fs::File as StdFile;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -9,7 +10,6 @@ use crate::repository::blob::interface::BlobRepository;
 use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::fs;
-use tokio::fs::File as TokioFile;
 use tokio::io::AsyncWriteExt;
 use tokio_stream::StreamExt;
 use tokio_util::io::ReaderStream;
@@ -67,7 +67,7 @@ impl BlobRepository for FileSystemBlobRepository {
     async fn commit(&self, blob_id: &BlobId) -> So3Result<()> {
         let temp_path = self.streaming_temp_path(blob_id);
         let final_path = self.committed_path(blob_id);
-        let file = TokioFile::open(&temp_path).await?;
+        let file = fs::OpenOptions::new().write(true).open(&temp_path).await?;
         file.sync_all().await?;
         drop(file);
         match fs::rename(&temp_path, &final_path).await {
@@ -109,21 +109,17 @@ impl BlobRepository for FileSystemBlobRepository {
     }
 }
 
+#[cfg(windows)]
+async fn sync_dir(_path: PathBuf) -> So3Result<()> {
+    Ok(())
+}
+
+#[cfg(not(windows))]
 async fn sync_dir(path: PathBuf) -> So3Result<()> {
     tokio::task::spawn_blocking(move || open_dir_for_sync(&path)?.sync_all())
         .await
         .map_err(|e| So3Error::Io(format!("dir sync task failed: {e}")))?
         .map_err(So3Error::from)
-}
-
-#[cfg(windows)]
-fn open_dir_for_sync(path: &Path) -> io::Result<StdFile> {
-    use std::os::windows::fs::OpenOptionsExt;
-    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
-    std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-        .open(path)
 }
 
 #[cfg(not(windows))]
