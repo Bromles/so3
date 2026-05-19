@@ -8,6 +8,7 @@ summaries, then produces an aggregate summary and a markdown report.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import sys
@@ -72,6 +73,14 @@ def parse_args(argv: Sequence[str]) -> tuple[argparse.Namespace, list[str]]:
         default=3,
         choices=SUPPORTED_NODE_COUNTS,
         help="SO3 cluster size",
+    )
+    parser.add_argument(
+        "--matrix-node-counts",
+        action="store_true",
+        help=(
+            "run the scenario for each supported node count"
+            " (only e3-degradation and e6-recovery)"
+        ),
     )
     parser.add_argument("--outdir", type=Path, default=None)
     parser.add_argument("--so3-bin", type=Path, default=Path("target/release/so3"))
@@ -152,13 +161,30 @@ def parse_args(argv: Sequence[str]) -> tuple[argparse.Namespace, list[str]]:
         default=0.0,
         help="extra seconds to keep the node down before restarting in e6-recovery",
     )
+    parser.add_argument(
+        "--e6-re-crash",
+        action="store_true",
+        help="enable re-crash during sync sub-scenario in e6-recovery",
+    )
+    parser.add_argument(
+        "--e6-re-crash-duration",
+        default="15s",
+        help="duration of the degraded phase after the second crash in e6-recovery (default: 15s)",
+    )
     parser.add_argument("--keep-data-dirs", action="store_true")
     parser.add_argument(
         "--debug-k6",
         action="store_true",
         help="stream k6 output instead of writing stdout/stderr files only",
     )
-    return parser.parse_known_args(argv)
+    args, extra_k6_args = parser.parse_known_args(argv)
+
+    # --matrix-node-counts and explicit --node-count are mutually exclusive,
+    # but only when the user actually passed --node-count on the command line.
+    if args.matrix_node_counts and "--node-count" in argv:
+        parser.error("--matrix-node-counts and --node-count are mutually exclusive")
+
+    return args, extra_k6_args
 
 
 def resolve_repo_path(path: Path) -> Path:
@@ -304,6 +330,9 @@ def run_one(
         }
         if args.scenario == "e6-recovery":
             fault_injection["long_downtime_secs"] = args.e6_long_downtime_secs
+            if getattr(args, "e6_re_crash", False):
+                fault_injection["re_crash"] = True
+                fault_injection["re_crash_duration"] = args.e6_re_crash_duration
     elif args.scenario == "e2-fault-safety":
         phases = {
             "baseline": {
@@ -461,6 +490,273 @@ def run_one(
             shutil.rmtree(data_dir, ignore_errors=True)
 
 
+# ---------------------------------------------------------------------------
+# Matrix-runs mode: run a phased scenario across multiple node counts
+# ---------------------------------------------------------------------------
+
+MATRIX_SCENARIOS = {"e3-degradation", "e6-recovery"}
+
+
+def _extract_comparison_metric(
+    aggregate: dict[str, Any], *paths: str
+) -> dict[str, Any]:
+    """Extract mean and CI for a dotted metric path from an aggregate."""
+    node: Any = aggregate
+    for key in paths:
+        if not isinstance(node, dict):
+            return {"mean": None, "ci": None}
+        node = node.get(key)
+    if not isinstance(node, dict):
+        return {"mean": None, "ci": None}
+    mean = node.get("mean")
+    ci_lower = node.get("ci_lower")
+    ci_upper = node.get("ci_upper")
+    if mean is not None and ci_lower is not None and ci_upper is not None:
+        return {"mean": mean, "ci": [ci_lower, ci_upper]}
+    return {"mean": mean, "ci": None}
+
+
+def _build_comparison(
+    per_node: dict[int, dict[str, Any]],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Build a cross-node comparison of key metrics from per-node aggregates."""
+    comparison: dict[str, dict[str, dict[str, float | None]]] = {}
+
+    # Throughput degradation: normalized throughput during degraded phase
+    comparison["throughput_degradation"] = {}
+    for nc, agg in sorted(per_node.items()):
+        rel = agg.get("relative_metrics", {}).get("degraded", {})
+        # Look for a throughput-like metric in relative phase metrics
+        found = False
+        for metric_name, metric_stat in rel.items():
+            if "throughput" in metric_name and "total" not in metric_name:
+                comparison["throughput_degradation"][str(nc)] = (
+                    _extract_comparison_metric({"_": metric_stat}, "_")
+                )
+                found = True
+                break
+        if not found:
+            comparison["throughput_degradation"][str(nc)] = {"mean": None, "ci": None}
+
+    # Recovery time
+    comparison["recovery_time"] = {}
+    for nc, agg in sorted(per_node.items()):
+        metrics = agg.get("metrics", {})
+        found = False
+        for metric_name in metrics:
+            if "recovery_time" in metric_name:
+                comparison["recovery_time"][str(nc)] = _extract_comparison_metric(
+                    agg, "metrics", metric_name
+                )
+                found = True
+                break
+        if not found:
+            comparison["recovery_time"][str(nc)] = {"mean": None, "ci": None}
+
+    # Stabilization time
+    comparison["stabilization_time"] = {}
+    for nc, agg in sorted(per_node.items()):
+        metrics = agg.get("metrics", {})
+        found = False
+        for metric_name in metrics:
+            if "stabilization_time" in metric_name:
+                comparison["stabilization_time"][str(nc)] = _extract_comparison_metric(
+                    agg, "metrics", metric_name
+                )
+                found = True
+                break
+        if not found:
+            comparison["stabilization_time"][str(nc)] = {"mean": None, "ci": None}
+
+    # Verifier pass rate (for E6)
+    comparison["verifier_pass_rate"] = {}
+    for nc, agg in sorted(per_node.items()):
+        metrics_map = agg.get("metrics", {})
+        found = False
+        for metric_name in metrics_map:
+            if "verifier" in metric_name and "pass" in metric_name:
+                comparison["verifier_pass_rate"][str(nc)] = _extract_comparison_metric(
+                    agg, "metrics", metric_name
+                )
+                found = True
+                break
+        if not found:
+            comparison["verifier_pass_rate"][str(nc)] = {"mean": None, "ci": None}
+
+    return comparison
+
+
+def write_matrix_summary(
+    parent_dir: Path,
+    scenario: str,
+    per_node: dict[int, dict[str, Any]],
+) -> Path:
+    """Write matrix-summary.json at the parent result directory."""
+    comparison = _build_comparison(per_node)
+    payload: dict[str, Any] = {
+        "scenario": scenario,
+        "node_counts": {str(nc): agg for nc, agg in sorted(per_node.items())},
+        "comparison": comparison,
+    }
+    path = parent_dir / "matrix-summary.json"
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_matrix_report(
+    parent_dir: Path,
+    scenario: str,
+    per_node: dict[int, dict[str, Any]],
+) -> Path:
+    """Write matrix-report.md comparing results across node counts."""
+    comparison = _build_comparison(per_node)
+    path = parent_dir / "matrix-report.md"
+
+    lines = [
+        f"# Matrix report: {scenario}",
+        "",
+        "Comparison of key metrics across node counts.",
+        "",
+    ]
+
+    # Summary table
+    lines.extend(
+        [
+            "## Summary",
+            "",
+            "| node count | runs | passed | failed | verdict |",
+            "| --- | ---: | ---: | ---: | --- |",
+        ]
+    )
+    for nc in sorted(per_node):
+        agg = per_node[nc]
+        lines.append(
+            f"| {nc} "
+            f"| {agg.get('runs_total', 0)} "
+            f"| {agg.get('runs_successful', 0)} "
+            f"| {agg.get('runs_failed', 0)} "
+            f"| {agg.get('verdict', 'unknown')} |"
+        )
+    lines.append("")
+
+    # Comparison metrics tables
+    for metric_name, by_nc in comparison.items():
+        display_name = metric_name.replace("_", " ").title()
+        lines.extend([f"## {display_name}", ""])
+        lines.extend(
+            [
+                "| node count | mean | 95% CI |",
+                "| --- | ---: | --- |",
+            ]
+        )
+        for nc_key in sorted(by_nc, key=lambda k: int(k)):
+            entry = by_nc[nc_key]
+            mean = entry.get("mean")
+            ci = entry.get("ci")
+            mean_str = f"{mean:.6g}" if mean is not None else "—"
+            if ci is not None:
+                ci_str = f"[{ci[0]:.6g}, {ci[1]:.6g}]"
+            else:
+                ci_str = "—"
+            lines.append(f"| {nc_key} | {mean_str} | {ci_str} |")
+        lines.append("")
+
+    # Per-node subdirectory links
+    lines.extend(["## Per-node details", ""])
+    for nc in sorted(per_node):
+        lines.append(f"- [nodes-{nc}](nodes-{nc}/report.md)")
+    lines.append("")
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
+def run_matrix(
+    args: argparse.Namespace,
+    extra_k6_args: list[str],
+) -> int:
+    """Execute the scenario across all supported node counts."""
+    scenario = args.scenario
+
+    if scenario not in MATRIX_SCENARIOS:
+        print(
+            f"error: --matrix-node-counts is only supported for phased fault"
+            f" scenarios: {', '.join(sorted(MATRIX_SCENARIOS))}",
+            file=sys.stderr,
+        )
+        return 2
+
+    parent_dir = args.outdir or default_outdir(scenario)
+    parent_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"SO3 matrix research scenario: {scenario}")
+    print(f"node counts: {', '.join(str(nc) for nc in SUPPORTED_NODE_COUNTS)}")
+    print(f"runs per node count: {args.runs}")
+    print(f"results:   {parent_dir}")
+    if args.scenario in WORKLOAD_SCRIPTS or args.k6_script is not None:
+        k6_script = selected_k6_script(args)
+        print(f"k6 script: {k6_script}")
+    print()
+
+    per_node: dict[int, dict[str, Any]] = {}
+    any_failed = False
+
+    for node_count in SUPPORTED_NODE_COUNTS:
+        sub_dir = parent_dir / f"nodes-{node_count}"
+        sub_dir.mkdir(parents=True, exist_ok=True)
+
+        print(f"--- nodes: {node_count} ---")
+        matrix_args = argparse.Namespace(**vars(args))
+        matrix_args.node_count = node_count
+
+        try:
+            for run_index in range(1, args.runs + 1):
+                print(
+                    f"[{node_count}n] run {run_index:03d}/{args.runs} ... ",
+                    end="",
+                    flush=True,
+                )
+                run_one(matrix_args, extra_k6_args, run_index, sub_dir)
+                print("done")
+        except KeyboardInterrupt:
+            print("interrupted", file=sys.stderr)
+            return 130
+
+        aggregate = stats.write_aggregate_summary(sub_dir)
+        per_node[node_count] = aggregate
+        if aggregate.get("runs_failed", 0) > 0:
+            any_failed = True
+
+        try:
+            plot_paths = plot.generate_plots(sub_dir, aggregate)
+            plot_error = None
+        except Exception as error:
+            plot_paths = []
+            plot_error = f"{type(error).__name__}: {error}"
+
+        report_path = report.write_report(sub_dir, aggregate)
+
+        print(f"  aggregate: {sub_dir / 'aggregate-summary.json'}")
+        if plot_paths:
+            print(f"  plots:     {sub_dir / 'plots'}")
+        if plot_error:
+            print(f"  plots:     skipped ({plot_error})", file=sys.stderr)
+        print(f"  report:    {report_path}")
+        print(f"  verdict:   {aggregate.get('verdict')}")
+        print()
+
+    # Write matrix-level outputs
+    summary_path = write_matrix_summary(parent_dir, scenario, per_node)
+    report_path = write_matrix_report(parent_dir, scenario, per_node)
+
+    print(f"matrix summary: {summary_path}")
+    print(f"matrix report:  {report_path}")
+    return 1 if any_failed else 0
+
+
 def main(argv: Sequence[str]) -> int:
     args, extra_k6_args = parse_args(argv)
     if args.runs < 30 and not args.allow_low_runs:
@@ -475,6 +771,10 @@ def main(argv: Sequence[str]) -> int:
             file=sys.stderr,
         )
         return 2
+
+    # Matrix mode: run across all supported node counts
+    if args.matrix_node_counts:
+        return run_matrix(args, extra_k6_args)
 
     result_dir = args.outdir or default_outdir(args.scenario)
     result_dir.mkdir(parents=True, exist_ok=True)

@@ -35,7 +35,11 @@ SO3 рассматривается как экспериментальный pro
       `baseline -> fail -> degraded -> recover -> recovery -> restored`;
     - `e6-recovery` поддерживает `--e6-long-downtime-secs` для тестирования длительного простоя;
     - пробрасывает `args.entry_urls` из topology и `run_seed` в `run_e6_recovery`;
-    - `entry_urls` извлекаются из `topology.to_json()` и сохраняются в `args.entry_urls`.
+    - `entry_urls` извлекаются из `topology.to_json()` и сохраняются в `args.entry_urls`;
+    - `--e6-re-crash` включает сценарий повторного падения узла во время восстановления;
+    - `--e6-re-crash-duration` задаёт длительность degraded-фазы после повторного падения (default `15s`);
+    - `--matrix-node-counts` запускает scenario по 3/5/7 узлам с подкаталогами `nodes-{N}/`
+      и генерирует `matrix-summary.json` + `matrix-report.md` на уровне родительского каталога.
 - Реализованы scenario-модули в `scripts/research/scenarios/`:
     - `e2_fault_safety.py` — CorrectnessDriver + ConcurrentFaultInjector параллельно;
     - `e3_node_degradation.py` — четырёхфазный phased runner с crash/restart; включены потоки
@@ -118,9 +122,19 @@ SO3 рассматривается как экспериментальный pro
 - Maelstrom hidden-leader behavior исправлен для обычных client requests: узел, получивший клиентскую операцию,
   координирует ее локально и пишет structured `tracing` log через подключенный logger с `entry_node`,
   `coordinator_node`, `operation_id`, `operation`, `source`, `consensus_path`.
-- E6: сценарий повторного падения узла во время синхронизации (`узел снова падает во время синхронизации`)
-  пока не реализован.
-- E3/E6: matrix-runs по 3/5/7 узлам не реализованы — требуют нескольких result-dir с разными `--node-count`.
+- E6: сценарий повторного падения узла во время синхронизации реализован через флаг `--e6-re-crash`:
+  после начальной recovery-фазы узел снова «убивается» (`re_crash`), выполняется
+  `re_crash_degraded`-фаза (длительность через `--e6-re-crash-duration`, default `15s`),
+  затем вторичный restart (`re_recovery`) и финальная `re_restored`-фаза;
+  метрики `re_crash_downtime_secs`, `re_crash_recovery_seconds`, `re_crash_stabilization_secs`
+  записываются в `run_metrics["fault"]`; sentinel-верификация выполняется после `re_restored`.
+- E3/E6: matrix-runs по 3/5/7 узлам реализованы через флаг `--matrix-node-counts`:
+  runner последовательно запускает сценарий с `--node-count 3`, `5`, `7`, создавая подкаталоги
+  `nodes-3/`, `nodes-5/`, `nodes-7/` внутри result-dir; для каждого подкаталога генерируются
+  aggregate-summary, plots и report; на уровне родительского каталога пишутся `matrix-summary.json`
+  (per-node-count агрегаты + cross-node comparison) и `matrix-report.md` (сравнительная таблица
+  throughput degradation, recovery time, stabilization time, verifier pass rate); поддерживается
+  только для `e3-degradation` и `e6-recovery`.
 
 ## Обязательные принципы
 
@@ -545,7 +559,7 @@ Partition и heal через реальный кластер не реализо
 метрики. Фазы recovery и restored записывают k6 JSONL stream через `run_k6_phase(..., with_stream=True)`;
 `stabilization_secs` вычисляется через `metrics_timeseries.stabilization_time_secs(stream, baseline_rate)`
 с порогом 0.9×baseline и окном 5 сек, и сохраняется в `run_metrics["fault"]["stabilization_secs"]`.
-Остается: конфигурационные matrix-runs по 3/5/7 узлам (требуют нескольких запусков с разными `--node-count`).
+Остается: провести полные matrix-runs через `--matrix-node-counts`.
 
 Цель: показать предсказуемую динамику при отказах узлов.
 
@@ -640,7 +654,11 @@ linearizability при partition по всем узлам, что являетс
 верифицирует их после restored-фазы, пишет `verifier-result.json` (schema_version 1, инвариант
 `recovery_preserves_confirmed_writes`, verdict passed/failed) и `verifier_passed` в `run_metrics["fault"]`.
 Sentinel-события (`sentinel_write`, `sentinel_verify`) записываются в event log.
-Остается: сценарий падения узла во время синхронизации.
+Сценарий повторного падения реализован через `--e6-re-crash`: после начальной recovery-фазы
+узел снова падает (`re_crash`), выполняется `re_crash_degraded`-фаза, затем вторичный restart
+(`re_recovery`) и финальная `re_restored`-фаза; метрики `re_crash_downtime_secs`,
+`re_crash_recovery_seconds`, `re_crash_stabilization_secs` записываются в `run_metrics["fault"]`.
+Остается: интеграция с matrix-runs для полного покрытия 3/5/7 узлов.
 
 Цель: проверить безопасное возвращение отставшего узла.
 

@@ -33,18 +33,30 @@ def run_e6_recovery(
     after the degraded phase before being restarted. Tests whether the cluster
     recovers correctly after a longer absence.
 
-    Phases: baseline → (crash) → degraded → (wait) → (restart) → recovery → restored.
+    Phases: baseline -> (crash) -> degraded -> (wait) -> (restart) -> recovery -> restored.
+
+    When --e6-re-crash is enabled, the node is crashed AGAIN after the initial
+    recovery phase, then restarted a second time:
+
+    baseline -> (crash) -> degraded -> (wait) -> (restart) -> recovery ->
+    (re-crash) -> re_crash_degraded -> (restart) -> re_recovery -> re_restored.
     """
     long_downtime_secs: float = getattr(args, "e6_long_downtime_secs", 0.0) or 0.0
+    re_crash_enabled: bool = getattr(args, "e6_re_crash", False)
+    re_crash_duration: str = getattr(args, "e6_re_crash_duration", "15s") or "15s"
     entry_urls: list[str] = getattr(args, "entry_urls", None) or []
     bucket: str = getattr(args, "bucket", "so3-benchmark")
     phase_exports: dict[str, Path] = {}
 
-    sentinel = RecoverySentinel(
-        entry_urls=entry_urls,
-        bucket=bucket,
-        seed=run_seed,
-    ) if entry_urls else None
+    sentinel = (
+        RecoverySentinel(
+            entry_urls=entry_urls,
+            bucket=bucket,
+            seed=run_seed,
+        )
+        if entry_urls
+        else None
+    )
 
     confirmed_writes: dict[str, str] = {}
     if sentinel is not None:
@@ -104,18 +116,78 @@ def run_e6_recovery(
         with_stream=True,
     )
 
-    events.record("normal_restored", node_index=args.fault_node)
-    phase_exports["restored"], restored_stream = run_k6_phase(
-        args=args,
-        k6_script=k6_script,
-        run_dir=run_dir,
-        env=env,
-        extra_k6_args=extra_k6_args,
-        phase="restored",
-        duration=phase_durations["restored"],
-        events=events,
-        with_stream=True,
-    )
+    if re_crash_enabled:
+        # --- Re-crash sub-scenario ---
+        re_crash_monotonic = time.monotonic()
+        faults.crash_node(cluster, args.fault_node)
+        events.record("re_crash", node_index=args.fault_node)
+
+        phase_exports["re_crash_degraded"], _ = run_k6_phase(
+            args=args,
+            k6_script=k6_script,
+            run_dir=run_dir,
+            env=env,
+            extra_k6_args=extra_k6_args,
+            phase="re_crash_degraded",
+            duration=re_crash_duration,
+            events=events,
+        )
+
+        re_recovery_start = time.monotonic()
+        re_recovery = faults.restart_node(cluster, args.fault_node)
+        re_recovery_seconds = time.monotonic() - re_recovery_start
+        events.record(
+            "re_recovery",
+            kind=re_recovery.kind,
+            node_index=re_recovery.node_index,
+            recovery_seconds=re_recovery_seconds,
+        )
+
+        re_crash_downtime_secs = re_recovery_start - re_crash_monotonic
+
+        phase_exports["re_recovery"], re_recovery_stream = run_k6_phase(
+            args=args,
+            k6_script=k6_script,
+            run_dir=run_dir,
+            env=env,
+            extra_k6_args=extra_k6_args,
+            phase="re_recovery",
+            duration=phase_durations["recovery"],
+            events=events,
+            with_stream=True,
+        )
+
+        events.record("normal_re_restored", node_index=args.fault_node)
+        phase_exports["re_restored"], _ = run_k6_phase(
+            args=args,
+            k6_script=k6_script,
+            run_dir=run_dir,
+            env=env,
+            extra_k6_args=extra_k6_args,
+            phase="re_restored",
+            duration=phase_durations["restored"],
+            events=events,
+            with_stream=True,
+        )
+    else:
+        re_crash_downtime_secs = 0.0
+        re_recovery_seconds = 0.0
+        re_recovery_stream = None
+
+    # When re-crash is NOT enabled, run the normal restored phase.
+    if not re_crash_enabled:
+        events.record("normal_restored", node_index=args.fault_node)
+        phase_exports["restored"], _ = run_k6_phase(
+            args=args,
+            k6_script=k6_script,
+            run_dir=run_dir,
+            env=env,
+            extra_k6_args=extra_k6_args,
+            phase="restored",
+            duration=phase_durations["restored"],
+            events=events,
+            with_stream=True,
+        )
 
     verifier_result: dict[str, Any] | None = None
     if sentinel is not None and confirmed_writes:
@@ -139,7 +211,9 @@ def run_e6_recovery(
     run_metrics["fault"]["long_downtime_secs"] = long_downtime_secs
 
     if verifier_result is not None:
-        run_metrics["fault"]["verifier_passed"] = verifier_result.get("verdict") == "passed"
+        run_metrics["fault"]["verifier_passed"] = (
+            verifier_result.get("verdict") == "passed"
+        )
 
     baseline_rate = (
         run_metrics.get("phases", {})
@@ -153,5 +227,16 @@ def run_e6_recovery(
             recovery_stream, baseline_rate=float(baseline_rate)
         )
         run_metrics["fault"]["stabilization_secs"] = stab
+
+    # Re-crash metrics
+    if re_crash_enabled:
+        run_metrics["fault"]["re_crash"] = True
+        run_metrics["fault"]["re_crash_downtime_secs"] = re_crash_downtime_secs
+        run_metrics["fault"]["re_crash_recovery_seconds"] = re_recovery_seconds
+        if baseline_rate and re_recovery_stream is not None:
+            re_crash_stab = metrics_timeseries.stabilization_time_secs(
+                re_recovery_stream, baseline_rate=float(baseline_rate)
+            )
+            run_metrics["fault"]["re_crash_stabilization_secs"] = re_crash_stab
 
     return run_metrics
