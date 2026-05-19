@@ -91,6 +91,7 @@ def is_success(record: dict[str, Any], operation_type: str | None = None) -> boo
 def verify_history(records: list[dict[str, Any]]) -> VerificationResult:
     result = VerificationResult(operation_count=len(records))
     known_values_by_key: dict[str, set[str]] = {}
+    known_etags_by_key: dict[str, set[str]] = {}
 
     for record in records:
         key = record.get("key")
@@ -105,7 +106,8 @@ def verify_history(records: list[dict[str, Any]]) -> VerificationResult:
             )
             continue
 
-        if record.get("operation_type") == "PUT" and is_success(record):
+        op = record.get("operation_type")
+        if op == "PUT" and is_success(record):
             value_hash = record.get("input_value_hash")
             if isinstance(value_hash, str):
                 known_values_by_key.setdefault(key, set()).add(value_hash)
@@ -118,6 +120,14 @@ def verify_history(records: list[dict[str, Any]]) -> VerificationResult:
                         message="successful PUT has no input_value_hash",
                     )
                 )
+            etag = record.get("etag")
+            if isinstance(etag, str):
+                known_etags_by_key.setdefault(key, set()).add(etag.strip('"'))
+
+        if op == "GET" and is_success(record):
+            etag = record.get("etag")
+            if isinstance(etag, str):
+                known_etags_by_key.setdefault(key, set()).add(etag.strip('"'))
 
     for record in records:
         operation_type = record.get("operation_type")
@@ -126,42 +136,74 @@ def verify_history(records: list[dict[str, Any]]) -> VerificationResult:
             continue
 
         status = record.get("result_code")
-        returned_hash = record.get("returned_value_hash")
         if status in {403, 404} or record.get("timeout"):
             continue
         if status != 200 or not is_success(record):
             continue
-        if not isinstance(returned_hash, str):
-            result.fail(
-                VerificationIssue(
-                    invariant="reads_return_only_successfully_written_values",
-                    operation_id=record.get("operation_id"),
-                    key=key,
-                    message="successful read has no returned_value_hash",
-                )
-            )
-            continue
 
-        if returned_hash not in known_values_by_key.get(key, set()):
-            result.fail(
-                VerificationIssue(
-                    invariant="reads_return_only_successfully_written_values",
-                    operation_id=record.get("operation_id"),
-                    key=key,
-                    message=f"read returned value {returned_hash} that was never successfully written for this key",
-                )
-            )
-
+        returned_hash = record.get("returned_value_hash")
         read_start = float(record.get("start_monotonic_secs", 0.0))
-        if read_after_delete_without_later_put(records, key, read_start):
-            result.fail(
-                VerificationIssue(
-                    invariant="successful_delete_hides_prior_value_until_next_successful_put",
-                    operation_id=record.get("operation_id"),
-                    key=key,
-                    message="read returned a value after successful DELETE and before a later successful PUT",
+
+        if operation_type == "GET":
+            if not isinstance(returned_hash, str):
+                result.fail(
+                    VerificationIssue(
+                        invariant="reads_return_only_successfully_written_values",
+                        operation_id=record.get("operation_id"),
+                        key=key,
+                        message="successful GET has no returned_value_hash",
+                    )
                 )
-            )
+                continue
+            if returned_hash not in known_values_by_key.get(key, set()):
+                result.fail(
+                    VerificationIssue(
+                        invariant="reads_return_only_successfully_written_values",
+                        operation_id=record.get("operation_id"),
+                        key=key,
+                        message=f"GET returned value {returned_hash} that was never successfully written for this key",
+                    )
+                )
+            if read_after_delete_without_later_put(records, key, read_start):
+                result.fail(
+                    VerificationIssue(
+                        invariant="successful_delete_hides_prior_value_until_next_successful_put",
+                        operation_id=record.get("operation_id"),
+                        key=key,
+                        message="GET returned a value after successful DELETE and before a later successful PUT",
+                    )
+                )
+
+        elif operation_type == "HEAD":
+            etags = known_etags_by_key.get(key)
+            if not isinstance(returned_hash, str):
+                if etags:
+                    result.fail(
+                        VerificationIssue(
+                            invariant="head_etag_matches_successfully_written_values",
+                            operation_id=record.get("operation_id"),
+                            key=key,
+                            message="successful HEAD returned no etag but key has known etags",
+                        )
+                    )
+            elif etags and returned_hash not in etags:
+                result.fail(
+                    VerificationIssue(
+                        invariant="head_etag_matches_successfully_written_values",
+                        operation_id=record.get("operation_id"),
+                        key=key,
+                        message=f"HEAD returned etag {returned_hash} not seen in any PUT or GET for this key",
+                    )
+                )
+            if read_after_delete_without_later_put(records, key, read_start):
+                result.fail(
+                    VerificationIssue(
+                        invariant="successful_delete_hides_prior_value_until_next_successful_put",
+                        operation_id=record.get("operation_id"),
+                        key=key,
+                        message="HEAD returned 200 after successful DELETE and before a later successful PUT",
+                    )
+                )
 
     return result
 

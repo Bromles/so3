@@ -209,9 +209,6 @@ def scenario_env(
     return env
 
 
-k6_env = scenario_env
-
-
 def write_failure_summary(
     run_dir: Path,
     *,
@@ -267,7 +264,6 @@ def run_phased_fault_k6(
     cluster: So3Cluster,
     events: manifest.EventLog,
 ) -> dict[str, Any]:
-    cluster.node_spec(args.fault_node)
     durations = phase_durations(args)
     phase_exports: dict[str, Path] = {}
 

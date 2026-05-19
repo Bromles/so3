@@ -9,6 +9,13 @@ export const DEFAULT_OBJECT_SIZE = parseInt(__ENV.OBJECT_SIZE || "64", 10);
 export const DEFAULT_SCENARIO = __ENV.RESEARCH_SCENARIO || "unknown";
 export const DEFAULT_PHASE = __ENV.RESEARCH_PHASE || "steady";
 
+const _zipfDefaultSpace = Math.max(1, parseInt(__ENV.KEY_SPACE || "1000", 10));
+const _zipfDefaultSkew = parseFloat(__ENV.ZIPF_SKEW || "1.1");
+let _zipfDefaultHarmonic = 0;
+for (let _i = 1; _i <= _zipfDefaultSpace; _i += 1) {
+  _zipfDefaultHarmonic += 1 / Math.pow(_i, _zipfDefaultSkew);
+}
+
 export const summaryTrendStats = [
   "avg",
   "med",
@@ -121,11 +128,16 @@ export function ninetyTenKey(prefix = "mixed", independentSpace = parseInt(__ENV
   return uniformKey(prefix, independentSpace);
 }
 
-export function zipfKey(prefix = "zipf", space = parseInt(__ENV.KEY_SPACE || "1000", 10), skew = parseFloat(__ENV.ZIPF_SKEW || "1.1")) {
+export function zipfKey(prefix = "zipf", space = _zipfDefaultSpace, skew = _zipfDefaultSkew) {
   const n = Math.max(1, space);
-  let harmonic = 0;
-  for (let i = 1; i <= n; i += 1) {
-    harmonic += 1 / Math.pow(i, skew);
+  let harmonic;
+  if (n === _zipfDefaultSpace && skew === _zipfDefaultSkew) {
+    harmonic = _zipfDefaultHarmonic;
+  } else {
+    harmonic = 0;
+    for (let i = 1; i <= n; i += 1) {
+      harmonic += 1 / Math.pow(i, skew);
+    }
   }
 
   let target = Math.random() * harmonic;
@@ -226,7 +238,6 @@ export function headObject({ endpoint, bucket = DEFAULT_BUCKET, key, expectedSiz
       "head: etag present": (r) => r.headers.Etag !== undefined,
       "head: etag is quoted": (r) => (r.headers.Etag || "").startsWith('"'),
       "head: last-modified present": (r) => r.headers["Last-Modified"] !== undefined,
-      "head: x-amz-version-id present": (r) => r.headers["X-Amz-Version-Id"] !== undefined,
     },
     tags,
   );

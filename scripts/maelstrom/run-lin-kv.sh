@@ -41,11 +41,6 @@ resolve_maelstrom_command() {
     return
   fi
 
-  if [[ -n "${MAELSTROM_JAR:-}" ]]; then
-    printf '%s\0' java -jar "${MAELSTROM_JAR}" test
-    return
-  fi
-
   if [[ -f "$default_jar_path" ]]; then
     printf '%s\0' java -jar "$default_jar_path" test
     return

@@ -188,7 +188,7 @@ class CorrectnessDriver:
     ) -> dict[str, Any]:
         response_hash = sha256_hex(result.body) if result.body is not None else None
         etag = result.headers.get("etag")
-        if operation_type in {"HEAD", "GET"} and etag:
+        if operation_type == "HEAD" and etag:
             response_hash = etag.strip('"')
 
         record = {

@@ -51,6 +51,8 @@ SO3 рассматривается как экспериментальный pro
     - `scripts/verify/history-schema.md` — схема истории.
 - Проверки, которые S3 API пока не выражает (`CAS`, `If-None-Match`, idempotency key), verifier помечает как
   `unsupported`.
+- `GET` и `HEAD` проверяются раздельно: для `GET` сравнивается SHA-256 тела с хешами из успешных `PUT`,
+  для `HEAD` ETag сравнивается с ETag-ами, наблюдёнными в успешных `PUT`- и `GET`-ответах.
 - Проведены smoke-проверки:
     - `ruff check scripts` проходит;
     - Python compile для `scripts/research`, `scripts/verify`, `scripts/k6/run-backend-benchmark.py` проходит;
@@ -114,7 +116,8 @@ SO3 рассматривается как экспериментальный pro
     - `stats.py` — статистическая агрегация по 30+ прогонам;
     - `manifest.py` — описание прогона, seed, окружение, версии бинарей;
     - `report.py` — генерация markdown/JSON summaries;
-    - `scenarios/`
+    - `scenarios/` — запланированные отдельные модули сценариев; пока содержит только `__init__.py`,
+      логика всех сценариев находится в `run-scenario.py`:
         - `e1_correctness.py`;
         - `e2_fault_safety.py`;
         - `e3_node_degradation.py`;
@@ -344,7 +347,8 @@ harness.
 Статус: частично сделано. Добавлен `correctness_driver.py` на реальном S3 SDK (`boto3`), `client-history.jsonl`,
 `verify-history.py`, импортируемый `verify_history.py` и `history-schema.md`; `e1-correctness` подключен к
 `run-scenario.py`. CAS/`If-None-Match`/idempotency пока маркируются как `unsupported`; E2 safety history еще предстоит
-расширить.
+расширить. `GET` и `HEAD` верифицируются раздельно: `GET` — через SHA-256 тела, `HEAD` — через ETag из
+PUT/GET-ответов.
 
 Цель: E1 и часть E2 проверяются не latency-графиками, а историей операций и инвариантами.
 
