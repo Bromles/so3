@@ -9,7 +9,12 @@ import {
 const SCENARIO = "s3_degradation";
 const clients = buildClients();
 
-export const options = researchOptions({ duration: "30s", vus: 10 });
+// Fault scenarios expect errors during degraded phases — treat them as data, not failures.
+export const options = researchOptions({
+  duration: "30s",
+  vus: 10,
+  thresholds: { s3_errors: ["rate<1.0"], http_req_failed: ["rate<1.0"] },
+});
 
 export default async function () {
   const keyInfo = keyByDistribution(__ENV.KEY_DISTRIBUTION || "uniform", SCENARIO);

@@ -9,6 +9,9 @@ from typing import Any
 import manifest
 
 
+_K6_THRESHOLD_FAILURE_CODE = 99
+
+
 def run_k6(
     *,
     k6_script: Path,
@@ -29,10 +32,15 @@ def run_k6(
     command.extend(extra_args)
     command.append(str(k6_script))
     if debug:
-        subprocess.run(command, env=env, check=True)
-        return
-    with stdout_file.open("wb") as stdout, stderr_file.open("wb") as stderr:
-        subprocess.run(command, env=env, stdout=stdout, stderr=stderr, check=True)
+        result = subprocess.run(command, env=env)
+    else:
+        with stdout_file.open("wb") as stdout, stderr_file.open("wb") as stderr:
+            result = subprocess.run(command, env=env, stdout=stdout, stderr=stderr)
+    # Exit code 99 means k6 thresholds were violated but the test ran to
+    # completion and wrote its summary. For fault scenarios this is expected
+    # (errors during degraded phase are data, not a test-infrastructure failure).
+    if result.returncode not in (0, _K6_THRESHOLD_FAILURE_CODE):
+        raise subprocess.CalledProcessError(result.returncode, command)
 
 
 def run_k6_phase(

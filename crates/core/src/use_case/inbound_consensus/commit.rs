@@ -38,8 +38,12 @@ where
         let operation_id_sequence = req.command_id.sequence;
         let commit_reorder_buffer_size = {
             let mut buffer = self.reorder_buffer.lock().await;
-            buffer.insert(req.timestamp, req.command_id);
-            buffer.len()
+            let key = Self::command_object_key(&req.command).clone();
+            buffer
+                .entry(key)
+                .or_default()
+                .insert(req.timestamp, req.command_id);
+            buffer.values().map(|m| m.len()).sum::<usize>()
         };
 
         info!(

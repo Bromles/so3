@@ -10,20 +10,21 @@ use crate::domain::consensus::transport::{
 };
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::node::NodeId;
+use crate::domain::object::key::ObjectKey;
 use crate::repository::blob::BlobRepository;
 use crate::repository::consensus_journal::ConsensusJournalRepository;
 use crate::repository::metadata::ObjectMetadataRepository;
 use crate::use_case::inbound_consensus::InboundConsensusUseCase;
 use async_trait::async_trait;
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
 use tokio_stream::StreamExt;
 
 /// Committed commands not yet applied, keyed by commit timestamp.
 /// Apply gates execution on all earlier-timestamped entries being absent.
-type ReorderBuffer = BTreeMap<LogicalTimestamp, CommandId>;
+type ReorderBuffer = HashMap<ObjectKey, BTreeMap<LogicalTimestamp, CommandId>>;
 
 pub struct InboundConsensusUseCaseImpl<CJR, OMR, BR, BPC>
 where
@@ -60,10 +61,16 @@ where
         apply_notify: Arc<Notify>,
     ) -> So3Result<Self> {
         let committed = journal.list_by_state(JournalState::Committed).await?;
-        let reorder_buffer: BTreeMap<LogicalTimestamp, CommandId> = committed
-            .into_iter()
-            .filter_map(|e| e.timestamp.map(|ts| (ts, e.command_id)))
-            .collect();
+        let mut reorder_buffer: ReorderBuffer = HashMap::new();
+        for e in committed {
+            if let Some(ts) = e.timestamp {
+                let key = Self::command_object_key(&e.command).clone();
+                reorder_buffer
+                    .entry(key)
+                    .or_default()
+                    .insert(ts, e.command_id);
+            }
+        }
 
         Ok(Self {
             hlc: Mutex::new(HybridLogicalClock::new(node_id.clone())),
@@ -95,6 +102,15 @@ where
             ObjectCommand::Write { .. } => "write",
             ObjectCommand::Cas { .. } => "cas",
             ObjectCommand::Delete { .. } => "delete",
+        }
+    }
+
+    pub(super) fn command_object_key(command: &ObjectCommand) -> &ObjectKey {
+        match command {
+            ObjectCommand::Read { key }
+            | ObjectCommand::Write { key, .. }
+            | ObjectCommand::Cas { key, .. }
+            | ObjectCommand::Delete { key } => key,
         }
     }
 

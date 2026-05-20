@@ -15,7 +15,7 @@ use so3_core::proto::mappers::{
 };
 use so3_core::use_case::inbound_consensus::InboundConsensusUseCase;
 
-use crate::protocol::{CRASH_CODE, ConsensusRpc, Message, RequestBody};
+use crate::protocol::{ConsensusRpc, Message, RequestBody, CRASH_CODE};
 use crate::runtime::types::SharedRuntime;
 
 pub(super) async fn handle_consensus(

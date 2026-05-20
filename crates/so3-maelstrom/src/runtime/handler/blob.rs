@@ -5,7 +5,7 @@ use so3_core::domain::error::{So3Error, So3Result};
 use so3_core::repository::blob::BlobRepository;
 use tokio_stream::StreamExt;
 
-use crate::protocol::{CRASH_CODE, Message, RequestBody};
+use crate::protocol::{Message, RequestBody, CRASH_CODE};
 use crate::runtime::types::SharedRuntime;
 
 pub(super) async fn handle_blob_push(

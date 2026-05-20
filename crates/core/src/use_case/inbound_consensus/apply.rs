@@ -10,7 +10,7 @@ use crate::repository::blob::BlobRepository;
 use crate::repository::consensus_journal::ConsensusJournalRepository;
 use crate::repository::metadata::ObjectMetadataRepository;
 use crate::use_case::inbound_consensus::use_case::InboundConsensusUseCaseImpl;
-use tokio::time::{Duration, Instant, timeout_at};
+use tokio::time::{timeout_at, Duration, Instant};
 use tracing::info;
 
 fn elapsed_ms(start: Instant) -> u64 {
@@ -53,7 +53,13 @@ where
         let deadline = Instant::now() + Duration::from_secs(30);
         let (apply_reorder_buffer_size_start, mut earlier_blocking_count) = {
             let buf = self.reorder_buffer.lock().await;
-            (buf.len(), buf.range(..req.timestamp.clone()).count())
+            let total: usize = buf.values().map(|m| m.len()).sum::<usize>();
+            let key = Self::command_object_key(&req.command);
+            let blocking = buf
+                .get(key)
+                .map(|m| m.range(..req.timestamp.clone()).count())
+                .unwrap_or(0);
+            (total, blocking)
         };
         let reorder_wait_started = Instant::now();
         let mut reorder_wait_iterations = 0usize;
@@ -61,7 +67,10 @@ where
             let notified = self.apply_notify.notified();
             let blocking_count = {
                 let buf = self.reorder_buffer.lock().await;
-                buf.range(..req.timestamp.clone()).count()
+                let key = Self::command_object_key(&req.command);
+                buf.get(key)
+                    .map(|m| m.range(..req.timestamp.clone()).count())
+                    .unwrap_or(0)
             };
             earlier_blocking_count = earlier_blocking_count.max(blocking_count);
             if blocking_count == 0 {
@@ -91,6 +100,12 @@ where
             for dep_id in &req.dependencies.0 {
                 match self.journal.load(dep_id).await? {
                     Some(e) if e.state == JournalState::Applied => {}
+                    Some(e) if e.timestamp.as_ref() > Some(&req.timestamp) => {
+                        // Spurious dependency from concurrent PreAccept: the dep has a
+                        // later committed timestamp, so the reorder buffer already ensures
+                        // we apply before it. No need to wait.
+                        continue;
+                    }
                     _ => {
                         pending_count += 1;
                         first_pending_sequence.get_or_insert(dep_id.sequence);
@@ -204,8 +219,14 @@ where
 
         let apply_reorder_buffer_size_end = {
             let mut buffer = self.reorder_buffer.lock().await;
-            buffer.remove(&req.timestamp);
-            buffer.len()
+            let key = Self::command_object_key(&req.command).clone();
+            if let Some(inner) = buffer.get_mut(&key) {
+                inner.remove(&req.timestamp);
+                if inner.is_empty() {
+                    buffer.remove(&key);
+                }
+            }
+            buffer.values().map(|m| m.len()).sum::<usize>()
         };
         self.apply_notify.notify_waiters();
 

@@ -1,5 +1,5 @@
 use crate::client::interface::{BlobPeerClient, ConsensusPeerClient};
-use crate::domain::clock::{HybridLogicalClock, LogicalTimestamp, physical_millis_now};
+use crate::domain::clock::{physical_millis_now, HybridLogicalClock, LogicalTimestamp};
 use crate::domain::command::{CasResult, CommandResult, ObjectCommand, ReadResult, WriteResult};
 use crate::domain::consensus::ballot::Ballot;
 use crate::domain::consensus::command_id::{AppliedSet, CommandId, DependencySet};
@@ -18,10 +18,10 @@ use crate::repository::metadata::ObjectMetadataRepository;
 use crate::service::consensus_coordinator::ConsensusCoordinatorService;
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
-use tokio::time::{Duration, Instant, sleep, timeout_at};
+use tokio::time::{sleep, timeout_at, Duration, Instant};
 use tracing::info;
 
 pub struct AccordConsensusCoordinatorService<CJR, CPC, OMR, BR, BPC>
@@ -197,6 +197,11 @@ where
             for dep_id in &req.dependencies.0 {
                 match self.consensus_journal_repository.load(dep_id).await? {
                     Some(e) if e.state == JournalState::Applied => {}
+                    Some(e) if e.timestamp.as_ref() > Some(&req.timestamp) => {
+                        // Spurious dependency from concurrent PreAccept: the dep has a
+                        // later committed timestamp, so it will apply after us anyway.
+                        continue;
+                    }
                     _ => {
                         pending = Some(dep_id.sequence);
                         break;
