@@ -109,7 +109,7 @@ impl Node {
         let coordinator = AccordConsensusCoordinatorService::new(
             node_id.clone(),
             0,
-            0,
+            config.network_skew_ms,
             consensus_clients,
             Arc::clone(&consensus_journal),
             Arc::clone(&metadata_repository),
@@ -303,6 +303,7 @@ mod tests {
             metadata_dir: temp_dir.path().join("metadata"),
             blob_dir: temp_dir.path().join("blobs"),
             cluster: ClusterConfig::default(),
+            network_skew_ms: 50,
         };
 
         let node = Node::new(config).await.unwrap();

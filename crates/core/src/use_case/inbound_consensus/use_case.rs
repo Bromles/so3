@@ -96,6 +96,13 @@ where
             .observe(self.epoch.load(Ordering::Acquire), remote)
     }
 
+    pub(super) async fn accept_or_observe(&self, remote: &LogicalTimestamp) -> LogicalTimestamp {
+        self.hlc
+            .lock()
+            .await
+            .accept_or_observe(self.epoch.load(Ordering::Acquire), remote)
+    }
+
     pub(super) fn command_operation(command: &ObjectCommand) -> &'static str {
         match command {
             ObjectCommand::Read { .. } => "read",

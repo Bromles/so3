@@ -6,3 +6,4 @@
 /var/maelstrom
 
 venv
+__pycache__

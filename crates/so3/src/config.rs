@@ -18,6 +18,7 @@ const BLOB_DIR_ENV: &str = "SO3_BLOB_DIR";
 const NODE_ID_ENV: &str = "SO3_NODE_ID";
 const CLUSTER_PEERS_ENV: &str = "SO3_CLUSTER_PEERS";
 const OBJECT_REQUEST_TIMEOUT_SECS_ENV: &str = "SO3_OBJECT_REQUEST_TIMEOUT_SECS";
+const NETWORK_SKEW_MS_ENV: &str = "SO3_NETWORK_SKEW_MS";
 
 const DEFAULT_OBJECT_API_ADDR: &str = "127.0.0.1:3000";
 const DEFAULT_RPC_API_ADDR: &str = "127.0.0.1:4000";
@@ -25,6 +26,7 @@ const DEFAULT_DATA_DIR: &str = "./var/so3";
 const DEFAULT_METADATA_DIR_NAME: &str = "metadata";
 const DEFAULT_BLOB_DIR_NAME: &str = "blobs";
 const DEFAULT_OBJECT_REQUEST_TIMEOUT_SECS: u64 = 10;
+const DEFAULT_NETWORK_SKEW_MS: u64 = 50;
 const DEFAULT_CONFIG_FILE_NAME: &str = "so3.toml";
 
 const CLUSTER_PEERS_SEPARATOR: char = ',';
@@ -35,6 +37,7 @@ struct NodeConfigFile {
     object_api_addr: Option<String>,
     rpc_api_addr: Option<String>,
     object_request_timeout_secs: Option<u64>,
+    network_skew_ms: Option<u64>,
     data_dir: Option<PathBuf>,
     metadata_dir: Option<PathBuf>,
     blob_dir: Option<PathBuf>,
@@ -122,6 +125,13 @@ fn build_node_config(
         )?,
     };
 
+    let network_skew_ms = pick_u64(
+        &get_var,
+        NETWORK_SKEW_MS_ENV,
+        file_config.and_then(|config| config.network_skew_ms),
+        DEFAULT_NETWORK_SKEW_MS,
+    )?;
+
     Ok(NodeConfig {
         node_id,
         object_api_addr,
@@ -130,6 +140,7 @@ fn build_node_config(
         metadata_dir,
         blob_dir,
         cluster,
+        network_skew_ms,
     })
 }
 

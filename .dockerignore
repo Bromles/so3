@@ -3,4 +3,9 @@ target/
 .tools/
 .vscode/
 .idea/
+docs/
+var/
+scripts/
+store/
+results/
 *.md

@@ -16,6 +16,7 @@ pub struct NodeConfig {
     pub metadata_dir: PathBuf,
     pub blob_dir: PathBuf,
     pub cluster: ClusterConfig,
+    pub network_skew_ms: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -82,6 +83,7 @@ mod tests {
             metadata_dir: std::path::PathBuf::from(DATA_DIR).join("metadata"),
             blob_dir: std::path::PathBuf::from(DATA_DIR).join("blobs"),
             cluster: ClusterConfig::default(),
+            network_skew_ms: 0,
         }
     }
 

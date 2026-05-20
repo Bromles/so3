@@ -57,7 +57,7 @@ impl HybridLogicalClock {
 
     /// `network_skew_ms` is the expected one-way network delay added to the physical component
     /// of t0 so that, by the time the message arrives at a peer, t0 is ≥ the peer's wall clock.
-    /// This reduces the probability of peers proposing a later timestamp (slow path).
+    /// This reduces the probability of peers bumping the timestamp (slow path).
     /// Pass 0 for no skew (e.g. when observing a remote timestamp).
     pub fn tick(&mut self, epoch: u64, network_skew_ms: u64) -> LogicalTimestamp {
         let wall = physical_millis_now().saturating_add(network_skew_ms);
@@ -74,6 +74,23 @@ impl HybridLogicalClock {
             physical_millis: self.physical_millis,
             logical: self.logical_counter,
             node_id: self.node_id.clone(),
+        }
+    }
+
+    /// Used during Accord PreAccept: if the proposed timestamp is strictly ahead of the local
+    /// wall clock, accept it as-is so the coordinator can detect fast-path agreement (all
+    /// replicas return the same T₀). The HLC advances only when the proposal is also ahead
+    /// of the current HLC state; otherwise the HLC stays put (it is already ≥ remote).
+    pub fn accept_or_observe(&mut self, epoch: u64, remote: &LogicalTimestamp) -> LogicalTimestamp {
+        let wall = physical_millis_now();
+        if remote.physical_millis > wall {
+            if remote.physical_millis > self.physical_millis {
+                self.physical_millis = remote.physical_millis;
+                self.logical_counter = remote.logical;
+            }
+            remote.clone()
+        } else {
+            self.observe(epoch, remote)
         }
     }
 

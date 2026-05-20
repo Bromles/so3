@@ -17,7 +17,7 @@ where
         &self,
         req: PreAcceptRequest,
     ) -> So3Result<PreAcceptResponse> {
-        let timestamp = self.observe(&req.timestamp_zero).await;
+        let timestamp = self.accept_or_observe(&req.timestamp_zero).await;
 
         let dependencies = self
             .journal

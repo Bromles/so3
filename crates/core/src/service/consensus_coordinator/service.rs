@@ -784,8 +784,20 @@ where
         }
 
         // Fast path: all peers agreed on t0 with no deps.
-        let fast_path =
-            final_timestamp == timestamp_zero && all_deps.is_empty() && pre_failures == 0;
+        let ts_match = final_timestamp == timestamp_zero;
+        let deps_empty = all_deps.is_empty();
+        if !ts_match && deps_empty && pre_failures == 0 {
+            tracing::warn!(
+                t0_physical = timestamp_zero.physical_millis,
+                t0_logical = timestamp_zero.logical,
+                final_physical = final_timestamp.physical_millis,
+                final_logical = final_timestamp.logical,
+                t0_node = %timestamp_zero.node_id.as_ref(),
+                final_node = %final_timestamp.node_id.as_ref(),
+                "fast path blocked by timestamp mismatch"
+            );
+        }
+        let fast_path = ts_match && deps_empty && pre_failures == 0;
 
         let mut accept_ok_for_log = 0usize;
         let mut accept_ms = 0u64;
