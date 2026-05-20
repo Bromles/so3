@@ -50,6 +50,13 @@ const CREATE_JOURNAL_SQL: &str = r"
     )
 ";
 
+const CREATE_INDEXES_SQL: &str = r"
+    CREATE INDEX IF NOT EXISTS idx_journal_key_state
+        ON consensus_journal (key, state);
+    CREATE INDEX IF NOT EXISTS idx_journal_state
+        ON consensus_journal (state)
+";
+
 pub struct SqliteConsensusJournal {
     pool: SqlitePool,
 }
@@ -72,6 +79,7 @@ impl SqliteConsensusJournal {
             .await?;
 
         query(CREATE_JOURNAL_SQL).execute(&pool).await?;
+        query(CREATE_INDEXES_SQL).execute(&pool).await?;
 
         Ok(Self { pool })
     }
