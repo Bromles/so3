@@ -21,6 +21,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
+use tokio::task::JoinSet;
 use tokio::time::{sleep, timeout_at, Duration, Instant};
 use tracing::info;
 
@@ -171,6 +172,82 @@ where
         Err(So3Error::NotFound(format!(
             "blob {blob_id} not available on any peer"
         )))
+    }
+
+    /// Recover any journal entries left in PreAccepted/Accepted state from a prior crash.
+    /// Called once at startup. Each stalled entry is recovered through the full Accord
+    /// recovery path, which learns any decision already reached on other replicas or
+    /// commits one if the original coordinator never finished.
+    pub async fn recover_stalled_entries(&self) {
+        let peers: Vec<Arc<CPC>> = self.consensus_peer_client_map.values().cloned().collect();
+        let quorum = self.quorum_size();
+
+        let stalled = match self
+            .consensus_journal_repository
+            .list_by_state(JournalState::PreAccepted)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("failed to list PreAccepted entries: {e}");
+                return;
+            }
+        };
+        let stalled_accepted = match self
+            .consensus_journal_repository
+            .list_by_state(JournalState::Accepted)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("failed to list Accepted entries: {e}");
+                return;
+            }
+        };
+
+        let all_stalled: Vec<_> = stalled.into_iter().chain(stalled_accepted).collect();
+        if all_stalled.is_empty() {
+            return;
+        }
+
+        tracing::info!(
+            stalled_count = all_stalled.len(),
+            "recovering stalled journal entries from prior crash"
+        );
+
+        for entry in &all_stalled {
+            let ballot = Ballot::initial(self.node_id.clone());
+            let last_applied = match self.last_applied().await {
+                Ok(la) => la,
+                Err(e) => {
+                    tracing::warn!("failed to get last_applied: {e}");
+                    continue;
+                }
+            };
+            match self
+                .recover_and_complete(
+                    &entry.command_id,
+                    &entry.command,
+                    &entry.timestamp_zero,
+                    &ballot,
+                    &peers,
+                    quorum,
+                    &last_applied,
+                )
+                .await
+            {
+                Ok(_) => tracing::info!(
+                    origin_node = entry.command_id.origin_node_id.as_ref(),
+                    sequence = entry.command_id.sequence,
+                    "stalled entry recovered"
+                ),
+                Err(e) => tracing::warn!(
+                    origin_node = entry.command_id.origin_node_id.as_ref(),
+                    sequence = entry.command_id.sequence,
+                    "stalled entry recovery failed: {e}"
+                ),
+            }
+        }
     }
 
     async fn apply_local(&self, req: &ApplyRequest) -> So3Result<CommandResult> {
@@ -328,12 +405,22 @@ where
         let mut final_commit_ok = 1usize;
         for attempt in 1..=MAX_COMMIT_ATTEMPTS {
             commit_attempts = attempt;
-            let mut commit_ok = 1usize;
+            let mut commit_set = JoinSet::new();
             for peer in peers {
-                if peer.commit(commit_req.clone()).await.is_ok() {
+                let peer = Arc::clone(peer);
+                let req = commit_req.clone();
+                commit_set.spawn(async move { peer.commit(req).await });
+            }
+            let mut commit_ok = 1usize; // self already committed
+            while let Some(res) = commit_set.join_next().await {
+                if res.is_ok_and(|r| r.is_ok()) {
                     commit_ok += 1;
+                    if commit_ok >= quorum {
+                        break; // quorum reached
+                    }
                 }
             }
+            commit_set.abort_all();
             final_commit_ok = commit_ok;
             if commit_ok >= quorum {
                 commit_reached_quorum = true;
@@ -449,6 +536,7 @@ where
             let mut pending = None;
             for dep_id in deps {
                 match self.consensus_journal_repository.load(dep_id).await? {
+                    None => continue, // not local — resolved independently on owning peer
                     Some(e) if e.state == JournalState::Applied => {}
                     _ => {
                         pending = Some(dep_id.sequence);
@@ -494,17 +582,22 @@ where
             .await?;
 
         let mut successes = vec![local_success];
-        for peer in peers {
-            if let Ok(RecoverResponse::Success(s)) = peer
-                .recover(RecoverRequest {
+        {
+            let mut recover_set = JoinSet::new();
+            for peer in peers {
+                let peer = Arc::clone(peer);
+                let req = RecoverRequest {
                     command_id: command_id.clone(),
                     ballot: recovery_ballot.clone(),
                     command: command.clone(),
                     timestamp_zero: timestamp_zero.clone(),
-                })
-                .await
-            {
-                successes.push(s);
+                };
+                recover_set.spawn(async move { peer.recover(req).await });
+            }
+            while let Some(res) = recover_set.join_next().await {
+                if let Ok(Ok(RecoverResponse::Success(s))) = res {
+                    successes.push(s);
+                }
             }
         }
 
@@ -619,9 +712,11 @@ where
 
         let mut accept_ok = 0usize;
         let mut refined_deps = final_deps.clone();
-        for peer in peers {
-            match peer
-                .accept(AcceptRequest {
+        {
+            let mut accept_set = JoinSet::new();
+            for peer in peers {
+                let peer = Arc::clone(peer);
+                let req = AcceptRequest {
                     command_id: command_id.clone(),
                     ballot: recovery_ballot.clone(),
                     command: command.clone(),
@@ -629,14 +724,17 @@ where
                     timestamp: final_timestamp.clone(),
                     dependencies: DependencySet(final_deps.clone()),
                     last_applied: last_applied.clone(),
-                })
-                .await
-            {
-                Ok(r) if !r.nack => {
-                    accept_ok += 1;
-                    refined_deps.extend(r.dependencies.0);
+                };
+                accept_set.spawn(async move { peer.accept(req).await });
+            }
+            while let Some(res) = accept_set.join_next().await {
+                match res {
+                    Ok(Ok(r)) if !r.nack => {
+                        accept_ok += 1;
+                        refined_deps.extend(r.dependencies.0);
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
 
@@ -722,43 +820,71 @@ where
             .check_conflicts_and_record_pre_accepted(&command_id, &command, &timestamp_zero)
             .await?;
 
-        // --- PreAccept (TODO: parallelize) ---
+        // --- PreAccept (parallel, quorum-driven with drain for fast path) ---
         let peers: Vec<Arc<CPC>> = self.consensus_peer_client_map.values().cloned().collect();
         let quorum = self.quorum_size();
         let peers_needed = quorum.saturating_sub(1); // self already counts as 1
 
+        let mut pre_accept_set = JoinSet::new();
+        for peer in &peers {
+            let peer = Arc::clone(peer);
+            let req = PreAcceptRequest {
+                command_id: command_id.clone(),
+                command: command.clone(),
+                timestamp_zero: timestamp_zero.clone(),
+                last_applied: last_applied.clone(),
+            };
+            pre_accept_set.spawn(async move { peer.pre_accept(req).await });
+        }
+
         let mut pre_ok: Vec<_> = vec![];
         let mut pre_failures = 0usize;
+        let mut got_nack = false;
 
-        for peer in &peers {
-            match peer
-                .pre_accept(PreAcceptRequest {
-                    command_id: command_id.clone(),
-                    command: command.clone(),
-                    timestamp_zero: timestamp_zero.clone(),
-                    last_applied: last_applied.clone(),
-                })
-                .await
-            {
-                Ok(r) if !r.nack => pre_ok.push(r),
-                Ok(_) => {
-                    return self
-                        .recover_and_complete(
-                            &command_id,
-                            &command,
-                            &timestamp_zero,
-                            &ballot,
-                            &peers,
-                            quorum,
-                            &last_applied,
-                        )
-                        .await;
+        // PreAccept: collect responses until quorum or error.
+        // Fast path electorate = quorum (self + peers_needed). By the Accord intersection
+        // property (2 × quorum > n) two concurrent fast-path commands on the same key
+        // cannot both succeed — the intersecting replica serialises them and creates a
+        // dependency that breaks the “deps empty” condition for the second one.
+        while let Some(res) = pre_accept_set.join_next().await {
+            match res {
+                Ok(Ok(r)) if !r.nack => {
+                    pre_ok.push(r);
+                    if pre_ok.len() >= peers_needed {
+                        break; // quorum reached
+                    }
                 }
-                Err(_) => pre_failures += 1,
+                Ok(Ok(_)) => {
+                    got_nack = true;
+                    break;
+                }
+                Ok(Err(_)) | Err(_) => {
+                    pre_failures += 1;
+                }
             }
+        }
+        pre_accept_set.abort_all();
+
+        if got_nack {
+            return self
+                .recover_and_complete(
+                    &command_id,
+                    &command,
+                    &timestamp_zero,
+                    &ballot,
+                    &peers,
+                    quorum,
+                    &last_applied,
+                )
+                .await;
         }
 
         if pre_ok.len() < peers_needed {
+            // The command never left PreAccepted on any peer that mattered — safe to
+            // remove the local entry so it does not poison future writes to the same key.
+            // Peers that did record it will have it as a harmless stalled entry that
+            // self-heals on their next restart (recover_stalled_entries).
+            let _ = self.consensus_journal_repository.delete(&command_id).await;
             return Err(So3Error::PeerUnavailable(format!(
                 "pre-accept quorum not reached: {}/{} (failures: {})",
                 pre_ok.len() + 1,
@@ -783,10 +909,16 @@ where
             all_deps.extend(r.dependencies.0.iter().cloned());
         }
 
-        // Fast path: all peers agreed on t0 with no deps.
+        // Fast path: the quorum (self + peers_needed) agrees on the proposed timestamp
+        // and reports no conflicting dependencies. This is the Accord fast-path electorate:
+        // only quorum agreement is needed, not unanimous consent from all replicas.
+        // Safety: the intersection property (2 × quorum > n) guarantees that if two commands
+        // on the same key both claim fast path, their electorates share at least one replica
+        // which serialised both PreAccepts and created a dependency for the second one.
+        let quorum_agrees = pre_ok.len() >= peers_needed;
         let ts_match = final_timestamp == timestamp_zero;
         let deps_empty = all_deps.is_empty();
-        if !ts_match && deps_empty && pre_failures == 0 {
+        if !ts_match && deps_empty && quorum_agrees {
             tracing::warn!(
                 t0_physical = timestamp_zero.physical_millis,
                 t0_logical = timestamp_zero.logical,
@@ -797,14 +929,14 @@ where
                 "fast path blocked by timestamp mismatch"
             );
         }
-        let fast_path = ts_match && deps_empty && pre_failures == 0;
+        let fast_path = ts_match && deps_empty && quorum_agrees;
 
         let mut accept_ok_for_log = 0usize;
         let mut accept_ms = 0u64;
         let (commit_timestamp, commit_deps) = if fast_path {
             (timestamp_zero.clone(), all_deps)
         } else {
-            // --- Slow path: Accept (TODO: parallelize) ---
+            // --- Slow path: Accept (parallel, quorum-driven) ---
             let accept_started = Instant::now();
             self.consensus_journal_repository
                 .record_accepted(
@@ -815,27 +947,36 @@ where
                 )
                 .await?;
 
+            let mut accept_set = JoinSet::new();
+            for peer in &peers {
+                let peer = Arc::clone(peer);
+                let req = AcceptRequest {
+                    command_id: command_id.clone(),
+                    ballot: ballot.clone(),
+                    command: command.clone(),
+                    timestamp_zero: timestamp_zero.clone(),
+                    timestamp: final_timestamp.clone(),
+                    dependencies: DependencySet(all_deps.clone()),
+                    last_applied: last_applied.clone(),
+                };
+                accept_set.spawn(async move { peer.accept(req).await });
+            }
+
             let mut accept_ok = 0usize;
             let mut refined_deps = all_deps.clone();
 
-            for peer in &peers {
-                match peer
-                    .accept(AcceptRequest {
-                        command_id: command_id.clone(),
-                        ballot: ballot.clone(),
-                        command: command.clone(),
-                        timestamp_zero: timestamp_zero.clone(),
-                        timestamp: final_timestamp.clone(),
-                        dependencies: DependencySet(all_deps.clone()),
-                        last_applied: last_applied.clone(),
-                    })
-                    .await
-                {
-                    Ok(r) if !r.nack => {
+            while let Some(res) = accept_set.join_next().await {
+                match res {
+                    Ok(Ok(r)) if !r.nack => {
                         accept_ok += 1;
                         refined_deps.extend(r.dependencies.0);
+                        if accept_ok + 1 >= quorum {
+                            break; // quorum reached
+                        }
                     }
-                    Ok(_) => {
+                    Ok(Ok(_)) => {
+                        // NACK → recovery
+                        accept_set.abort_all();
                         return self
                             .recover_and_complete(
                                 &command_id,
@@ -848,9 +989,10 @@ where
                             )
                             .await;
                     }
-                    Err(_) => {}
+                    Ok(Err(_)) | Err(_) => {} // RPC error — skip
                 }
             }
+            accept_set.abort_all();
 
             if accept_ok + 1 < quorum {
                 return Err(So3Error::PeerUnavailable(format!(

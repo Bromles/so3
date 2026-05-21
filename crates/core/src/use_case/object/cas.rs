@@ -41,18 +41,31 @@ where
         let quorum = n / 2 + 1;
         let peers_needed = quorum - 1;
 
-        let mut ok = 0usize;
+        // Each peer gets its own file reader — independent, no HOL blocking.
+        // File is hot in OS page cache after stream_to_local, so N reads ≈ free.
+        let mut push_set = tokio::task::JoinSet::new();
         for client in &peers {
-            if let Ok(reader) = self.blob_repository.open_reader(&blob_id).await {
-                if client
-                    .push(blob_id.clone(), size, sha256.clone(), reader)
-                    .await
-                    .is_ok()
-                {
-                    ok += 1;
+            let client = std::sync::Arc::clone(client);
+            let blob_id = blob_id.clone();
+            let sha256 = sha256.clone();
+            let repo = std::sync::Arc::clone(&self.blob_repository);
+            push_set.spawn(async move {
+                let Ok(reader) = repo.open_reader(&blob_id).await else {
+                    return false;
+                };
+                client.push(blob_id, size, sha256, reader).await.is_ok()
+            });
+        }
+        let mut ok = 0usize;
+        while let Some(res) = push_set.join_next().await {
+            if res.is_ok_and(|success| success) {
+                ok += 1;
+                if ok >= peers_needed {
+                    break; // quorum reached
                 }
             }
         }
+        push_set.abort_all();
         if ok < peers_needed {
             return Err(So3Error::PeerUnavailable(format!(
                 "blob push: only {}/{} peers reachable, need quorum of {quorum}",

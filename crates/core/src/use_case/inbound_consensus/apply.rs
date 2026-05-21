@@ -99,6 +99,13 @@ where
             let mut first_pending_sequence = None;
             for dep_id in &req.dependencies.0 {
                 match self.journal.load(dep_id).await? {
+                    None => {
+                        // Dep not in local journal — it was introduced by a peer's
+                        // conflict check and lives on that peer.  We cannot track its
+                        // progress here, and it will be applied on the owning peer
+                        // independently, so skip it.
+                        continue;
+                    }
                     Some(e) if e.state == JournalState::Applied => {}
                     Some(e) if e.timestamp.as_ref() > Some(&req.timestamp) => {
                         // Spurious dependency from concurrent PreAccept: the dep has a

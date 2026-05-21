@@ -8,7 +8,6 @@ from typing import Any
 
 import manifest
 
-
 _K6_THRESHOLD_FAILURE_CODE = 99
 
 
@@ -24,7 +23,10 @@ def run_k6(
     stream_file: Path | None = None,
 ) -> None:
     command = [
-        "k6", "run", "--quiet", "--no-color",
+        "k6",
+        "run",
+        "--quiet",
+        "--no-color",
         f"--summary-export={export_file}",
     ]
     if stream_file is not None:
@@ -54,10 +56,16 @@ def run_k6_phase(
     duration: str,
     events: manifest.EventLog,
     with_stream: bool = False,
+    entry_urls_override: list[str] | None = None,
 ) -> tuple[Path, Path | None]:
     phase_env = env.copy()
     phase_env["RESEARCH_PHASE"] = phase
     phase_env["DURATION"] = duration
+    if entry_urls_override is not None:
+        phase_env["SO3_ENTRY_URLS"] = ",".join(entry_urls_override)
+        phase_env["SO3_ADDR"] = (
+            entry_urls_override[0] if entry_urls_override else env.get("SO3_ADDR", "")
+        )
     events.record(f"{phase}_start", duration=duration)
     export_file = run_dir / f"k6-summary-{phase}.json"
     stream_file = run_dir / f"k6-stream-{phase}.jsonl" if with_stream else None

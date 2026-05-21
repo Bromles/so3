@@ -214,7 +214,9 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
                  t_epoch = ?, t_physical_ms = ?, t_logical = ?, t_node_id = ?, \
                  ballot_round = ?, ballot_node_id = ?, \
                  deps = ? \
-             WHERE origin_node_id = ? AND sequence = ?",
+             WHERE origin_node_id = ? AND sequence = ? \
+               AND state < ? \
+               AND (ballot_round IS NULL OR ballot_round <= ?)",
         )
         .bind(JournalState::Accepted.as_i32())
         .bind(t_epoch)
@@ -226,13 +228,14 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
         .bind(encode_deps(&deps.0)?)
         .bind(command_id.origin_node_id.as_ref())
         .bind(seq)
+        .bind(JournalState::Accepted.as_i32()) // only advance, never regress
+        .bind(ballot_round) // only accept if no higher ballot
         .execute(&self.pool)
         .await?
         .rows_affected();
-        if n != 1 {
-            return Err(So3Error::Storage(format!(
-                "record_accepted: expected 1 row, got {n} for {command_id:?}"
-            )));
+        // rows_affected == 0 means a higher ballot or later state exists — that's fine.
+        if n == 0 {
+            return Ok(());
         }
         Ok(())
     }
@@ -250,7 +253,8 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
              SET state = ?, \
                  t_epoch = ?, t_physical_ms = ?, t_logical = ?, t_node_id = ?, \
                  deps = ? \
-             WHERE origin_node_id = ? AND sequence = ?",
+             WHERE origin_node_id = ? AND sequence = ? \
+               AND state < ?",
         )
         .bind(JournalState::Committed.as_i32())
         .bind(t_epoch)
@@ -260,13 +264,13 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
         .bind(encode_deps(&deps.0)?)
         .bind(command_id.origin_node_id.as_ref())
         .bind(seq)
+        .bind(JournalState::Committed.as_i32()) // only advance, never regress
         .execute(&self.pool)
         .await?
         .rows_affected();
-        if n != 1 {
-            return Err(So3Error::Storage(format!(
-                "record_committed: expected 1 row, got {n} for {command_id:?}"
-            )));
+        // rows_affected == 0 means already committed or applied — that's fine (idempotent).
+        if n == 0 {
+            return Ok(());
         }
         Ok(())
     }
@@ -278,21 +282,20 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
     ) -> So3Result<()> {
         let seq = sequence_to_i64(command_id.sequence)?;
         let n = query(
-            "UPDATE consensus_journal SET state = ?, result = ? \
-             WHERE origin_node_id = ? AND sequence = ?",
+            "UPDATE consensus_journal SET state = ?, result = ? \n             WHERE origin_node_id = ? AND sequence = ? \n               AND state < ?",
         )
         .bind(JournalState::Applied.as_i32())
         .bind(encode_result(result)?)
         .bind(command_id.origin_node_id.as_ref())
         .bind(seq)
+        .bind(JournalState::Applied.as_i32()) // only advance, never regress
         .execute(&self.pool)
         .await?
         .rows_affected();
 
-        if n != 1 {
-            return Err(So3Error::Storage(format!(
-                "record_applied: expected 1 row, got {n} for {command_id:?}"
-            )));
+        // rows_affected == 0 means already applied — idempotent, not an error.
+        if n == 0 {
+            return Ok(());
         }
 
         Ok(())
@@ -320,5 +323,15 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
             None => Ok(0),
             Some(s) => i64_to_u64(s, "max_sequence"),
         }
+    }
+
+    async fn delete(&self, command_id: &CommandId) -> So3Result<()> {
+        let seq = sequence_to_i64(command_id.sequence)?;
+        query("DELETE FROM consensus_journal WHERE origin_node_id = ? AND sequence = ?")
+            .bind(command_id.origin_node_id.as_ref())
+            .bind(seq)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 }

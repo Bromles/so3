@@ -15,6 +15,11 @@ from correctness_driver import RecoverySentinel
 from runner import run_k6_phase
 
 
+def _alive_entry_urls(all_urls: list[str], fault_node: int) -> list[str]:
+    """Return entry URLs excluding the fault node (1-based index → 0-based URL list)."""
+    return [url for i, url in enumerate(all_urls, start=1) if i != fault_node]
+
+
 def run_e6_recovery(
     *,
     args: Any,
@@ -78,6 +83,8 @@ def run_e6_recovery(
     fault = faults.crash_node(cluster, args.fault_node)
     events.record("fail", kind=fault.kind, node_index=fault.node_index)
 
+    # During degraded phase, only send traffic to alive nodes.
+    alive_urls = _alive_entry_urls(entry_urls, args.fault_node)
     phase_exports["degraded"], _ = run_k6_phase(
         args=args,
         k6_script=k6_script,
@@ -87,6 +94,7 @@ def run_e6_recovery(
         phase="degraded",
         duration=phase_durations["degraded"],
         events=events,
+        entry_urls_override=alive_urls if alive_urls else None,
     )
 
     if long_downtime_secs > 0:
@@ -103,6 +111,8 @@ def run_e6_recovery(
         node_index=recovery.node_index,
         recovery_seconds=recovery_seconds,
     )
+
+    warmup_secs: float = getattr(args, "recovery_warmup_secs", 0.0) or 0.0
 
     phase_exports["recovery"], recovery_stream = run_k6_phase(
         args=args,
@@ -131,6 +141,7 @@ def run_e6_recovery(
             phase="re_crash_degraded",
             duration=re_crash_duration,
             events=events,
+            entry_urls_override=alive_urls if alive_urls else None,
         )
 
         re_recovery_start = time.monotonic()
@@ -157,6 +168,11 @@ def run_e6_recovery(
             with_stream=True,
         )
 
+        if warmup_secs > 0:
+            events.record("re_restored_warmup_start", duration_secs=warmup_secs)
+            time.sleep(warmup_secs)
+            events.record("re_restored_warmup_end")
+
         events.record("normal_re_restored", node_index=args.fault_node)
         phase_exports["re_restored"], _ = run_k6_phase(
             args=args,
@@ -173,6 +189,11 @@ def run_e6_recovery(
         re_crash_downtime_secs = 0.0
         re_recovery_seconds = 0.0
         re_recovery_stream = None
+
+        if warmup_secs > 0:
+            events.record("restored_warmup_start", duration_secs=warmup_secs)
+            time.sleep(warmup_secs)
+            events.record("restored_warmup_end")
 
     # When re-crash is NOT enabled, run the normal restored phase.
     if not re_crash_enabled:

@@ -37,4 +37,8 @@ pub trait ConsensusJournalRepository: Send + Sync + 'static {
     async fn list_by_state(&self, state: JournalState) -> So3Result<Vec<JournalEntry>>;
     /// Returns the highest sequence number recorded for the given node, or 0 if none.
     async fn max_sequence(&self, node_id: &NodeId) -> So3Result<u64>;
+    /// Removes an entry that was recorded locally but never reached quorum.
+    /// Used to clean up after a failed coordinate() attempt so that the stalled
+    /// PreAccepted entry does not poison future writes to the same key.
+    async fn delete(&self, command_id: &CommandId) -> So3Result<()>;
 }

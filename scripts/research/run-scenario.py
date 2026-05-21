@@ -140,7 +140,7 @@ def parse_args(argv: Sequence[str]) -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument("--start-timeout-secs", type=float, default=20.0)
     parser.add_argument("--stop-timeout-secs", type=float, default=10.0)
     parser.add_argument("--resource-sample-interval-secs", type=float, default=1.0)
-    parser.add_argument("--correctness-ops", type=int, default=120)
+    parser.add_argument("--correctness-ops", type=int, default=500)
     parser.add_argument("--correctness-concurrency", type=int, default=12)
     parser.add_argument(
         "--e2-fault-cycles",
@@ -151,7 +151,7 @@ def parse_args(argv: Sequence[str]) -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument(
         "--e2-cycle-interval-secs",
         type=float,
-        default=10.0,
+        default=1.0,
         help="seconds between fault cycles in e2-fault-safety",
     )
     parser.add_argument(
@@ -165,6 +165,16 @@ def parse_args(argv: Sequence[str]) -> tuple[argparse.Namespace, list[str]]:
         type=float,
         default=0.0,
         help="extra seconds to keep the node down before restarting in e6-recovery",
+    )
+    parser.add_argument(
+        "--recovery-warmup-secs",
+        type=float,
+        default=0.0,
+        help=(
+            "seconds to wait after restarting a node before measuring the"
+            " restored phase; gives the recovered node time to finish"
+            " catch-up synchronization (e3-degradation, e6-recovery)"
+        ),
     )
     parser.add_argument(
         "--e6-re-crash",

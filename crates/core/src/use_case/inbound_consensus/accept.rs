@@ -1,5 +1,6 @@
 use crate::client::interface::BlobPeerClient;
 use crate::domain::consensus::command_id::DependencySet;
+use crate::domain::consensus::journal::JournalState;
 use crate::domain::consensus::transport::{AcceptRequest, AcceptResponse};
 use crate::domain::error::So3Result;
 use crate::repository::blob::BlobRepository;
@@ -17,6 +18,14 @@ where
     pub(super) async fn accept_internal(&self, req: AcceptRequest) -> So3Result<AcceptResponse> {
         match self.journal.load(&req.command_id).await? {
             Some(entry) => {
+                // Already decided — NACK to force recovery so the coordinator learns
+                // the existing decision instead of potentially conflicting with it.
+                if matches!(entry.state, JournalState::Committed | JournalState::Applied) {
+                    return Ok(AcceptResponse {
+                        dependencies: entry.dependencies,
+                        nack: true,
+                    });
+                }
                 if let Some(stored_ballot) = entry.ballot
                     && stored_ballot > req.ballot
                 {

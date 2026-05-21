@@ -1,4 +1,5 @@
 use crate::client::interface::BlobPeerClient;
+use crate::domain::consensus::journal::JournalState;
 use crate::domain::consensus::transport::{PreAcceptRequest, PreAcceptResponse};
 use crate::domain::error::So3Result;
 use crate::repository::blob::BlobRepository;
@@ -17,6 +18,25 @@ where
         &self,
         req: PreAcceptRequest,
     ) -> So3Result<PreAcceptResponse> {
+        // If this command is already accepted/committed/applied under a different
+        // ballot, the coordinator must go through recovery to learn the existing decision.
+        // Without this check a late-arriving PreAccept could falsely claim fast-path
+        // agreement on a command that was already decided.
+        if let Some(entry) = self.journal.load(&req.command_id).await? {
+            if matches!(
+                entry.state,
+                JournalState::Accepted | JournalState::Committed | JournalState::Applied
+            ) {
+                return Ok(PreAcceptResponse {
+                    timestamp: entry
+                        .timestamp
+                        .unwrap_or_else(|| req.timestamp_zero.clone()),
+                    dependencies: entry.dependencies,
+                    nack: true,
+                });
+            }
+        }
+
         let timestamp = self.accept_or_observe(&req.timestamp_zero).await;
 
         let dependencies = self

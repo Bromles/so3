@@ -13,6 +13,11 @@ import metrics_timeseries
 from runner import run_k6_phase
 
 
+def _alive_entry_urls(all_urls: list[str], fault_node: int) -> list[str]:
+    """Return entry URLs excluding the fault node (1-based index → 0-based URL list)."""
+    return [url for i, url in enumerate(all_urls, start=1) if i != fault_node]
+
+
 def run_e3_node_degradation(
     *,
     args: Any,
@@ -30,6 +35,7 @@ def run_e3_node_degradation(
     Returns run_metrics with phase summaries, relative metrics, and fault timing.
     """
     phase_exports: dict[str, Path] = {}
+    all_urls: list[str] = getattr(args, "entry_urls", None) or []
 
     phase_exports["baseline"], _ = run_k6_phase(
         args=args,
@@ -46,6 +52,8 @@ def run_e3_node_degradation(
     fault = faults.crash_node(cluster, args.fault_node)
     events.record("fail", kind=fault.kind, node_index=fault.node_index)
 
+    # During degraded phase, only send traffic to alive nodes.
+    alive_urls = _alive_entry_urls(all_urls, args.fault_node)
     phase_exports["degraded"], _ = run_k6_phase(
         args=args,
         k6_script=k6_script,
@@ -55,6 +63,7 @@ def run_e3_node_degradation(
         phase="degraded",
         duration=phase_durations["degraded"],
         events=events,
+        entry_urls_override=alive_urls if alive_urls else None,
     )
 
     recovery_start = time.monotonic()
@@ -78,6 +87,12 @@ def run_e3_node_degradation(
         events=events,
         with_stream=True,
     )
+
+    warmup_secs: float = getattr(args, "recovery_warmup_secs", 0.0) or 0.0
+    if warmup_secs > 0:
+        events.record("restored_warmup_start", duration_secs=warmup_secs)
+        time.sleep(warmup_secs)
+        events.record("restored_warmup_end")
 
     events.record("normal_restored", node_index=args.fault_node)
     phase_exports["restored"], restored_stream = run_k6_phase(

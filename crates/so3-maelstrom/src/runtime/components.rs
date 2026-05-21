@@ -67,6 +67,10 @@ pub(super) async fn build_components(
     )
     .await?;
 
+    // Recover any consensus entries left in PreAccepted/Accepted state from a
+    // prior crash — must happen before the coordinator starts serving new requests.
+    coordinator.recover_stalled_entries().await;
+
     let local_handler = Arc::new(
         InboundConsensusUseCaseImpl::new(
             NodeId::new(node_id.to_owned()),

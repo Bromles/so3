@@ -1,13 +1,12 @@
-use std::collections::HashMap;
-use std::net::SocketAddr;
-use std::sync::Arc;
-
 use crate::api::rpc::tonic::tonic_server::TonicRpcServer;
 use crate::api::rpc::RpcApi;
 use crate::api::s3::axum::axum_server::AxumS3Server;
 use crate::api::s3::S3Api;
 use crate::client::blob_client::BlobClient;
 use crate::client::consensus_transport_client::ConsensusTransportClient;
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::pin;
 use tokio::task::JoinHandle;
@@ -130,6 +129,11 @@ impl Node {
             )
             .await?,
         );
+
+        // Recover any consensus entries left in PreAccepted/Accepted state from a
+        // prior crash — must happen before the coordinator starts serving new requests.
+        coordinator.recover_stalled_entries().await;
+
         let object_use_case = Arc::new(ObjectUseCaseImpl::new(
             coordinator,
             Arc::clone(&consensus_journal),

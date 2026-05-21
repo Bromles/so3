@@ -83,7 +83,7 @@ impl HybridLogicalClock {
     /// of the current HLC state; otherwise the HLC stays put (it is already ≥ remote).
     pub fn accept_or_observe(&mut self, epoch: u64, remote: &LogicalTimestamp) -> LogicalTimestamp {
         let wall = physical_millis_now();
-        if remote.physical_millis > wall {
+        if remote.physical_millis >= wall {
             if remote.physical_millis > self.physical_millis {
                 self.physical_millis = remote.physical_millis;
                 self.logical_counter = remote.logical;
