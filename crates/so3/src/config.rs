@@ -19,14 +19,16 @@ const NODE_ID_ENV: &str = "SO3_NODE_ID";
 const CLUSTER_PEERS_ENV: &str = "SO3_CLUSTER_PEERS";
 const OBJECT_REQUEST_TIMEOUT_SECS_ENV: &str = "SO3_OBJECT_REQUEST_TIMEOUT_SECS";
 const NETWORK_SKEW_MS_ENV: &str = "SO3_NETWORK_SKEW_MS";
+const CONSENSUS_RPC_DEADLINE_MS_ENV: &str = "SO3_CONSENSUS_RPC_DEADLINE_MS";
 
 const DEFAULT_OBJECT_API_ADDR: &str = "127.0.0.1:3000";
 const DEFAULT_RPC_API_ADDR: &str = "127.0.0.1:4000";
 const DEFAULT_DATA_DIR: &str = "./var/so3";
 const DEFAULT_METADATA_DIR_NAME: &str = "metadata";
 const DEFAULT_BLOB_DIR_NAME: &str = "blobs";
-const DEFAULT_OBJECT_REQUEST_TIMEOUT_SECS: u64 = 10;
+const DEFAULT_OBJECT_REQUEST_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_NETWORK_SKEW_MS: u64 = 50;
+const DEFAULT_CONSENSUS_RPC_DEADLINE_MS: u64 = 3000;
 const DEFAULT_CONFIG_FILE_NAME: &str = "so3.toml";
 
 const CLUSTER_PEERS_SEPARATOR: char = ',';
@@ -38,6 +40,7 @@ struct NodeConfigFile {
     rpc_api_addr: Option<String>,
     object_request_timeout_secs: Option<u64>,
     network_skew_ms: Option<u64>,
+    consensus_rpc_deadline_ms: Option<u64>,
     data_dir: Option<PathBuf>,
     metadata_dir: Option<PathBuf>,
     blob_dir: Option<PathBuf>,
@@ -132,6 +135,13 @@ fn build_node_config(
         DEFAULT_NETWORK_SKEW_MS,
     )?;
 
+    let consensus_rpc_deadline_ms = pick_u64(
+        &get_var,
+        CONSENSUS_RPC_DEADLINE_MS_ENV,
+        file_config.and_then(|config| config.consensus_rpc_deadline_ms),
+        DEFAULT_CONSENSUS_RPC_DEADLINE_MS,
+    )?;
+
     Ok(NodeConfig {
         node_id,
         object_api_addr,
@@ -141,6 +151,7 @@ fn build_node_config(
         blob_dir,
         cluster,
         network_skew_ms,
+        consensus_rpc_deadline: Duration::from_millis(consensus_rpc_deadline_ms),
     })
 }
 

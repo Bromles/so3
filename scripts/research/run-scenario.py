@@ -44,7 +44,12 @@ PHASED_FAULT_SCENARIOS = {"e3-degradation", "e6-recovery"}
 # Scenarios where errors are intentional data: hot key contention and node
 # failures produce high error rates by design. Do not fail a run based on
 # error rate alone; infrastructure failures surface as exceptions instead.
-ERROR_RATE_EXEMPT_SCENARIOS = {"e3-degradation", "e4-hot-key", "e6-recovery"}
+ERROR_RATE_EXEMPT_SCENARIOS = {
+    "e3-degradation",
+    "e4-hot-key",
+    "e5-leaderless",
+    "e6-recovery",
+}
 WORKLOAD_SCRIPTS = {
     "k6-mixed": REPO_ROOT / "scripts" / "k6" / "workloads" / "s3_mixed.js",
     "e3-degradation": REPO_ROOT / "scripts" / "k6" / "workloads" / "s3_degradation.js",
@@ -142,6 +147,8 @@ def parse_args(argv: Sequence[str]) -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument("--resource-sample-interval-secs", type=float, default=1.0)
     parser.add_argument("--correctness-ops", type=int, default=500)
     parser.add_argument("--correctness-concurrency", type=int, default=12)
+    parser.add_argument("--correctness-ops-per-sec", type=float, default=2.0)
+    parser.add_argument("--correctness-duration-secs", type=float, default=30.0)
     parser.add_argument(
         "--e2-fault-cycles",
         type=int,
@@ -346,6 +353,12 @@ def run_one(
         "vus": args.vus,
         "duration": args.duration,
         "correctness_ops": args.correctness_ops if not k6_script else None,
+        "correctness_ops_per_sec": args.correctness_ops_per_sec
+        if not k6_script
+        else None,
+        "correctness_duration_secs": args.correctness_duration_secs
+        if not k6_script
+        else None,
         "correctness_concurrency": args.correctness_concurrency
         if not k6_script
         else None,
@@ -369,8 +382,9 @@ def run_one(
     elif args.scenario == "e2-fault-safety":
         phases = {
             "baseline": {
-                "driver": "boto3",
-                "operations": args.correctness_ops,
+                "driver": "aioboto3",
+                "ops_per_sec": args.correctness_ops_per_sec,
+                "duration_secs": args.correctness_duration_secs,
                 "concurrency": args.correctness_concurrency,
             }
         }
@@ -403,7 +417,7 @@ def run_one(
     cluster = So3Cluster(
         binary=so3_bin,
         topology=topology,
-        log_file=run_dir / "cluster.log",
+        log_dir=run_dir / "logs",
         env=env,
         start_timeout_secs=args.start_timeout_secs,
         stop_timeout_secs=args.stop_timeout_secs,
@@ -504,7 +518,7 @@ def run_one(
 
         metrics.merge_metrics(
             run_metrics,
-            metrics.summary_from_cluster_log(run_dir / "cluster.log"),
+            metrics.summary_from_cluster_log(run_dir / "logs"),
         )
         metrics.write_run_summary(
             run_dir / "summary.json",
@@ -827,7 +841,7 @@ def main(argv: Sequence[str]) -> int:
         k6_script = selected_k6_script(args)
         print(f"k6 script: {k6_script}")
     else:
-        print("driver:    boto3 S3 correctness driver")
+        print("driver:    aioboto3 async S3 correctness driver")
     print()
 
     try:

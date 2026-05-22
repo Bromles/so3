@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from dataclasses import dataclass
@@ -64,6 +65,8 @@ class ConcurrentFaultInjector:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self.completed_cycles: list[FaultCycleRecord] = []
         self._lock = threading.Lock()
+        self._faulty_node_index: int | None = None
+        self._faulty_node_lock = threading.Lock()
 
     def start(self) -> None:
         self._thread.start()
@@ -71,6 +74,14 @@ class ConcurrentFaultInjector:
     def stop(self, timeout: float = 120.0) -> None:
         self._stop.set()
         self._thread.join(timeout=timeout)
+
+    def faulty_node_index(self) -> int | None:
+        with self._faulty_node_lock:
+            return self._faulty_node_index
+
+    def _set_faulty_node(self, node_index: int | None) -> None:
+        with self._faulty_node_lock:
+            self._faulty_node_index = node_index
 
     def _run(self) -> None:
         node_count = len(self.cluster.topology.nodes)
@@ -86,6 +97,7 @@ class ConcurrentFaultInjector:
             )
             self.events.record("fault_crash", cycle=cycle, node_index=node_index)
             faults.crash_node(self.cluster, node_index)
+            self._set_faulty_node(node_index)
 
             if self._stop.wait(self.crash_duration_secs):
                 record.restart_monotonic = time.monotonic()
@@ -94,6 +106,7 @@ class ConcurrentFaultInjector:
                     record.ready_monotonic = time.monotonic()
                 except Exception:
                     pass
+                self._set_faulty_node(None)
                 with self._lock:
                     self.completed_cycles.append(record)
                 self.events.record("fault_restart", cycle=cycle, node_index=node_index)
@@ -105,6 +118,7 @@ class ConcurrentFaultInjector:
                 record.ready_monotonic = time.monotonic()
             except Exception:
                 pass
+            self._set_faulty_node(None)
 
             with self._lock:
                 self.completed_cycles.append(record)
@@ -118,12 +132,18 @@ class ConcurrentFaultInjector:
     def summary(self) -> dict[str, Any]:
         with self._lock:
             cycles = list(self.completed_cycles)
-        unavailable = [c.node_unavailable_secs for c in cycles if c.node_unavailable_secs is not None]
+        unavailable = [
+            c.node_unavailable_secs
+            for c in cycles
+            if c.node_unavailable_secs is not None
+        ]
         return {
             "fault_cycles_planned": self.fault_cycles,
             "fault_cycles_completed": len(cycles),
             "total_node_unavailable_secs": sum(unavailable),
-            "mean_node_unavailable_secs": sum(unavailable) / len(unavailable) if unavailable else 0.0,
+            "mean_node_unavailable_secs": sum(unavailable) / len(unavailable)
+            if unavailable
+            else 0.0,
             "cycles": [c.to_json() for c in cycles],
         }
 
@@ -144,16 +164,6 @@ def run_e2_fault_safety(
     """
     history_path = run_dir / "client-history.jsonl"
 
-    driver = CorrectnessDriver(
-        entry_urls=topology_json["entry_urls"],
-        history_path=history_path,
-        bucket=bucket,
-        seed=run_seed,
-        operations=args.correctness_ops,
-        concurrency=args.correctness_concurrency,
-        object_size=args.object_size,
-    )
-
     fault_cycles = getattr(args, "e2_fault_cycles", None) or args.node_count
     cycle_interval_secs = getattr(args, "e2_cycle_interval_secs", 10.0)
     crash_duration_secs = getattr(args, "e2_crash_duration_secs", 5.0)
@@ -166,6 +176,18 @@ def run_e2_fault_safety(
         crash_duration_secs=crash_duration_secs,
     )
 
+    driver = CorrectnessDriver(
+        entry_urls=topology_json["entry_urls"],
+        history_path=history_path,
+        bucket=bucket,
+        seed=run_seed,
+        ops_per_sec=getattr(args, "correctness_ops_per_sec", 2.0),
+        duration_secs=getattr(args, "correctness_duration_secs", 30.0),
+        concurrency=args.correctness_concurrency,
+        object_size=args.object_size,
+        faulty_node_fn=injector.faulty_node_index,
+    )
+
     events.record(
         "e2_start",
         fault_cycles=fault_cycles,
@@ -174,7 +196,7 @@ def run_e2_fault_safety(
     )
     injector.start()
     try:
-        run_metrics = driver.run()
+        run_metrics = asyncio.run(driver.run())
     finally:
         injector.stop()
         events.record("e2_driver_done")
@@ -188,8 +210,12 @@ def run_e2_fault_safety(
     fault_summary = injector.summary()
     manifest.write_json(run_dir / "fault-cycles.json", fault_summary)
 
-    run_metrics["verifier_passed"] = 1.0 if verifier_result["verdict"] == "passed" else 0.0
-    run_metrics["unsupported_checks"] = float(len(verifier_result.get("unsupported", [])))
+    run_metrics["verifier_passed"] = (
+        1.0 if verifier_result["verdict"] == "passed" else 0.0
+    )
+    run_metrics["unsupported_checks"] = float(
+        len(verifier_result.get("unsupported", []))
+    )
     run_metrics["fault"] = fault_summary
 
     events.record("e2_end", verdict=verifier_result["verdict"])

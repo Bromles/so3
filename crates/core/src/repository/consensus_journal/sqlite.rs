@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
-use sqlx::{query, query_scalar, Row, SqlitePool};
+use sqlx::{Row, SqlitePool, query, query_scalar};
 use std::path::Path;
 use std::time::Duration;
 use tokio::fs;
@@ -12,11 +12,11 @@ use crate::domain::consensus::command_id::{CommandId, DependencySet};
 use crate::domain::consensus::journal::{JournalEntry, JournalState};
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::node::NodeId;
-use crate::repository::consensus_journal::mappers::{
-    command_key, encode_command, encode_deps, encode_result, i64_to_u64, row_to_entry,
-    sequence_to_i64,
-};
 use crate::repository::consensus_journal::ConsensusJournalRepository;
+use crate::repository::consensus_journal::mappers::{
+    COMMAND_TYPE_READ, command_key, command_type_tag, encode_command, encode_deps, encode_result,
+    i64_to_u64, row_to_entry, sequence_to_i64,
+};
 
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SQLITE_MAX_CONNECTIONS: u32 = 1;
@@ -33,6 +33,7 @@ const CREATE_JOURNAL_SQL: &str = r"
         sequence         INTEGER NOT NULL,
         state            INTEGER NOT NULL,
         key              TEXT    NOT NULL,
+        command_type     INTEGER NOT NULL,
         command          BLOB    NOT NULL,
         deps             BLOB    NOT NULL,
         t0_epoch         INTEGER NOT NULL,
@@ -119,19 +120,33 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
     ) -> So3Result<DependencySet> {
         let seq = sequence_to_i64(command_id.sequence)?;
         let (t0_epoch, t0_physical, t0_logical) = Self::ts_to_i64s(timestamp_zero)?;
+        let cmd_type = command_type_tag(command);
 
-        // BEGIN IMMEDIATE acquires the write lock before we read, so two concurrent
-        // coordinators cannot both complete the conflict check before either inserts.
-        // Transaction rolls back automatically on drop if not committed.
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
 
+        // Reads are side-effect-free: no command needs to wait for a Read.
+        // Reads still depend on Writes/Deletes/Cas on the same key so they
+        // observe the correct state, but excluding Reads from dependency
+        // sets breaks the O(n) dependency chain that forms when multiple
+        // Reads pile up behind a stalled Write.
+        //
+        // Dependencies are transitive: if W2 depends on W1, any command
+        // that waits for W2 transitively waits for W1.  So it suffices to
+        // record only the *latest* (by committed timestamp) unapplied
+        // non-Read command as a dependency.  This keeps the dependency set
+        // bounded regardless of how many writes have accumulated on a hot
+        // key while earlier writes are still being applied.
         let rows = query(
             "SELECT origin_node_id, sequence FROM consensus_journal \
-             WHERE key = ? AND state < ? \
-               AND NOT (origin_node_id = ? AND sequence = ?)",
+             WHERE key = ? AND state < ? AND command_type != ? \
+               AND NOT (origin_node_id = ? AND sequence = ?) \
+             ORDER BY COALESCE(t_physical_ms, t0_physical_ms) DESC, \
+                      COALESCE(t_logical, t0_logical) DESC \
+             LIMIT 1",
         )
         .bind(command_key(command))
         .bind(JournalState::Applied.as_i32())
+        .bind(COMMAND_TYPE_READ)
         .bind(command_id.origin_node_id.as_ref())
         .bind(seq)
         .fetch_all(&mut *tx)
@@ -151,14 +166,15 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
 
         query(
             "INSERT OR IGNORE INTO consensus_journal \
-             (origin_node_id, sequence, state, key, command, deps, \
+             (origin_node_id, sequence, state, key, command_type, command, deps, \
               t0_epoch, t0_physical_ms, t0_logical, t0_node_id) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(command_id.origin_node_id.as_ref())
         .bind(seq)
         .bind(JournalState::PreAccepted.as_i32())
         .bind(command_key(command))
+        .bind(cmd_type)
         .bind(encode_command(command)?)
         .bind(encode_deps(&deps)?)
         .bind(t0_epoch)
@@ -333,5 +349,58 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    async fn count_earlier_committed(
+        &self,
+        key: &str,
+        timestamp: &LogicalTimestamp,
+    ) -> So3Result<usize> {
+        let (epoch, physical, logical) = Self::ts_to_i64s(timestamp)?;
+        let count: i64 = query_scalar(
+            "SELECT COUNT(*) FROM consensus_journal \
+             WHERE key = ? AND state = ? \
+               AND (COALESCE(t_epoch, t0_epoch) < ? \
+                    OR (COALESCE(t_epoch, t0_epoch) = ? AND COALESCE(t_physical_ms, t0_physical_ms) < ?) \
+                    OR (COALESCE(t_epoch, t0_epoch) = ? AND COALESCE(t_physical_ms, t0_physical_ms) = ? AND COALESCE(t_logical, t0_logical) < ?))",
+        )
+        .bind(key)
+        .bind(JournalState::Committed.as_i32())
+        .bind(epoch)
+        .bind(epoch)
+        .bind(physical)
+        .bind(epoch)
+        .bind(physical)
+        .bind(logical)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(usize::try_from(count).unwrap_or(0))
+    }
+
+    async fn list_applied_with_later_timestamp(
+        &self,
+        key: &str,
+        timestamp: &LogicalTimestamp,
+    ) -> So3Result<Vec<JournalEntry>> {
+        let (epoch, physical, logical) = Self::ts_to_i64s(timestamp)?;
+        let rows = query(&format!(
+            "SELECT {SELECT_COLS} FROM consensus_journal \
+             WHERE key = ? AND state = ? \
+               AND (COALESCE(t_epoch, t0_epoch) > ? \
+                    OR (COALESCE(t_epoch, t0_epoch) = ? AND COALESCE(t_physical_ms, t0_physical_ms) > ?) \
+                    OR (COALESCE(t_epoch, t0_epoch) = ? AND COALESCE(t_physical_ms, t0_physical_ms) = ? AND COALESCE(t_logical, t0_logical) > ?)) \
+             LIMIT 1"
+        ))
+        .bind(key)
+        .bind(JournalState::Applied.as_i32())
+        .bind(epoch)
+        .bind(epoch)
+        .bind(physical)
+        .bind(epoch)
+        .bind(physical)
+        .bind(logical)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_entry).collect()
     }
 }

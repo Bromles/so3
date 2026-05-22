@@ -1,4 +1,11 @@
-"""History verifier for SO3 object-level correctness scenarios."""
+"""History verifier for SO3 object-level correctness scenarios.
+
+Records are sorted by ``start_monotonic_secs`` so that the verifier
+reasons about *when the client issued the request*, not when the
+response arrived.  For the delete-visibility invariant, concurrent
+operations that overlap a DELETE are excluded: the invariant only
+applies to reads that started strictly after the DELETE completed.
+"""
 
 from __future__ import annotations
 
@@ -74,7 +81,7 @@ def load_history(path: Path) -> list[dict[str, Any]]:
                 ) from error
     records.sort(
         key=lambda record: (
-            float(record.get("end_monotonic_secs", 0.0)),
+            float(record.get("start_monotonic_secs", 0.0)),
             str(record.get("operation_id", "")),
         )
     )
@@ -85,6 +92,22 @@ def is_success(record: dict[str, Any], operation_type: str | None = None) -> boo
     if operation_type is not None and record.get("operation_type") != operation_type:
         return False
     return bool(record.get("success"))
+
+
+def is_ambiguous(record: dict[str, Any]) -> bool:
+    return not record.get("success")
+
+
+def is_success_or_ambiguous(record: dict[str, Any]) -> bool:
+    return bool(record.get("success")) or is_ambiguous(record)
+
+
+def _start(record: dict[str, Any]) -> float:
+    return float(record.get("start_monotonic_secs", 0.0))
+
+
+def _end(record: dict[str, Any]) -> float:
+    return float(record.get("end_monotonic_secs", 0.0))
 
 
 def verify_history(records: list[dict[str, Any]]) -> VerificationResult:
@@ -106,11 +129,14 @@ def verify_history(records: list[dict[str, Any]]) -> VerificationResult:
             continue
 
         op = record.get("operation_type")
-        if op == "PUT" and is_success(record):
+        is_ambiguous_put = op == "PUT" and not is_success(record)
+        if op == "PUT" and (is_success(record) or is_ambiguous_put):
             value_hash = record.get("input_value_hash")
             if isinstance(value_hash, str):
                 known_values_by_key.setdefault(key, set()).add(value_hash)
-            else:
+                if is_ambiguous_put:
+                    known_etags_by_key.setdefault(key, set()).add(value_hash)
+            elif is_success(record):
                 result.fail(
                     VerificationIssue(
                         invariant="history_schema",
@@ -141,7 +167,7 @@ def verify_history(records: list[dict[str, Any]]) -> VerificationResult:
             continue
 
         returned_hash = record.get("returned_value_hash")
-        read_start = float(record.get("start_monotonic_secs", 0.0))
+        read_start = _start(record)
 
         if operation_type == "GET":
             if not isinstance(returned_hash, str):
@@ -163,7 +189,7 @@ def verify_history(records: list[dict[str, Any]]) -> VerificationResult:
                         message=f"GET returned value {returned_hash} that was never successfully written for this key",
                     )
                 )
-            if read_after_delete_without_later_put(records, key, read_start):
+            if _read_after_delete(records, key, read_start):
                 result.fail(
                     VerificationIssue(
                         invariant="successful_delete_hides_prior_value_until_next_successful_put",
@@ -194,7 +220,7 @@ def verify_history(records: list[dict[str, Any]]) -> VerificationResult:
                         message=f"HEAD returned etag {returned_hash} not seen in any PUT or GET for this key",
                     )
                 )
-            if read_after_delete_without_later_put(records, key, read_start):
+            if _read_after_delete(records, key, read_start):
                 result.fail(
                     VerificationIssue(
                         invariant="successful_delete_hides_prior_value_until_next_successful_put",
@@ -207,27 +233,37 @@ def verify_history(records: list[dict[str, Any]]) -> VerificationResult:
     return result
 
 
-def read_after_delete_without_later_put(
-        records: list[dict[str, Any]], key: str, read_start: float
+def _read_after_delete(
+    records: list[dict[str, Any]], key: str, read_start: float
 ) -> bool:
-    deletes = [
-        float(record.get("end_monotonic_secs", 0.0))
-        for record in records
-        if record.get("key") == key
-           and record.get("operation_type") == "DELETE"
-           and is_success(record)
-           and float(record.get("end_monotonic_secs", 0.0)) < read_start
-    ]
-    if not deletes:
+    last_delete_end: float | None = None
+    for record in records:
+        if record.get("key") != key:
+            continue
+        if record.get("operation_type") != "DELETE":
+            continue
+        if not is_success_or_ambiguous(record):
+            continue
+        del_end = _end(record)
+        if del_end < read_start:
+            if last_delete_end is None or del_end > last_delete_end:
+                last_delete_end = del_end
+
+    if last_delete_end is None:
         return False
-    last_delete_end = max(deletes)
-    return not any(
-        record.get("key") == key
-        and record.get("operation_type") == "PUT"
-        and is_success(record)
-        and last_delete_end < float(record.get("end_monotonic_secs", 0.0)) < read_start
-        for record in records
-    )
+
+    for record in records:
+        if record.get("key") != key:
+            continue
+        if record.get("operation_type") != "PUT":
+            continue
+        if not is_success_or_ambiguous(record):
+            continue
+        put_start = _start(record)
+        if last_delete_end < put_start < read_start:
+            return False
+
+    return True
 
 
 def verify_history_file(path: Path) -> dict[str, Any]:

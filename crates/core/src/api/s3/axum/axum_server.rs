@@ -1,5 +1,5 @@
-use crate::api::s3::axum::controller::ObjectApiController;
 use crate::api::s3::S3Api;
+use crate::api::s3::axum::controller::ObjectApiController;
 use crate::domain::error::{So3Error, So3Result};
 use crate::node::config::NodeConfig;
 use crate::use_case::object::ObjectUseCase;

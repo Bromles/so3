@@ -8,6 +8,7 @@ use crate::repository::consensus_journal::ConsensusJournalRepository;
 use crate::repository::metadata::ObjectMetadataRepository;
 use crate::service::consensus_coordinator::ConsensusCoordinatorService;
 use crate::use_case::object::use_case::ObjectUseCaseImpl;
+use tracing::warn;
 
 impl<CCS, CJR, OMR, BR, BC> ObjectUseCaseImpl<CCS, CJR, OMR, BR, BC>
 where
@@ -21,7 +22,14 @@ where
         let result = self
             .consensus_coordinator_service
             .coordinate(ObjectCommand::Read { key: key.clone() })
-            .await?;
+            .await
+            .inspect_err(|e| {
+                warn!(
+                    key = key.as_ref(),
+                    error = %e,
+                    "read consensus coordinate failed"
+                );
+            })?;
 
         let metadata = match result {
             CommandResult::Read(ReadResult::Found(m)) => m,

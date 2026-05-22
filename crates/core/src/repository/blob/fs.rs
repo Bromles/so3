@@ -65,15 +65,38 @@ impl BlobRepository for FileSystemBlobRepository {
     }
 
     async fn commit(&self, blob_id: &BlobId) -> So3Result<()> {
-        let temp_path = self.streaming_temp_path(blob_id);
-        let final_path = self.committed_path(blob_id);
-        let file = fs::OpenOptions::new().write(true).open(&temp_path).await?;
-        file.sync_all().await?;
-        drop(file);
-        match fs::rename(&temp_path, &final_path).await {
+        self.commit_as(blob_id, blob_id).await
+    }
+
+    async fn commit_as(&self, temp_blob_id: &BlobId, final_blob_id: &BlobId) -> So3Result<()> {
+        let tmp_path = self.streaming_temp_path(temp_blob_id);
+        let committed_tmp_path = self.committed_path(temp_blob_id);
+        let final_path = self.committed_path(final_blob_id);
+
+        if fs::try_exists(&final_path).await.unwrap_or(false) {
+            let _ = fs::remove_file(&tmp_path).await;
+            let _ = fs::remove_file(&committed_tmp_path).await;
+            return Ok(());
+        }
+
+        let source_path = if fs::try_exists(&tmp_path).await.unwrap_or(false) {
+            let file = fs::OpenOptions::new().write(true).open(&tmp_path).await?;
+            file.sync_all().await?;
+            drop(file);
+            tmp_path
+        } else if fs::try_exists(&committed_tmp_path).await.unwrap_or(false) {
+            committed_tmp_path
+        } else {
+            return Err(So3Error::Io(format!(
+                "temp blob not found: {}",
+                temp_blob_id
+            )));
+        };
+
+        match fs::rename(&source_path, &final_path).await {
             Ok(()) => sync_dir(self.blob_dir.join(COMMITTED_DIR)).await,
             Err(_) if fs::try_exists(&final_path).await.unwrap_or(false) => {
-                let _ = fs::remove_file(&temp_path).await;
+                let _ = fs::remove_file(&source_path).await;
                 Ok(())
             }
             Err(e) => Err(So3Error::from(e)),

@@ -31,6 +31,7 @@ sha2 = { workspace = true }
 const-hex = { workspace = true, features = ["alloc"] }
 tempfile = { workspace = true }
 chrono = { workspace = true, features = ["std", "clock"] }
+dashmap = { workspace = true }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }

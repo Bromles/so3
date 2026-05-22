@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from pathlib import Path
@@ -65,7 +66,7 @@ def run_e6_recovery(
 
     confirmed_writes: dict[str, str] = {}
     if sentinel is not None:
-        confirmed_writes = sentinel.write()
+        confirmed_writes = asyncio.run(sentinel.write())
         events.record("sentinel_write", count=len(confirmed_writes))
 
     phase_exports["baseline"], _ = run_k6_phase(
@@ -212,7 +213,7 @@ def run_e6_recovery(
 
     verifier_result: dict[str, Any] | None = None
     if sentinel is not None and confirmed_writes:
-        verifier_result = sentinel.verify(confirmed_writes)
+        verifier_result = asyncio.run(sentinel.verify(confirmed_writes))
         verifier_path = run_dir / "verifier-result.json"
         verifier_path.write_text(
             json.dumps(verifier_result, indent=2, sort_keys=True) + "\n",

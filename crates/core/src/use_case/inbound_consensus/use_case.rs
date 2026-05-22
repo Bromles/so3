@@ -2,8 +2,6 @@ use crate::client::interface::BlobPeerClient;
 use crate::domain::blob::id::BlobId;
 use crate::domain::clock::{HybridLogicalClock, LogicalTimestamp};
 use crate::domain::command::ObjectCommand;
-use crate::domain::consensus::command_id::CommandId;
-use crate::domain::consensus::journal::JournalState;
 use crate::domain::consensus::transport::{
     AcceptRequest, AcceptResponse, ApplyRequest, ApplyResponse, CommitRequest, CommitResponse,
     PreAcceptRequest, PreAcceptResponse, RecoverRequest, RecoverResponse,
@@ -13,23 +11,19 @@ use crate::domain::node::NodeId;
 use crate::domain::object::key::ObjectKey;
 use crate::repository::blob::BlobRepository;
 use crate::repository::consensus_journal::ConsensusJournalRepository;
-use crate::repository::metadata::ObjectMetadataRepository;
+use crate::service::consensus_coordinator::ConsensusCoordinatorService;
 use crate::use_case::inbound_consensus::InboundConsensusUseCase;
 use async_trait::async_trait;
-use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{Mutex, Notify};
+use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::sync::Mutex;
 use tokio_stream::StreamExt;
 
-/// Committed commands not yet applied, keyed by commit timestamp.
-/// Apply gates execution on all earlier-timestamped entries being absent.
-type ReorderBuffer = HashMap<ObjectKey, BTreeMap<LogicalTimestamp, CommandId>>;
-
-pub struct InboundConsensusUseCaseImpl<CJR, OMR, BR, BPC>
+pub struct InboundConsensusUseCaseImpl<CJR, CCS, BR, BPC>
 where
     CJR: ConsensusJournalRepository,
-    OMR: ObjectMetadataRepository,
+    CCS: ConsensusCoordinatorService,
     BR: BlobRepository,
     BPC: BlobPeerClient,
 {
@@ -37,52 +31,36 @@ where
     pub epoch: AtomicU64,
     pub hlc: Mutex<HybridLogicalClock>,
     pub journal: Arc<CJR>,
-    pub object_metadata_repository: Arc<OMR>,
+    pub(super) coordinator: Arc<CCS>,
     pub blob_repository: Arc<BR>,
     pub blob_clients: HashMap<NodeId, Arc<BPC>>,
-    pub(super) reorder_buffer: Mutex<ReorderBuffer>,
-    pub(super) apply_notify: Arc<Notify>,
 }
 
-impl<CJR, OMR, BR, BPC> InboundConsensusUseCaseImpl<CJR, OMR, BR, BPC>
+impl<CJR, CCS, BR, BPC> InboundConsensusUseCaseImpl<CJR, CCS, BR, BPC>
 where
     CJR: ConsensusJournalRepository,
-    OMR: ObjectMetadataRepository,
+    CCS: ConsensusCoordinatorService,
     BR: BlobRepository,
     BPC: BlobPeerClient,
 {
-    pub async fn new(
+    pub fn new(
         node_id: NodeId,
         epoch: u64,
         journal: Arc<CJR>,
-        metadata_repo: Arc<OMR>,
+        coordinator: Arc<CCS>,
         blob_repo: Arc<BR>,
         blob_clients: HashMap<NodeId, Arc<BPC>>,
-        apply_notify: Arc<Notify>,
-    ) -> So3Result<Self> {
-        let committed = journal.list_by_state(JournalState::Committed).await?;
-        let mut reorder_buffer: ReorderBuffer = HashMap::new();
-        for e in committed {
-            if let Some(ts) = e.timestamp {
-                let key = Self::command_object_key(&e.command).clone();
-                reorder_buffer
-                    .entry(key)
-                    .or_default()
-                    .insert(ts, e.command_id);
-            }
-        }
-
-        Ok(Self {
+        _startup_recovery_done: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        Self {
             hlc: Mutex::new(HybridLogicalClock::new(node_id.clone())),
             node_id,
             epoch: AtomicU64::new(epoch),
             journal,
-            object_metadata_repository: metadata_repo,
+            coordinator,
             blob_repository: blob_repo,
             blob_clients,
-            reorder_buffer: Mutex::new(reorder_buffer),
-            apply_notify,
-        })
+        }
     }
 
     pub fn set_epoch(&self, epoch: u64) {
@@ -150,10 +128,10 @@ where
 }
 
 #[async_trait]
-impl<CJR, OMR, BR, BPC> InboundConsensusUseCase for InboundConsensusUseCaseImpl<CJR, OMR, BR, BPC>
+impl<CJR, CCS, BR, BPC> InboundConsensusUseCase for InboundConsensusUseCaseImpl<CJR, CCS, BR, BPC>
 where
     CJR: ConsensusJournalRepository,
-    OMR: ObjectMetadataRepository,
+    CCS: ConsensusCoordinatorService,
     BR: BlobRepository,
     BPC: BlobPeerClient,
 {

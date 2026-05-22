@@ -5,13 +5,13 @@ use crate::domain::consensus::transport::{AcceptRequest, AcceptResponse};
 use crate::domain::error::So3Result;
 use crate::repository::blob::BlobRepository;
 use crate::repository::consensus_journal::ConsensusJournalRepository;
-use crate::repository::metadata::ObjectMetadataRepository;
+use crate::service::consensus_coordinator::ConsensusCoordinatorService;
 use crate::use_case::inbound_consensus::use_case::InboundConsensusUseCaseImpl;
 
-impl<CJR, OMR, BR, BPC> InboundConsensusUseCaseImpl<CJR, OMR, BR, BPC>
+impl<CJR, CCS, BR, BPC> InboundConsensusUseCaseImpl<CJR, CCS, BR, BPC>
 where
     CJR: ConsensusJournalRepository,
-    OMR: ObjectMetadataRepository,
+    CCS: ConsensusCoordinatorService,
     BR: BlobRepository,
     BPC: BlobPeerClient,
 {

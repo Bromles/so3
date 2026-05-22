@@ -26,23 +26,33 @@ where
     ) -> So3Result<CasResult> {
         use crate::domain::blob::id::BlobId;
 
-        let blob_id = BlobId::new();
+        let temp_blob_id = BlobId::new();
 
-        let (sha256, size) = match self.stream_to_local(&blob_id, body).await {
+        let (sha256, size) = match self.stream_to_local(&temp_blob_id, body).await {
             Ok(r) => r,
             Err(e) => {
-                let _ = self.blob_repository.abort(&blob_id).await;
+                let _ = self.blob_repository.abort(&temp_blob_id).await;
                 return Err(e);
             }
         };
+
+        if let Some(existing) = self.object_metadata_repository.load(&key).await? {
+            if existing.version == expected_version.next() && existing.sha256 == sha256 {
+                let _ = self.blob_repository.abort(&temp_blob_id).await;
+                return Ok(CasResult::Updated(existing));
+            }
+        }
+
+        let blob_id = BlobId::from_sha256(&sha256);
+        self.blob_repository
+            .commit_as(&temp_blob_id, &blob_id)
+            .await?;
 
         let peers: Vec<_> = self.blob_client_map.values().cloned().collect();
         let n = 1 + peers.len();
         let quorum = n / 2 + 1;
         let peers_needed = quorum - 1;
 
-        // Each peer gets its own file reader — independent, no HOL blocking.
-        // File is hot in OS page cache after stream_to_local, so N reads ≈ free.
         let mut push_set = tokio::task::JoinSet::new();
         for client in &peers {
             let client = std::sync::Arc::clone(client);
@@ -61,7 +71,7 @@ where
             if res.is_ok_and(|success| success) {
                 ok += 1;
                 if ok >= peers_needed {
-                    break; // quorum reached
+                    break;
                 }
             }
         }

@@ -61,28 +61,29 @@ pub(super) async fn build_components(
         peer_clients,
         Arc::clone(&journal),
         Arc::clone(&meta),
-        Arc::clone(&blobs),
-        blob_clients.clone(),
         Arc::clone(&apply_notify),
     )
     .await?;
 
-    // Recover any consensus entries left in PreAccepted/Accepted state from a
-    // prior crash — must happen before the coordinator starts serving new requests.
-    coordinator.recover_stalled_entries().await;
+    let coordinator = Arc::new(coordinator);
 
-    let local_handler = Arc::new(
-        InboundConsensusUseCaseImpl::new(
-            NodeId::new(node_id.to_owned()),
-            0,
-            Arc::clone(&journal),
-            Arc::clone(&meta),
-            Arc::clone(&blobs),
-            blob_clients.clone(),
-            apply_notify,
-        )
-        .await?,
-    );
+    let startup_recovery_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let bg_coordinator = Arc::clone(&coordinator);
+    let bg_recovery_done = Arc::clone(&startup_recovery_done);
+    tokio::spawn(async move {
+        bg_coordinator.recover_stalled_entries().await;
+        bg_recovery_done.store(true, std::sync::atomic::Ordering::Release);
+    });
+
+    let local_handler = Arc::new(InboundConsensusUseCaseImpl::new(
+        NodeId::new(node_id.to_owned()),
+        0,
+        Arc::clone(&journal),
+        Arc::clone(&coordinator),
+        Arc::clone(&blobs),
+        blob_clients.clone(),
+        startup_recovery_done,
+    ));
 
     let object_uc = ObjectUseCaseImpl::new(
         coordinator,

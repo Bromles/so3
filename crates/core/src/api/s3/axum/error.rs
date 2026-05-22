@@ -1,8 +1,8 @@
 use crate::api::s3::axum::controller::DEFAULT_ERROR_LABEL;
 use crate::domain::error::So3Error;
+use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde::Serialize;
 
 pub struct ApiError(So3Error);
@@ -27,7 +27,10 @@ impl IntoResponse for ApiError {
             | So3Error::InvalidRequest(_)) => (StatusCode::BAD_REQUEST, error),
             error @ So3Error::NotFound(_) => (StatusCode::NOT_FOUND, error),
             error @ So3Error::CasMismatch { .. } => (StatusCode::CONFLICT, error),
-            error => (StatusCode::INTERNAL_SERVER_ERROR, error),
+            error => {
+                tracing::warn!(error = %error, "request failed with internal error");
+                (StatusCode::INTERNAL_SERVER_ERROR, error)
+            }
         };
 
         let body = Json(ErrorResponse {

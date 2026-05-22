@@ -261,8 +261,16 @@ def _safe_ratio(numerator: int, denominator: int) -> float | None:
 
 
 def summary_from_cluster_log(path: Path) -> dict[str, Any]:
-    """Aggregate structured consensus coordination events from cluster.log."""
-    if not path.exists():
+    """Aggregate structured consensus coordination events from per-node logs.
+
+    Accepts either a directory containing ``node-*.log`` files or a single
+    log file (backward compatible).
+    """
+    if path.is_dir():
+        log_files = sorted(path.glob("node-*.log"))
+    elif path.exists():
+        log_files = [path]
+    else:
         return {}
 
     path_counts: dict[str, int] = {}
@@ -317,42 +325,43 @@ def summary_from_cluster_log(path: Path) -> dict[str, Any]:
         "apply_total_ms": [],
     }
 
-    with path.open(encoding="utf-8", errors="replace") as f:
-        for line in f:
-            if "coordination_event" not in line:
-                continue
-            fields = _parse_tracing_fields(line)
-            event_name = fields.get("coordination_event")
-            if event_name == "consensus_operation":
-                path_name = fields.get("consensus_path")
-                if isinstance(path_name, str):
-                    _inc(path_counts, path_name)
-                operation = fields.get("operation")
-                if isinstance(operation, str):
-                    _inc(operation_counts, operation)
-                for name, counter in node_counts.items():
-                    value = fields.get(name)
-                    if isinstance(value, str):
-                        _inc(counter, value)
-                for name, bucket in numeric_buckets.items():
-                    value = fields.get(name)
-                    if isinstance(value, (int, float)):
-                        bucket.append(float(value))
-            elif event_name == "apply_backlog":
-                backlog_event = fields.get("backlog_event")
-                if isinstance(backlog_event, str):
-                    _inc(apply_event_counts, backlog_event)
-                operation = fields.get("operation")
-                if isinstance(operation, str):
-                    _inc(apply_operation_counts, operation)
-                for name, counter in apply_node_counts.items():
-                    value = fields.get(name)
-                    if isinstance(value, str):
-                        _inc(counter, value)
-                for name, bucket in apply_numeric_buckets.items():
-                    value = fields.get(name)
-                    if isinstance(value, (int, float)):
-                        bucket.append(float(value))
+    for log_file in log_files:
+        with log_file.open(encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if "coordination_event" not in line:
+                    continue
+                fields = _parse_tracing_fields(line)
+                event_name = fields.get("coordination_event")
+                if event_name == "consensus_operation":
+                    path_name = fields.get("consensus_path")
+                    if isinstance(path_name, str):
+                        _inc(path_counts, path_name)
+                    operation = fields.get("operation")
+                    if isinstance(operation, str):
+                        _inc(operation_counts, operation)
+                    for name, counter in node_counts.items():
+                        value = fields.get(name)
+                        if isinstance(value, str):
+                            _inc(counter, value)
+                    for name, bucket in numeric_buckets.items():
+                        value = fields.get(name)
+                        if isinstance(value, (int, float)):
+                            bucket.append(float(value))
+                elif event_name == "apply_backlog":
+                    backlog_event = fields.get("backlog_event")
+                    if isinstance(backlog_event, str):
+                        _inc(apply_event_counts, backlog_event)
+                    operation = fields.get("operation")
+                    if isinstance(operation, str):
+                        _inc(apply_operation_counts, operation)
+                    for name, counter in apply_node_counts.items():
+                        value = fields.get(name)
+                        if isinstance(value, str):
+                            _inc(counter, value)
+                    for name, bucket in apply_numeric_buckets.items():
+                        value = fields.get(name)
+                        if isinstance(value, (int, float)):
+                            bucket.append(float(value))
 
     result: dict[str, Any] = {"server": {}}
 

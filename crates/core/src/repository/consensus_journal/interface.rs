@@ -41,4 +41,19 @@ pub trait ConsensusJournalRepository: Send + Sync + 'static {
     /// Used to clean up after a failed coordinate() attempt so that the stalled
     /// PreAccepted entry does not poison future writes to the same key.
     async fn delete(&self, command_id: &CommandId) -> So3Result<()>;
+    /// Returns the count of Committed-but-not-Applied entries for the given
+    /// key that have a strictly earlier timestamp than the one provided.
+    /// Used by the coordinator to implement reorder gating.
+    async fn count_earlier_committed(
+        &self,
+        key: &str,
+        timestamp: &LogicalTimestamp,
+    ) -> So3Result<usize>;
+    /// Returns Applied entries for the given key that have a strictly later
+    /// timestamp.  Used to detect when an apply would regress metadata state.
+    async fn list_applied_with_later_timestamp(
+        &self,
+        key: &str,
+        timestamp: &LogicalTimestamp,
+    ) -> So3Result<Vec<JournalEntry>>;
 }

@@ -21,15 +21,10 @@ pub(super) type Journal = SqliteConsensusJournal;
 pub(super) type MetaRepo = SqliteObjectMetadataRepository;
 pub(super) type BlobRepo = FileSystemBlobRepository;
 
-pub(super) type Coordinator = AccordConsensusCoordinatorService<
-    Journal,
-    MaelstromConsensusPeerClient,
-    MetaRepo,
-    BlobRepo,
-    MaelstromBlobPeerClient,
->;
+pub(super) type Coordinator =
+    AccordConsensusCoordinatorService<Journal, MaelstromConsensusPeerClient, MetaRepo>;
 pub(super) type Handler =
-    InboundConsensusUseCaseImpl<Journal, MetaRepo, BlobRepo, MaelstromBlobPeerClient>;
+    InboundConsensusUseCaseImpl<Journal, Coordinator, BlobRepo, MaelstromBlobPeerClient>;
 pub(super) type ObjectUC =
     ObjectUseCaseImpl<Coordinator, Journal, MetaRepo, BlobRepo, MaelstromBlobPeerClient>;
 pub(super) type Service = MaelstromService<ObjectUC>;

@@ -25,7 +25,7 @@ pub struct ObjectUseCaseImpl<
     BR: BlobRepository,
     BC: BlobPeerClient,
 > {
-    pub consensus_coordinator_service: CCS,
+    pub consensus_coordinator_service: Arc<CCS>,
     pub consensus_journal_repository: Arc<CJR>,
     pub object_metadata_repository: Arc<OMR>,
     pub blob_repository: Arc<BR>,
@@ -41,7 +41,7 @@ where
     BC: BlobPeerClient,
 {
     pub fn new(
-        consensus_coordinator_service: CCS,
+        consensus_coordinator_service: Arc<CCS>,
         consensus_journal_repository: Arc<CJR>,
         object_metadata_repository: Arc<OMR>,
         blob_repository: Arc<BR>,

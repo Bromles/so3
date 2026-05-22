@@ -1,7 +1,7 @@
 use crate::domain::node::NodeId;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CommandId {
     pub origin_node_id: NodeId,
     pub sequence: u64,

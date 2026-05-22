@@ -9,6 +9,7 @@ use crate::repository::consensus_journal::ConsensusJournalRepository;
 use crate::repository::metadata::ObjectMetadataRepository;
 use crate::service::consensus_coordinator::ConsensusCoordinatorService;
 use crate::use_case::object::use_case::ObjectUseCaseImpl;
+use tracing::warn;
 
 impl<CCS, CJR, OMR, BR, BC> ObjectUseCaseImpl<CCS, CJR, OMR, BR, BC>
 where
@@ -25,23 +26,33 @@ where
     ) -> So3Result<ObjectMetadata> {
         use crate::domain::blob::id::BlobId;
 
-        let blob_id = BlobId::new();
+        let temp_blob_id = BlobId::new();
 
-        let (sha256, size) = match self.stream_to_local(&blob_id, body).await {
+        let (sha256, size) = match self.stream_to_local(&temp_blob_id, body).await {
             Ok(r) => r,
             Err(e) => {
-                let _ = self.blob_repository.abort(&blob_id).await;
+                let _ = self.blob_repository.abort(&temp_blob_id).await;
                 return Err(e);
             }
         };
+
+        if let Some(existing) = self.object_metadata_repository.load(&key).await? {
+            if existing.sha256 == sha256 {
+                let _ = self.blob_repository.abort(&temp_blob_id).await;
+                return Ok(existing);
+            }
+        }
+
+        let blob_id = BlobId::from_sha256(&sha256);
+        self.blob_repository
+            .commit_as(&temp_blob_id, &blob_id)
+            .await?;
 
         let peers: Vec<_> = self.blob_client_map.values().cloned().collect();
         let n = 1 + peers.len();
         let quorum = n / 2 + 1;
         let peers_needed = quorum - 1;
 
-        // Each peer gets its own file reader — independent, no HOL blocking.
-        // File is hot in OS page cache after stream_to_local, so N reads ≈ free.
         let mut push_set = tokio::task::JoinSet::new();
         for client in &peers {
             let client = std::sync::Arc::clone(client);
@@ -60,12 +71,19 @@ where
             if res.is_ok_and(|success| success) {
                 ok += 1;
                 if ok >= peers_needed {
-                    break; // quorum reached
+                    break;
                 }
             }
         }
         push_set.abort_all();
         if ok < peers_needed {
+            warn!(
+                blob_id = %blob_id,
+                ok = ok + 1,
+                total = n,
+                quorum,
+                "blob push quorum not reached"
+            );
             return Err(So3Error::PeerUnavailable(format!(
                 "blob push: only {}/{} peers reachable, need quorum of {quorum}",
                 ok + 1,
@@ -76,12 +94,19 @@ where
         let result = self
             .consensus_coordinator_service
             .coordinate(ObjectCommand::Write {
-                key,
+                key: key.clone(),
                 blob_id,
                 sha256,
                 size,
             })
-            .await?;
+            .await
+            .inspect_err(|e| {
+                warn!(
+                    key = key.as_ref(),
+                    error = %e,
+                    "write consensus coordinate failed"
+                );
+            })?;
 
         match result {
             CommandResult::Write(r) => Ok(r.metadata),

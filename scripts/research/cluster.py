@@ -32,33 +32,41 @@ class So3Cluster:
 
     binary: Path
     topology: Topology
-    log_file: Path
+    log_dir: Path
     env: dict[str, str] = field(default_factory=lambda: os.environ.copy())
     start_timeout_secs: float = 20.0
     stop_timeout_secs: float = 10.0
     nodes: dict[int, ManagedNode] = field(default_factory=dict)
 
     def assert_binary(self) -> None:
+        if (
+            os.name == "nt"
+            and not self.binary.exists()
+            and self.binary.with_suffix(".exe").exists()
+        ):
+            self.binary = self.binary.with_suffix(".exe")
         if not self.binary.exists():
             raise FileNotFoundError(f"SO3 binary does not exist: {self.binary}")
         if self.binary.is_dir():
             raise IsADirectoryError(f"SO3 binary path is a directory: {self.binary}")
 
+    def node_log_path(self, node_index: int) -> Path:
+        return self.log_dir / f"node-{node_index}.log"
+
     def start(self) -> None:
         self.assert_binary()
-        self.log_file.parent.mkdir(parents=True, exist_ok=True)
-        self.log_file.write_text("", encoding="utf-8")
+        self.log_dir.mkdir(parents=True, exist_ok=True)
         for node in self.topology.nodes:
-            self.start_node(node.index, append_log=node.index != 1)
+            self.start_node(node.index)
         self.wait_ready_all()
 
-    def start_node(self, node_index: int, *, append_log: bool = True) -> None:
+    def start_node(self, node_index: int) -> None:
         node = self.node_spec(node_index)
         node.data_dir.mkdir(parents=True, exist_ok=True)
         env = self.env.copy()
         env.update(node.env(self.topology.nodes))
-        mode = "ab" if append_log else "wb"
-        log = self.log_file.open(mode)
+        log_path = self.node_log_path(node_index)
+        log = log_path.open("ab")
         try:
             process = subprocess.Popen(
                 [str(self.binary)], env=env, stdout=log, stderr=log
@@ -83,7 +91,7 @@ class So3Cluster:
 
     def restart_node(self, node_index: int) -> None:
         self.stop_node(node_index)
-        self.start_node(node_index, append_log=True)
+        self.start_node(node_index)
         self.wait_ready(self.node_spec(node_index).url)
 
     def stop(self) -> None:
@@ -118,7 +126,7 @@ class So3Cluster:
             code = managed.process.poll()
             if code is not None:
                 raise RuntimeError(
-                    f"SO3 {managed.spec.name} exited before cluster became ready with status {code}; see {self.log_file}"
+                    f"SO3 {managed.spec.name} exited before cluster became ready with status {code}; see {self.log_dir}"
                 )
 
     def node_spec(self, node_index: int) -> NodeSpec:

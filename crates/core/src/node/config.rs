@@ -17,6 +17,7 @@ pub struct NodeConfig {
     pub blob_dir: PathBuf,
     pub cluster: ClusterConfig,
     pub network_skew_ms: u64,
+    pub consensus_rpc_deadline: Duration,
 }
 
 #[derive(Clone, Debug)]
@@ -84,6 +85,7 @@ mod tests {
             blob_dir: std::path::PathBuf::from(DATA_DIR).join("blobs"),
             cluster: ClusterConfig::default(),
             network_skew_ms: 0,
+            consensus_rpc_deadline: Duration::from_secs(3),
         }
     }
 

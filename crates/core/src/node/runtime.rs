@@ -1,7 +1,7 @@
-use crate::api::rpc::tonic::tonic_server::TonicRpcServer;
 use crate::api::rpc::RpcApi;
-use crate::api::s3::axum::axum_server::AxumS3Server;
+use crate::api::rpc::tonic::tonic_server::TonicRpcServer;
 use crate::api::s3::S3Api;
+use crate::api::s3::axum::axum_server::AxumS3Server;
 use crate::client::blob_client::BlobClient;
 use crate::client::consensus_transport_client::ConsensusTransportClient;
 use std::collections::HashMap;
@@ -18,17 +18,17 @@ use crate::domain::error::{So3Error, So3Result};
 use crate::domain::node::NodeId;
 use crate::node::config::NodeConfig;
 use crate::repository::blob::fs::FileSystemBlobRepository;
-use crate::repository::consensus_journal::sqlite::SqliteConsensusJournal;
 use crate::repository::consensus_journal::ConsensusJournalRepository;
-use crate::repository::metadata::sqlite::SqliteObjectMetadataRepository;
+use crate::repository::consensus_journal::sqlite::SqliteConsensusJournal;
 use crate::repository::metadata::ObjectMetadataRepository;
+use crate::repository::metadata::sqlite::SqliteObjectMetadataRepository;
 use crate::repository::node_identity::fs::FileSystemNodeIdentityRepository;
 use crate::repository::registry::RepositoryRegistry;
 use crate::service::consensus_coordinator::service::AccordConsensusCoordinatorService;
 use crate::use_case::blob::use_case::BlobUseCaseImpl;
 use crate::use_case::inbound_consensus::use_case::InboundConsensusUseCaseImpl;
-use crate::use_case::node_identity::use_case::NodeIdentityUseCaseImpl;
 use crate::use_case::node_identity::NodeIdentityUseCase;
+use crate::use_case::node_identity::use_case::NodeIdentityUseCaseImpl;
 use crate::use_case::object::use_case::ObjectUseCaseImpl;
 
 type Journal = SqliteConsensusJournal;
@@ -36,17 +36,11 @@ type MetadataRepository = SqliteObjectMetadataRepository;
 type BlobRepository = FileSystemBlobRepository;
 type ConsensusClient = ConsensusTransportClient;
 type BlobPeer = BlobClient;
-type Coordinator = AccordConsensusCoordinatorService<
-    Journal,
-    ConsensusClient,
-    MetadataRepository,
-    BlobRepository,
-    BlobPeer,
->;
+type Coordinator = AccordConsensusCoordinatorService<Journal, ConsensusClient, MetadataRepository>;
 type ObjectUseCase =
     ObjectUseCaseImpl<Coordinator, Journal, MetadataRepository, BlobRepository, BlobPeer>;
 type InboundConsensusUseCase =
-    InboundConsensusUseCaseImpl<Journal, MetadataRepository, BlobRepository, BlobPeer>;
+    InboundConsensusUseCaseImpl<Journal, Coordinator, BlobRepository, BlobPeer>;
 type LocalBlobUseCase = BlobUseCaseImpl<BlobRepository>;
 
 pub struct Node {
@@ -84,7 +78,10 @@ impl Node {
             let endpoint = rpc_endpoint(peer.addr);
             consensus_clients.insert(
                 peer_id.clone(),
-                Arc::new(ConsensusTransportClient::new(endpoint.clone())?),
+                Arc::new(ConsensusTransportClient::with_deadline(
+                    endpoint.clone(),
+                    config.consensus_rpc_deadline,
+                )?),
             );
             blob_clients.insert(peer_id, Arc::new(BlobClient::new(endpoint)?));
         }
@@ -112,27 +109,30 @@ impl Node {
             consensus_clients,
             Arc::clone(&consensus_journal),
             Arc::clone(&metadata_repository),
-            Arc::clone(&blob_repository),
-            blob_clients.clone(),
             Arc::clone(&apply_notify),
         )
         .await?;
-        let inbound_consensus_use_case = Arc::new(
-            InboundConsensusUseCaseImpl::new(
-                node_id,
-                0,
-                Arc::clone(&consensus_journal),
-                Arc::clone(&metadata_repository),
-                Arc::clone(&blob_repository),
-                blob_clients.clone(),
-                apply_notify,
-            )
-            .await?,
-        );
 
-        // Recover any consensus entries left in PreAccepted/Accepted state from a
-        // prior crash — must happen before the coordinator starts serving new requests.
-        coordinator.recover_stalled_entries().await;
+        let coordinator = Arc::new(coordinator);
+
+        let startup_recovery_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let inbound_consensus_use_case = Arc::new(InboundConsensusUseCaseImpl::new(
+            node_id,
+            0,
+            Arc::clone(&consensus_journal),
+            Arc::clone(&coordinator),
+            Arc::clone(&blob_repository),
+            blob_clients.clone(),
+            Arc::clone(&startup_recovery_done),
+        ));
+
+        let bg_coordinator = Arc::clone(&coordinator);
+        let bg_recovery_done = Arc::clone(&startup_recovery_done);
+        tokio::spawn(async move {
+            bg_coordinator.recover_stalled_entries().await;
+            bg_recovery_done.store(true, std::sync::atomic::Ordering::Release);
+        });
 
         let object_use_case = Arc::new(ObjectUseCaseImpl::new(
             coordinator,
@@ -308,6 +308,7 @@ mod tests {
             blob_dir: temp_dir.path().join("blobs"),
             cluster: ClusterConfig::default(),
             network_skew_ms: 50,
+            consensus_rpc_deadline: Duration::from_secs(3),
         };
 
         let node = Node::new(config).await.unwrap();

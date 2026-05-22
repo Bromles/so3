@@ -1,6 +1,6 @@
-use crate::client::interface::{BlobPeerClient, ConsensusPeerClient};
-use crate::domain::clock::{physical_millis_now, HybridLogicalClock, LogicalTimestamp};
-use crate::domain::command::{CasResult, CommandResult, ObjectCommand, ReadResult, WriteResult};
+use crate::client::interface::ConsensusPeerClient;
+use crate::domain::clock::{HybridLogicalClock, LogicalTimestamp};
+use crate::domain::command::{CommandResult, ObjectCommand};
 use crate::domain::consensus::ballot::Ballot;
 use crate::domain::consensus::command_id::{AppliedSet, CommandId, DependencySet};
 use crate::domain::consensus::journal::JournalState;
@@ -10,28 +10,25 @@ use crate::domain::consensus::transport::{
 };
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::node::NodeId;
-use crate::domain::object::metadata::ObjectMetadata;
-use crate::domain::object::version::ObjectVersion;
-use crate::repository::blob::BlobRepository;
+use crate::domain::object::key::ObjectKey;
 use crate::repository::consensus_journal::ConsensusJournalRepository;
 use crate::repository::metadata::ObjectMetadataRepository;
 use crate::service::consensus_coordinator::ConsensusCoordinatorService;
+use crate::service::consensus_coordinator::apply_engine::AccordApplyEngine;
 use async_trait::async_trait;
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinSet;
-use tokio::time::{sleep, timeout_at, Duration, Instant};
+use tokio::time::{Duration, Instant, sleep};
 use tracing::info;
 
-pub struct AccordConsensusCoordinatorService<CJR, CPC, OMR, BR, BPC>
+pub struct AccordConsensusCoordinatorService<CJR, CPC, OMR>
 where
     CJR: ConsensusJournalRepository,
     CPC: ConsensusPeerClient,
     OMR: ObjectMetadataRepository,
-    BR: BlobRepository,
-    BPC: BlobPeerClient,
 {
     node_id: NodeId,
     epoch: AtomicU64,
@@ -39,10 +36,8 @@ where
     sequence: AtomicU64,
     network_skew_ms: u64,
     consensus_peer_client_map: HashMap<NodeId, Arc<CPC>>,
+    engine: AccordApplyEngine<CJR, OMR>,
     consensus_journal_repository: Arc<CJR>,
-    object_metadata_repository: Arc<OMR>,
-    blob_repository: Arc<BR>,
-    blob_peer_clients: HashMap<NodeId, Arc<BPC>>,
     apply_notify: Arc<Notify>,
     in_flight_operations: AtomicU64,
 }
@@ -72,17 +67,24 @@ struct CompletionMetrics {
     commit_ok: usize,
 }
 
+fn command_object_key(command: &ObjectCommand) -> &ObjectKey {
+    match command {
+        ObjectCommand::Read { key }
+        | ObjectCommand::Write { key, .. }
+        | ObjectCommand::Cas { key, .. }
+        | ObjectCommand::Delete { key } => key,
+    }
+}
+
 fn elapsed_ms(start: Instant) -> u64 {
     u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
-impl<CJR, CPC, OMR, BR, BPC> AccordConsensusCoordinatorService<CJR, CPC, OMR, BR, BPC>
+impl<CJR, CPC, OMR> AccordConsensusCoordinatorService<CJR, CPC, OMR>
 where
     CJR: ConsensusJournalRepository,
     CPC: ConsensusPeerClient,
     OMR: ObjectMetadataRepository,
-    BR: BlobRepository,
-    BPC: BlobPeerClient,
 {
     pub async fn new(
         node_id: NodeId,
@@ -91,8 +93,6 @@ where
         consensus_peer_client_map: HashMap<NodeId, Arc<CPC>>,
         consensus_journal_repository: Arc<CJR>,
         object_metadata_repository: Arc<OMR>,
-        blob_repository: Arc<BR>,
-        blob_peer_clients: HashMap<NodeId, Arc<BPC>>,
         apply_notify: Arc<Notify>,
     ) -> So3Result<Self> {
         let initial_sequence = consensus_journal_repository
@@ -101,6 +101,17 @@ where
             .saturating_add(1);
         let hlc = HybridLogicalClock::new(node_id.clone());
 
+        let engine = AccordApplyEngine::new(
+            Arc::clone(&consensus_journal_repository),
+            Arc::clone(&object_metadata_repository),
+            Arc::clone(&apply_notify),
+        );
+
+        let committed = consensus_journal_repository
+            .list_by_state(JournalState::Committed)
+            .await?;
+        engine.populate_from_journal(committed);
+
         Ok(Self {
             node_id,
             epoch: AtomicU64::new(epoch),
@@ -108,10 +119,8 @@ where
             sequence: AtomicU64::new(initial_sequence),
             network_skew_ms,
             consensus_peer_client_map,
+            engine,
             consensus_journal_repository,
-            object_metadata_repository,
-            blob_repository,
-            blob_peer_clients,
             apply_notify,
             in_flight_operations: AtomicU64::new(0),
         })
@@ -141,37 +150,6 @@ where
         Ok(AppliedSet(
             entries.into_iter().map(|e| e.command_id).collect(),
         ))
-    }
-
-    async fn fetch_blob_from_any_peer(
-        &self,
-        blob_id: &crate::domain::blob::id::BlobId,
-    ) -> So3Result<()> {
-        use tokio_stream::StreamExt;
-        for client in self.blob_peer_clients.values() {
-            if let Ok(mut stream) = client.fetch(blob_id).await {
-                let mut failed = false;
-                while let Some(chunk) = stream.next().await {
-                    if let Ok(c) = chunk {
-                        if self.blob_repository.append_chunk(blob_id, c).await.is_err() {
-                            failed = true;
-                            break;
-                        }
-                    } else {
-                        failed = true;
-                        break;
-                    }
-                }
-                if failed {
-                    let _ = self.blob_repository.abort(blob_id).await;
-                    continue;
-                }
-                return self.blob_repository.commit(blob_id).await;
-            }
-        }
-        Err(So3Error::NotFound(format!(
-            "blob {blob_id} not available on any peer"
-        )))
     }
 
     /// Recover any journal entries left in PreAccepted/Accepted state from a prior crash.
@@ -215,6 +193,11 @@ where
             "recovering stalled journal entries from prior crash"
         );
 
+        // Phase 1: commit all stalled entries without applying.
+        // We must not wait for inter-entry dependencies during commit because
+        // the entries may form a dependency chain — waiting would deadlock
+        // against our own sequential loop.
+        let mut committed = Vec::new();
         for entry in &all_stalled {
             let ballot = Ballot::initial(self.node_id.clone());
             let last_applied = match self.last_applied().await {
@@ -225,7 +208,7 @@ where
                 }
             };
             match self
-                .recover_and_complete(
+                .recover_and_commit(
                     &entry.command_id,
                     &entry.command,
                     &entry.timestamp_zero,
@@ -236,151 +219,373 @@ where
                 )
                 .await
             {
-                Ok(_) => tracing::info!(
-                    origin_node = entry.command_id.origin_node_id.as_ref(),
-                    sequence = entry.command_id.sequence,
-                    "stalled entry recovered"
-                ),
+                Some(commit_req) => {
+                    tracing::info!(
+                        origin_node = entry.command_id.origin_node_id.as_ref(),
+                        sequence = entry.command_id.sequence,
+                        "stalled entry committed"
+                    );
+                    committed.push(commit_req);
+                }
+                None => {
+                    tracing::warn!(
+                        origin_node = entry.command_id.origin_node_id.as_ref(),
+                        sequence = entry.command_id.sequence,
+                        "stalled entry recovery failed"
+                    );
+                }
+            }
+        }
+
+        // Phase 2: apply all committed entries in timestamp order.
+        // In Accord, if entry A depends on entry B (same key), then B was
+        // committed with a lower-or-equal timestamp.  Sorting ascending
+        // guarantees dependencies are applied before the entries that need them.
+        committed.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+
+        for commit_req in &committed {
+            let apply_req = ApplyRequest {
+                command_id: commit_req.command_id.clone(),
+                command: commit_req.command.clone(),
+                timestamp_zero: commit_req.timestamp_zero.clone(),
+                timestamp: commit_req.timestamp.clone(),
+                dependencies: commit_req.dependencies.clone(),
+            };
+
+            // Verify all local dependencies are Applied before applying.
+            // We process in timestamp order so a dependency must have been attempted
+            // already; if it is still Committed the apply failed and we must skip
+            // dependents too.
+            if !self.deps_ready(&apply_req).await {
+                tracing::warn!(
+                    origin_node = apply_req.command_id.origin_node_id.as_ref(),
+                    sequence = apply_req.command_id.sequence,
+                    "skipping: dependency not applied (prior entry failed?)"
+                );
+                continue;
+            }
+
+            match self.engine.apply(&apply_req).await {
+                Ok(_) => {
+                    tracing::info!(
+                        origin_node = apply_req.command_id.origin_node_id.as_ref(),
+                        sequence = apply_req.command_id.sequence,
+                        "stalled entry applied"
+                    );
+                    // Fire-and-forget apply RPCs to peers.
+                    for peer in peers.iter().cloned() {
+                        let req = apply_req.clone();
+                        tokio::spawn(async move {
+                            let _ = peer.apply(req).await;
+                        });
+                    }
+                }
                 Err(e) => tracing::warn!(
-                    origin_node = entry.command_id.origin_node_id.as_ref(),
-                    sequence = entry.command_id.sequence,
-                    "stalled entry recovery failed: {e}"
+                    origin_node = apply_req.command_id.origin_node_id.as_ref(),
+                    sequence = apply_req.command_id.sequence,
+                    "stalled entry apply failed: {e}"
                 ),
+            }
+        }
+
+        // Phase 3: retry apply for entries Committed in a previous run but not Applied
+        // (e.g., blob was temporarily unavailable at apply time).
+        let mut committed_not_applied = match self
+            .consensus_journal_repository
+            .list_by_state(JournalState::Committed)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("failed to list Committed entries: {e}");
+                return;
+            }
+        };
+
+        if !committed_not_applied.is_empty() {
+            committed_not_applied.sort_by(|a, b| match (&a.timestamp, &b.timestamp) {
+                (Some(ta), Some(tb)) => ta.cmp(tb),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            });
+
+            tracing::info!(
+                count = committed_not_applied.len(),
+                "applying committed-but-not-applied journal entries"
+            );
+            for entry in &committed_not_applied {
+                let timestamp = match &entry.timestamp {
+                    Some(ts) => ts.clone(),
+                    None => {
+                        tracing::warn!(
+                            origin_node = entry.command_id.origin_node_id.as_ref(),
+                            sequence = entry.command_id.sequence,
+                            "committed entry missing timestamp, skipping"
+                        );
+                        continue;
+                    }
+                };
+
+                let apply_req = ApplyRequest {
+                    command_id: entry.command_id.clone(),
+                    command: entry.command.clone(),
+                    timestamp_zero: entry.timestamp_zero.clone(),
+                    timestamp: timestamp.clone(),
+                    dependencies: entry.dependencies.clone(),
+                };
+
+                // Readiness check: all local deps must be Applied.
+                if !self.deps_ready(&apply_req).await {
+                    tracing::warn!(
+                        origin_node = apply_req.command_id.origin_node_id.as_ref(),
+                        sequence = apply_req.command_id.sequence,
+                        "skipping committed entry: dependency not applied"
+                    );
+                    continue;
+                }
+
+                match self.engine.apply(&apply_req).await {
+                    Ok(_) => {
+                        tracing::info!(
+                            origin_node = apply_req.command_id.origin_node_id.as_ref(),
+                            sequence = apply_req.command_id.sequence,
+                            "committed entry applied"
+                        );
+                        for peer in peers.iter().cloned() {
+                            let req = apply_req.clone();
+                            tokio::spawn(async move {
+                                let _ = peer.apply(req).await;
+                            });
+                        }
+                    }
+                    Err(e) => tracing::warn!(
+                        origin_node = apply_req.command_id.origin_node_id.as_ref(),
+                        sequence = apply_req.command_id.sequence,
+                        "committed entry apply failed: {e}"
+                    ),
+                }
             }
         }
     }
 
-    async fn apply_local(&self, req: &ApplyRequest) -> So3Result<CommandResult> {
-        // Idempotency
-        if let Some(entry) = self
-            .consensus_journal_repository
-            .load(&req.command_id)
-            .await?
-            && entry.state == JournalState::Applied
-        {
-            let result = entry
-                .result
-                .ok_or_else(|| So3Error::Storage("applied entry missing result".to_string()))?;
-            return Ok(result);
+    /// Check whether all explicit dependencies of `req` are ready for apply:
+    /// Applied, not in local journal, or spurious (higher timestamp).
+    async fn deps_ready(&self, req: &ApplyRequest) -> bool {
+        for dep_id in &req.dependencies.0 {
+            match self.consensus_journal_repository.load(dep_id).await {
+                Ok(None) | Err(_) => continue,
+                Ok(Some(e)) if e.state == JournalState::Applied => continue,
+                Ok(Some(e)) if e.timestamp.as_ref() > Some(&req.timestamp) => continue,
+                _ => return false,
+            }
         }
+        true
+    }
 
-        // Wait for all explicit dependencies to be applied locally.
-        // Register the Notify future before checking state to avoid the TOCTOU where a dep
-        // gets applied between the check and the await.
-        let dep_deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            let notified = self.apply_notify.notified();
-            let mut pending = None;
+    async fn apply_with_recovery(&self, req: &ApplyRequest) -> So3Result<CommandResult> {
+        let max_recovery_attempts = 3usize;
+        let mut recovery_attempts = 0usize;
+
+        'deps: loop {
             for dep_id in &req.dependencies.0 {
                 match self.consensus_journal_repository.load(dep_id).await? {
-                    Some(e) if e.state == JournalState::Applied => {}
+                    None => continue,
+                    Some(e) if e.state == JournalState::Applied => continue,
                     Some(e) if e.timestamp.as_ref() > Some(&req.timestamp) => {
-                        // Spurious dependency from concurrent PreAccept: the dep has a
-                        // later committed timestamp, so it will apply after us anyway.
                         continue;
                     }
-                    _ => {
-                        pending = Some(dep_id.sequence);
-                        break;
+                    Some(e) if e.state == JournalState::Committed => {
+                        recovery_attempts += 1;
+                        if recovery_attempts > max_recovery_attempts {
+                            return Err(So3Error::PeerUnavailable(format!(
+                                "apply_with_recovery: aborted after {max_recovery_attempts} recovery attempts for committed dependency"
+                            )));
+                        }
+                        self.recover_and_apply_stalled_chain(dep_id).await?;
+                        continue 'deps;
+                    }
+                    Some(_) => {
+                        recovery_attempts += 1;
+                        if recovery_attempts > max_recovery_attempts {
+                            return Err(So3Error::PeerUnavailable(format!(
+                                "apply_with_recovery: aborted after {max_recovery_attempts} recovery attempts for stalled dependency"
+                            )));
+                        }
+                        self.recover_and_apply_stalled_chain(dep_id).await?;
+                        continue 'deps;
                     }
                 }
             }
-            match pending {
-                None => break,
-                Some(seq) => {
-                    timeout_at(dep_deadline, notified).await.map_err(|_| {
-                        So3Error::PeerUnavailable(format!(
-                            "dependency seq={seq} not applied within deadline"
-                        ))
-                    })?;
+            break;
+        }
+
+        self.engine.apply(req).await
+    }
+
+    /// On-demand recovery of a stalled dependency and its transitive stalled dependencies.
+    /// Uses BFS to discover all stalled entries in the dependency chain, commits them via
+    /// the Accord recovery protocol, then collects any Committed-but-not-Applied entries
+    /// in the same chain and applies everything in timestamp order.
+    async fn recover_and_apply_stalled_chain(&self, stalled_id: &CommandId) -> So3Result<()> {
+        let peers: Vec<Arc<CPC>> = self.consensus_peer_client_map.values().cloned().collect();
+        let quorum = self.quorum_size();
+
+        // BFS to discover all stalled AND committed-but-not-applied entries in the
+        // dependency chain.  We must include Committed entries because a stalled entry
+        // may depend on a Committed one whose apply hasn't run yet — if we don't apply
+        // it here, the readiness check in Phase 2 will skip it and we'll loop forever.
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        queue.push_back(stalled_id.clone());
+        visited.insert(stalled_id.clone());
+
+        let mut stalled_entries = Vec::new();
+        let mut committed_entries = Vec::new();
+
+        while let Some(id) = queue.pop_front() {
+            let entry = match self.consensus_journal_repository.load(&id).await? {
+                Some(e) => e,
+                None => continue, // not local — resolved on owning peer
+            };
+
+            match entry.state {
+                JournalState::Applied => continue, // already done
+                JournalState::Committed => {
+                    // Committed but not yet Applied — include in the apply phase.
+                    // Also explore its deps for more unapplied entries.
+                    for dep_id in &entry.dependencies.0 {
+                        if visited.insert(dep_id.clone()) {
+                            queue.push_back(dep_id.clone());
+                        }
+                    }
+                    committed_entries.push(entry);
+                }
+                JournalState::PreAccepted | JournalState::Accepted => {
+                    // Stalled — explore its dependencies for more entries.
+                    for dep_id in &entry.dependencies.0 {
+                        if visited.insert(dep_id.clone()) {
+                            queue.push_back(dep_id.clone());
+                        }
+                    }
+                    stalled_entries.push(entry);
                 }
             }
         }
 
-        let result = match &req.command {
-            ObjectCommand::Read { key } => match self.object_metadata_repository.load(key).await? {
-                Some(m) => CommandResult::Read(ReadResult::Found(m)),
-                None => CommandResult::Read(ReadResult::NotFound),
-            },
-            ObjectCommand::Write {
-                key,
-                blob_id,
-                sha256,
-                size,
-            } => {
-                if !self.blob_repository.exists(blob_id).await? {
-                    self.fetch_blob_from_any_peer(blob_id).await?;
-                }
-                let version = self
-                    .object_metadata_repository
-                    .load(key)
-                    .await?
-                    .map_or_else(ObjectVersion::initial, |m| m.version.next());
-                CommandResult::Write(WriteResult {
-                    metadata: ObjectMetadata {
-                        key: key.clone(),
-                        version,
-                        blob_id: blob_id.clone(),
-                        sha256: sha256.clone(),
-                        size: *size,
-                        last_modified_ms: physical_millis_now(),
-                    },
-                })
-            }
-            ObjectCommand::Delete { .. } => CommandResult::Delete,
-            ObjectCommand::Cas {
-                key,
-                expected_version,
-                blob_id,
-                sha256,
-                size,
-            } => {
-                if !self.blob_repository.exists(blob_id).await? {
-                    self.fetch_blob_from_any_peer(blob_id).await?;
-                }
-                match self.object_metadata_repository.load(key).await? {
-                    Some(meta) if meta.version == *expected_version => {
-                        CommandResult::Cas(CasResult::Updated(ObjectMetadata {
-                            key: key.clone(),
-                            version: meta.version.next(),
-                            blob_id: blob_id.clone(),
-                            sha256: sha256.clone(),
-                            size: *size,
-                            last_modified_ms: physical_millis_now(),
-                        }))
-                    }
-                    Some(meta) => CommandResult::Cas(CasResult::Conflict {
-                        current_version: meta.version,
-                    }),
-                    None => CommandResult::Cas(CasResult::Conflict {
-                        current_version: ObjectVersion::initial(),
-                    }),
-                }
-            }
-        };
-
-        // Journal-first: persist the result before mutating object metadata.
-        self.consensus_journal_repository
-            .record_applied(&req.command_id, &result)
-            .await?;
-
-        // Apply object metadata side effects.
-        match (&req.command, &result) {
-            (ObjectCommand::Write { .. }, CommandResult::Write(WriteResult { metadata })) => {
-                self.object_metadata_repository.store(metadata).await?;
-            }
-            (ObjectCommand::Delete { key }, CommandResult::Delete) => {
-                self.object_metadata_repository.delete(key).await?;
-            }
-            (ObjectCommand::Cas { .. }, CommandResult::Cas(CasResult::Updated(metadata))) => {
-                self.object_metadata_repository.store(metadata).await?;
-            }
-            _ => {}
+        if stalled_entries.is_empty() && committed_entries.is_empty() {
+            return Ok(());
         }
 
-        self.apply_notify.notify_waiters();
+        tracing::info!(
+            stalled_count = stalled_entries.len(),
+            committed_count = committed_entries.len(),
+            "on-demand recovery: recovering stalled dependency chain"
+        );
 
-        Ok(result)
+        // Phase 1: commit all stalled (PreAccepted/Accepted) entries without applying.
+        let mut recovered_commit_reqs = Vec::new();
+        for entry in &stalled_entries {
+            let ballot = Ballot::initial(self.node_id.clone());
+            let last_applied = match self.last_applied().await {
+                Ok(la) => la,
+                Err(e) => {
+                    tracing::warn!("failed to get last_applied: {e}");
+                    continue;
+                }
+            };
+            match self
+                .recover_and_commit(
+                    &entry.command_id,
+                    &entry.command,
+                    &entry.timestamp_zero,
+                    &ballot,
+                    &peers,
+                    quorum,
+                    &last_applied,
+                )
+                .await
+            {
+                Some(commit_req) => {
+                    tracing::info!(
+                        origin_node = entry.command_id.origin_node_id.as_ref(),
+                        sequence = entry.command_id.sequence,
+                        "on-demand recovery: stalled entry committed"
+                    );
+                    recovered_commit_reqs.push(commit_req);
+                }
+                None => {
+                    tracing::warn!(
+                        origin_node = entry.command_id.origin_node_id.as_ref(),
+                        sequence = entry.command_id.sequence,
+                        "on-demand recovery: failed to commit stalled entry"
+                    );
+                }
+            }
+        }
+
+        // Merge: entries recovered just now + entries that were already Committed.
+        // Convert Committed journal entries to CommitRequests for uniform processing.
+        let mut all_to_apply: Vec<CommitRequest> = recovered_commit_reqs;
+        for entry in &committed_entries {
+            let timestamp = match &entry.timestamp {
+                Some(ts) => ts.clone(),
+                None => continue, // should not happen for Committed, skip
+            };
+            all_to_apply.push(CommitRequest {
+                command_id: entry.command_id.clone(),
+                command: entry.command.clone(),
+                timestamp_zero: entry.timestamp_zero.clone(),
+                timestamp,
+                dependencies: entry.dependencies.clone(),
+            });
+        }
+
+        // Phase 2: sort by timestamp and apply.
+        all_to_apply.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+
+        for commit_req in &all_to_apply {
+            let apply_req = ApplyRequest {
+                command_id: commit_req.command_id.clone(),
+                command: commit_req.command.clone(),
+                timestamp_zero: commit_req.timestamp_zero.clone(),
+                timestamp: commit_req.timestamp.clone(),
+                dependencies: commit_req.dependencies.clone(),
+            };
+
+            // Readiness check: all local deps must be Applied (or not local, or spurious).
+            if !self.deps_ready(&apply_req).await {
+                tracing::warn!(
+                    origin_node = apply_req.command_id.origin_node_id.as_ref(),
+                    sequence = apply_req.command_id.sequence,
+                    "on-demand recovery: skipping entry, dependency not applied"
+                );
+                continue;
+            }
+
+            match self.engine.apply(&apply_req).await {
+                Ok(_) => {
+                    tracing::info!(
+                        origin_node = apply_req.command_id.origin_node_id.as_ref(),
+                        sequence = apply_req.command_id.sequence,
+                        "on-demand recovery: entry applied"
+                    );
+                    for peer in peers.iter().cloned() {
+                        let req = apply_req.clone();
+                        tokio::spawn(async move {
+                            let _ = peer.apply(req).await;
+                        });
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    origin_node = apply_req.command_id.origin_node_id.as_ref(),
+                    sequence = apply_req.command_id.sequence,
+                    "on-demand recovery: apply failed: {e}"
+                ),
+            }
+        }
+
+        Ok(())
     }
 
     async fn complete_from_commit(
@@ -390,6 +595,14 @@ where
         quorum: usize,
     ) -> So3Result<CompletionMetrics> {
         let commit_started = Instant::now();
+
+        let key = command_object_key(&commit_req.command).clone();
+        self.engine.register_committed(
+            key,
+            commit_req.timestamp.clone(),
+            commit_req.command_id.clone(),
+        );
+
         self.consensus_journal_repository
             .record_committed(
                 &commit_req.command_id,
@@ -444,7 +657,7 @@ where
             dependencies: commit_req.dependencies.clone(),
         };
         let apply_started = Instant::now();
-        let result = self.apply_local(&apply_req).await?;
+        let apply_result = self.apply_with_recovery(&apply_req).await;
         let apply_ms = elapsed_ms(apply_started);
         for peer in peers.iter().cloned() {
             let req = apply_req.clone();
@@ -452,6 +665,7 @@ where
                 let _ = peer.apply(req).await;
             });
         }
+        let result = apply_result?;
         Ok(CompletionMetrics {
             result,
             commit_ms,
@@ -530,31 +744,234 @@ where
     }
 
     async fn wait_for_applied(&self, deps: &[CommandId]) -> So3Result<()> {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
+        'deps: loop {
             let notified = self.apply_notify.notified();
-            let mut pending = None;
             for dep_id in deps {
                 match self.consensus_journal_repository.load(dep_id).await? {
                     None => continue, // not local — resolved independently on owning peer
                     Some(e) if e.state == JournalState::Applied => {}
-                    _ => {
-                        pending = Some(dep_id.sequence);
+                    Some(e) if e.state == JournalState::Committed => {
+                        // Committed but not yet Applied — will be resolved by inbound apply
+                        // or on-demand recovery.
+                        notified.await;
+                        continue 'deps;
+                    }
+                    Some(_) => {
+                        // PreAccepted or Accepted — the coordinator never finished.
+                        // Recover the stalled dependency chain on demand.
+                        self.recover_and_apply_stalled_chain(dep_id).await?;
+                        continue 'deps;
+                    }
+                }
+            }
+            return Ok(());
+        }
+    }
+
+    /// Recovery phase 1: determine the outcome for a stalled entry and commit it
+    /// locally and on peers, but do NOT apply.  Returns the CommitRequest needed
+    /// for the subsequent apply phase, or None if recovery failed.
+    async fn recover_and_commit(
+        &self,
+        command_id: &CommandId,
+        command: &ObjectCommand,
+        timestamp_zero: &LogicalTimestamp,
+        ballot: &Ballot,
+        peers: &[Arc<CPC>],
+        quorum: usize,
+        last_applied: &AppliedSet,
+    ) -> Option<CommitRequest> {
+        let recovery_ballot = ballot.next(self.node_id.clone());
+
+        if self
+            .consensus_journal_repository
+            .record_ballot(command_id, &recovery_ballot)
+            .await
+            .is_err()
+        {
+            return None;
+        }
+
+        let local_success = match self
+            .local_recover_success(command_id, command, timestamp_zero)
+            .await
+        {
+            Ok(s) => s,
+            Err(_) => return None,
+        };
+
+        let mut successes = vec![local_success];
+        {
+            let mut recover_set = JoinSet::new();
+            for peer in peers {
+                let peer = Arc::clone(peer);
+                let req = RecoverRequest {
+                    command_id: command_id.clone(),
+                    ballot: recovery_ballot.clone(),
+                    command: command.clone(),
+                    timestamp_zero: timestamp_zero.clone(),
+                };
+                recover_set.spawn(async move { peer.recover(req).await });
+            }
+            while let Some(res) = recover_set.join_next().await {
+                if let Ok(Ok(RecoverResponse::Success(s))) = res {
+                    successes.push(s);
+                }
+            }
+        }
+
+        if successes.len() < quorum {
+            return None;
+        }
+
+        // If any peer has already committed, use that decision directly.
+        if let Some(done) = successes.iter().find(|s| {
+            matches!(
+                s.local_state,
+                JournalState::Committed | JournalState::Applied
+            )
+        }) {
+            let commit_req = CommitRequest {
+                command_id: command_id.clone(),
+                command: command.clone(),
+                timestamp_zero: timestamp_zero.clone(),
+                timestamp: done.timestamp.clone(),
+                dependencies: done.dependencies.clone(),
+            };
+            return self
+                .commit_locally_and_on_peers(&commit_req, peers, quorum)
+                .await;
+        }
+
+        // Determine final timestamp and deps from recovery responses.
+        let (final_timestamp, final_deps) = {
+            let mut deps: Vec<CommandId> = vec![];
+            let mut ts = timestamp_zero.clone();
+            let mut best_ballot: Option<&Ballot> = None;
+            for s in &successes {
+                if s.superseding {
+                    match (&s.accepted_ballot, &best_ballot) {
+                        (Some(b), None) => {
+                            best_ballot = Some(b);
+                            ts = s.timestamp.clone();
+                        }
+                        (Some(b), Some(best)) if b > best => {
+                            best_ballot = Some(b);
+                            ts = s.timestamp.clone();
+                        }
+                        _ => {}
+                    }
+                }
+                deps.extend(s.dependencies.0.iter().cloned());
+            }
+            (ts, deps)
+        };
+
+        // Accept phase with recovery ballot.
+        if self
+            .consensus_journal_repository
+            .record_accepted(
+                command_id,
+                &recovery_ballot,
+                &final_timestamp,
+                &DependencySet(final_deps.clone()),
+            )
+            .await
+            .is_err()
+        {
+            return None;
+        }
+
+        let mut accept_ok = 0usize;
+        let mut refined_deps = final_deps;
+        {
+            let mut accept_set = JoinSet::new();
+            for peer in peers {
+                let peer = Arc::clone(peer);
+                let req = AcceptRequest {
+                    command_id: command_id.clone(),
+                    ballot: recovery_ballot.clone(),
+                    command: command.clone(),
+                    timestamp_zero: timestamp_zero.clone(),
+                    timestamp: final_timestamp.clone(),
+                    dependencies: DependencySet(refined_deps.clone()),
+                    last_applied: last_applied.clone(),
+                };
+                accept_set.spawn(async move { peer.accept(req).await });
+            }
+            while let Some(res) = accept_set.join_next().await {
+                match res {
+                    Ok(Ok(r)) if !r.nack => {
+                        accept_ok += 1;
+                        refined_deps.extend(r.dependencies.0);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if accept_ok + 1 < quorum {
+            return None;
+        }
+
+        let commit_req = CommitRequest {
+            command_id: command_id.clone(),
+            command: command.clone(),
+            timestamp_zero: timestamp_zero.clone(),
+            timestamp: final_timestamp,
+            dependencies: DependencySet(refined_deps),
+        };
+        self.commit_locally_and_on_peers(&commit_req, peers, quorum)
+            .await
+    }
+
+    /// Commit a request locally (record_committed) and send Commit RPCs to peers.
+    /// Returns Some(commit_req) on success, None on failure.
+    async fn commit_locally_and_on_peers(
+        &self,
+        commit_req: &CommitRequest,
+        peers: &[Arc<CPC>],
+        quorum: usize,
+    ) -> Option<CommitRequest> {
+        if self
+            .consensus_journal_repository
+            .record_committed(
+                &commit_req.command_id,
+                &commit_req.timestamp,
+                &commit_req.dependencies,
+            )
+            .await
+            .is_err()
+        {
+            return None;
+        }
+
+        const MAX_COMMIT_ATTEMPTS: u32 = 10;
+        let mut delay_ms = 10u64;
+        let mut commit_ok = 1usize; // self
+        for _ in 1..=MAX_COMMIT_ATTEMPTS {
+            let mut commit_set = JoinSet::new();
+            for peer in peers {
+                let peer = Arc::clone(peer);
+                let req = commit_req.clone();
+                commit_set.spawn(async move { peer.commit(req).await });
+            }
+            while let Some(res) = commit_set.join_next().await {
+                if res.is_ok_and(|r| r.is_ok()) {
+                    commit_ok += 1;
+                    if commit_ok >= quorum {
                         break;
                     }
                 }
             }
-            match pending {
-                None => return Ok(()),
-                Some(seq) => {
-                    timeout_at(deadline, notified).await.map_err(|_| {
-                        So3Error::PeerUnavailable(format!(
-                            "recovery wait_for dep seq={seq} not applied within deadline"
-                        ))
-                    })?;
-                }
+            commit_set.abort_all();
+            if commit_ok >= quorum {
+                return Some(commit_req.clone());
             }
+            sleep(Duration::from_millis(delay_ms)).await;
+            delay_ms = (delay_ms * 2).min(1_000);
         }
+        None
     }
 
     async fn recover_and_complete(
@@ -792,14 +1209,11 @@ where
 }
 
 #[async_trait]
-impl<CJR, CPC, OMR, BR, BPC> ConsensusCoordinatorService
-    for AccordConsensusCoordinatorService<CJR, CPC, OMR, BR, BPC>
+impl<CJR, CPC, OMR> ConsensusCoordinatorService for AccordConsensusCoordinatorService<CJR, CPC, OMR>
 where
     CJR: ConsensusJournalRepository,
     CPC: ConsensusPeerClient,
     OMR: ObjectMetadataRepository,
-    BR: BlobRepository,
-    BPC: BlobPeerClient,
 {
     async fn coordinate(&self, command: ObjectCommand) -> So3Result<CommandResult> {
         let operation_started = Instant::now();
@@ -1050,5 +1464,18 @@ where
         );
 
         Ok(completion.result)
+    }
+
+    async fn apply(&self, req: ApplyRequest) -> So3Result<CommandResult> {
+        self.engine.apply(&req).await
+    }
+
+    fn register_committed(
+        &self,
+        key: ObjectKey,
+        timestamp: LogicalTimestamp,
+        command_id: CommandId,
+    ) {
+        self.engine.register_committed(key, timestamp, command_id);
     }
 }

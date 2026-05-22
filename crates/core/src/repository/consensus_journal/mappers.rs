@@ -5,8 +5,8 @@ use crate::domain::consensus::command_id::{CommandId, DependencySet};
 use crate::domain::consensus::journal::{JournalEntry, JournalState};
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::node::NodeId;
-use sqlx::sqlite::SqliteRow;
 use sqlx::Row;
+use sqlx::sqlite::SqliteRow;
 
 pub fn sequence_to_i64(sequence: u64) -> So3Result<i64> {
     i64::try_from(sequence)
@@ -49,6 +49,20 @@ pub fn command_key(command: &ObjectCommand) -> &str {
         | ObjectCommand::Write { key, .. }
         | ObjectCommand::Cas { key, .. }
         | ObjectCommand::Delete { key } => key.as_ref(),
+    }
+}
+
+pub const COMMAND_TYPE_READ: i32 = 0;
+pub const COMMAND_TYPE_WRITE: i32 = 1;
+pub const COMMAND_TYPE_CAS: i32 = 2;
+pub const COMMAND_TYPE_DELETE: i32 = 3;
+
+pub fn command_type_tag(command: &ObjectCommand) -> i32 {
+    match command {
+        ObjectCommand::Read { .. } => COMMAND_TYPE_READ,
+        ObjectCommand::Write { .. } => COMMAND_TYPE_WRITE,
+        ObjectCommand::Cas { .. } => COMMAND_TYPE_CAS,
+        ObjectCommand::Delete { .. } => COMMAND_TYPE_DELETE,
     }
 }
 
