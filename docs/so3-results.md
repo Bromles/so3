@@ -10,7 +10,7 @@
 ## Команда
 
 ```bash
-python scripts/k6/run-backend-benchmark.py --backend so3 --runs 30 --outdir /tmp/so3-k6-backend-clean-30-json
+uv run python scripts/k6/run-backend-benchmark.py --backend so3 --runs 30 --outdir /tmp/so3-k6-backend-clean-30-json
 ```
 
 Бинарный файл: `target/release/so3`.

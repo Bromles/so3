@@ -18,11 +18,13 @@ cargo build --release -p so3 -p so3-maelstrom
 
 ### Зависимости
 
-Python 3.11+:
+Python 3.12+ с [uv](https://docs.astral.sh/uv/):
 
 ```bash
-pip install -r scripts/requirements.txt
+cd scripts && uv sync
 ```
+
+Зависимости управляются через `scripts/pyproject.toml` + `scripts/uv.lock`.
 
 k6: должен быть установлен и доступен в `PATH`. Проверка: `k6 version`.
 
@@ -30,10 +32,10 @@ k6: должен быть установлен и доступен в `PATH`. П
 
 ```bash
 # Базовый сценарий k6-mixed, 30 прогонов по 30 секунд
-python scripts/research/run-scenario.py k6-mixed
+uv run uv run python scripts/research/run-scenario.py k6-mixed
 
 # Для отладки: 3 прогона (требуется --allow-low-runs)
-python scripts/research/run-scenario.py k6-mixed --runs 3 --allow-low-runs
+uv run uv run python scripts/research/run-scenario.py k6-mixed --runs 3 --allow-low-runs
 ```
 
 Результаты записываются в `results/research/{scenario}-{timestamp}/`.
@@ -51,7 +53,7 @@ python scripts/research/run-scenario.py k6-mixed --runs 3 --allow-low-runs
 **Ключевые параметры:** `--vus`, `--duration`, `--object-size`.
 
 ```bash
-python scripts/research/run-scenario.py k6-mixed --vus 10 --duration 30s --runs 30
+uv run uv run python scripts/research/run-scenario.py k6-mixed --vus 10 --duration 30s --runs 30
 ```
 
 Результат: абсолютные метрики пропускной способности и задержек для каждого прогона.
@@ -63,8 +65,8 @@ python scripts/research/run-scenario.py k6-mixed --vus 10 --duration 30s --runs 
 Параллельно с нагрузкой запускается fault-injector, который по очереди выключает и
 перезапускает узлы с сохранением кворума.
 
-**Драйвер:** Python CorrectnessDriver (boto3). Нагрузка — конкурентные
-PUT/GET/HEAD/DELETE/overwrite через пул boto3-клиентов. После прогона история операций
+**Драйвер:** Python CorrectnessDriver (aioboto3). Нагрузка — конкурентные
+PUT/GET/HEAD/DELETE/overwrite через пул aioboto3-клиентов. После прогона история операций
 проверяется верификатором.
 
 **Фазы:** одна фаза `baseline` с конкурентным fault injection.
@@ -78,7 +80,7 @@ PUT/GET/HEAD/DELETE/overwrite через пул boto3-клиентов. Посл
 - `--e2-crash-duration-secs F` — длительность простоя узла в цикле (по умолчанию 5.0)
 
 ```bash
-python scripts/research/run-scenario.py e2-fault-safety \
+uv run python scripts/research/run-scenario.py e2-fault-safety \
   --node-count 3 --correctness-ops 200 --correctness-concurrency 16
 ```
 
@@ -108,7 +110,7 @@ python scripts/research/run-scenario.py e2-fault-safety \
 - `--baseline-duration`, `--degraded-duration`, `--recovery-duration`, `--restored-duration` — длительности фаз
 
 ```bash
-python scripts/research/run-scenario.py e3-degradation \
+uv run python scripts/research/run-scenario.py e3-degradation \
   --node-count 3 --fault-node-policy round_robin --runs 30
 ```
 
@@ -127,7 +129,7 @@ python scripts/research/run-scenario.py e3-degradation \
 **Ключевые параметры:** `--vus`, `--duration`.
 
 ```bash
-python scripts/research/run-scenario.py e4-hot-key --vus 10 --duration 30s
+uv run python scripts/research/run-scenario.py e4-hot-key --vus 10 --duration 30s
 ```
 
 Результат: `key_class_metrics` (статистика задержек по классам ключей),
@@ -146,7 +148,7 @@ python scripts/research/run-scenario.py e4-hot-key --vus 10 --duration 30s
 **Ключевые параметры:** `--vus`, `--duration`, `--node-count`.
 
 ```bash
-python scripts/research/run-scenario.py e5-leaderless --node-count 3 --vus 10
+uv run python scripts/research/run-scenario.py e5-leaderless --node-count 3 --vus 10
 ```
 
 Результат: `entry_node_metrics` (статистика задержек по входным узлам).
@@ -189,11 +191,11 @@ python scripts/research/run-scenario.py e5-leaderless --node-count 3 --vus 10
 - `--e6-re-crash-duration DURATION` — длительность фазы после повторного сбоя (по умолчанию `15s`)
 
 ```bash
-python scripts/research/run-scenario.py e6-recovery \
+uv run python scripts/research/run-scenario.py e6-recovery \
   --node-count 3 --e6-long-downtime-secs 30 --runs 30
 
 # С повторным сбоем
-python scripts/research/run-scenario.py e6-recovery \
+uv run python scripts/research/run-scenario.py e6-recovery \
   --node-count 3 --e6-re-crash --runs 30
 ```
 
@@ -529,7 +531,7 @@ results/research/{scenario}-{timestamp}/
   "timeout": false,
   "error": null,
   "error_code": null,
-  "client": "boto3",
+  "client": "aioboto3",
   "api": "s3"
 }
 ```
@@ -764,7 +766,7 @@ Maelstrom даёт формально строгую проверку **lineariz
 |----------------------------------------|-----------------------------------------------------------------------------------|
 | **E1** — Correctness under concurrency | Линеаризуемость конкурентных `read`/`write`/`cas` без отказов                     |
 | **E2** — Fault safety                  | Линеаризуемость при partition nemesis (сбой сети между узлами)                    |
-| **E5** — Leaderless behavior           | Симметрия отказов через partition по всем узлам; Knossos проверяет линейизуемость |
+| **E5** — Leaderless behavior           | Симметрия отказов через partition по всем узлам; Knossos проверяет линейизуемость; каждый узел координирует локально |
 
 ### Как работает
 
@@ -773,7 +775,8 @@ Maelstrom даёт формально строгую проверку **lineariz
 2. Maelstrom запускает каждый узел как отдельный процесс и передаёт список узлов в сообщении `init`.
 3. Адаптер строит изолированный стек для каждого узла: SQLite metadata, Accord consensus coordinator,
    inbound consensus handler.
-4. Maelstrom генерирует клиентские запросы (`read`, `write`, `cas`) с заданным `rate` и `concurrency`.
+4. Maelstrom генерирует клиентские запросы (`read`, `write`, `cas`) с заданным `rate` и `concurrency`;
+   каждый узел координирует поступающие запросы локально.
 5. При включённом nemesis (`partition`) Maelstrom разбивает сеть на группы и проверяет, что система
    сохраняет корректность.
 6. Knossos checker анализирует полную историю операций и выносит вердикт `:valid? true/false`.
@@ -838,9 +841,8 @@ Maelstrom поддерживает следующие nemesis-типы:
 
 Адаптер `so3-maelstrom` намеренно отличается от production-бинарника `so3`:
 
-1. **Координатор:** все клиентские запросы пересылаются на один координатор (`node_ids.first()`),
-   в отличие от production, где каждый узел координирует самостоятельно. Это смягчает проверку
-   leaderless-поведения через Maelstrom, но Knossos всё равно проверяет линейизуемость.
+1. **Координатор:** каждый Maelstrom-узел координирует клиентские запросы локально, как и
+   production-узлы. При этом blob push/fetch и CAS-атомарность отличаются от production.
 2. **CAS:** `cas` с `create_if_not_exists=true` выполняет read-then-write без атомарности;
    две конкурентные create-операции могут обе вернуть `cas_ok`.
 3. **Blob:** использует JSON payload вместо tonic `BlobService`; не проверяет размер/SHA-256.
@@ -922,7 +924,7 @@ results/research/{scenario}-{timestamp}/
 ### Запуск
 
 ```bash
-python scripts/research/run-scenario.py e3-degradation --matrix-node-counts --runs 30
+uv run python scripts/research/run-scenario.py e3-degradation --matrix-node-counts --runs 30
 ```
 
 `--matrix-node-counts` и `--node-count` взаимоисключающие.
@@ -978,7 +980,7 @@ python scripts/research/run-scenario.py e3-degradation --matrix-node-counts --ru
 ### Требования к окружению
 
 - k6 должен быть в `PATH`
-- Python ≥ 3.11 с установленными зависимостями
+- Python ≥ 3.12 с установленным [uv](https://docs.astral.sh/uv/)
 - `cargo build --release` должен быть выполнен до запуска
 - Для matrix-runs с 5/7 узлами — достаточный объём RAM (ориентировочно: ~200 МБ на узел)
 - Все сценарии запускают SO3 на `127.0.0.1`, порты начинаются с 3000 (object) и 4000 (rpc)
@@ -995,26 +997,26 @@ python scripts/research/run-scenario.py e3-degradation --matrix-node-counts --ru
 
 ```bash
 # Базовый S3-профиль, 30 прогонов
-python scripts/research/run-scenario.py k6-mixed
+uv run uv run python scripts/research/run-scenario.py k6-mixed
 
 # С явными параметрами
-python scripts/research/run-scenario.py k6-mixed \
+uv run uv run python scripts/research/run-scenario.py k6-mixed \
   --vus 20 --duration 60s --object-size 1024 --runs 30
 
 # Кастомный каталог результатов
-python scripts/research/run-scenario.py k6-mixed --outdir /tmp/my-results
+uv run uv run python scripts/research/run-scenario.py k6-mixed --outdir /tmp/my-results
 ```
 
 ### Корректность с отказами
 
 ```bash
 # E2: 200 операций, конкурентность 16, 5 fault-циклов
-python scripts/research/run-scenario.py e2-fault-safety \
+uv run python scripts/research/run-scenario.py e2-fault-safety \
   --node-count 3 --correctness-ops 200 --correctness-concurrency 16 \
   --e2-fault-cycles 5 --e2-cycle-interval-secs 8 --e2-crash-duration-secs 5
 
 # Отладка: 3 прогона
-python scripts/research/run-scenario.py e2-fault-safety \
+uv run python scripts/research/run-scenario.py e2-fault-safety \
   --runs 3 --allow-low-runs --correctness-ops 50
 ```
 
@@ -1022,48 +1024,48 @@ python scripts/research/run-scenario.py e2-fault-safety \
 
 ```bash
 # E3: 3 узла, отказ узла round-robin
-python scripts/research/run-scenario.py e3-degradation \
+uv run python scripts/research/run-scenario.py e3-degradation \
   --node-count 3 --fault-node-policy round_robin --runs 30
 
 # Кастомные длительности фаз
-python scripts/research/run-scenario.py e3-degradation \
+uv run python scripts/research/run-scenario.py e3-degradation \
   --baseline-duration 60s --degraded-duration 45s \
   --recovery-duration 30s --restored-duration 60s --runs 30
 
 # Matrix: 3, 5, 7 узлов
-python scripts/research/run-scenario.py e3-degradation \
+uv run python scripts/research/run-scenario.py e3-degradation \
   --matrix-node-counts --runs 30
 ```
 
 ### Горячий ключ
 
 ```bash
-python scripts/research/run-scenario.py e4-hot-key --vus 20 --duration 60s
+uv run python scripts/research/run-scenario.py e4-hot-key --vus 20 --duration 60s
 ```
 
 ### Leaderless
 
 ```bash
 # 5 узлов: проверить распределение нагрузки
-python scripts/research/run-scenario.py e5-leaderless --node-count 5 --vus 20
+uv run python scripts/research/run-scenario.py e5-leaderless --node-count 5 --vus 20
 ```
 
 ### Восстановление
 
 ```bash
 # E6: стандартное восстановление
-python scripts/research/run-scenario.py e6-recovery --node-count 3 --runs 30
+uv run python scripts/research/run-scenario.py e6-recovery --node-count 3 --runs 30
 
 # Продлённый простой (30 секунд)
-python scripts/research/run-scenario.py e6-recovery \
+uv run python scripts/research/run-scenario.py e6-recovery \
   --e6-long-downtime-secs 30 --runs 30
 
 # Продлённый простой + повторный сбой
-python scripts/research/run-scenario.py e6-recovery \
+uv run python scripts/research/run-scenario.py e6-recovery \
   --e6-long-downtime-secs 30 --e6-re-crash --e6-re-crash-duration 20s --runs 30
 
 # Matrix-runs
-python scripts/research/run-scenario.py e6-recovery \
+uv run python scripts/research/run-scenario.py e6-recovery \
   --matrix-node-counts --e6-long-downtime-secs 20 --runs 30
 ```
 
@@ -1071,34 +1073,34 @@ python scripts/research/run-scenario.py e6-recovery \
 
 ```bash
 # Установить Maelstrom (один раз)
-python scripts/maelstrom/install.py
+uv run python scripts/maelstrom/install.py
 
 # Собрать адаптер
 cargo build --release -p so3-maelstrom
 
 # Быстрый 1-узловой smoke (10 секунд)
-python scripts/maelstrom/smoke.py
+uv run python scripts/maelstrom/smoke.py
 
 # 3-узловой smoke без отказов (10 секунд)
-python scripts/maelstrom/smoke_3node.py
+uv run python scripts/maelstrom/smoke_3node.py
 
 # 3-узловой с partition nemesis (30 секунд)
-python scripts/maelstrom/fault_3node.py
+uv run python scripts/maelstrom/fault_3node.py
 
 # 30 прогонов с агрегацией, partition nemesis
-python scripts/maelstrom/run_30.py \
+uv run python scripts/maelstrom/run_30.py \
   --node-count 3 --rate 100 --nemesis partition --nemesis-interval 5
 
 # 5-узловой кастомный запуск
-python scripts/maelstrom/run.py \
+uv run python scripts/maelstrom/run.py \
   --node-count 5 --time-limit 60 --rate 50 --concurrency 10 \
   --nemesis partition --nemesis-interval 3 --log-stderr
 
 # Без nemesis (только проверка конкурентности)
-python scripts/maelstrom/run.py --node-count 3 --time-limit 30 --rate 100
+uv run python scripts/maelstrom/run.py --node-count 3 --time-limit 30 --rate 100
 
 # С кастомным путём к Maelstrom
-python scripts/maelstrom/run_30.py \
+uv run python scripts/maelstrom/run_30.py \
   --maelstrom-jar .tools/maelstrom/maelstrom/lib/maelstrom.jar \
   --binary-path target/release/so3-maelstrom
 ```
@@ -1107,16 +1109,16 @@ python scripts/maelstrom/run_30.py \
 
 ```bash
 # Вывод k6 в реальном времени
-python scripts/research/run-scenario.py k6-mixed --debug-k6 --runs 3 --allow-low-runs
+uv run uv run python scripts/research/run-scenario.py k6-mixed --debug-k6 --runs 3 --allow-low-runs
 
 # Сохранять директории данных узлов (для ручной инспекции)
-python scripts/research/run-scenario.py e3-degradation --keep-data-dirs --runs 3 --allow-low-runs
+uv run python scripts/research/run-scenario.py e3-degradation --keep-data-dirs --runs 3 --allow-low-runs
 
 # Фиксированный seed для воспроизводимости
-python scripts/research/run-scenario.py k6-mixed --seed 42 --runs 3 --allow-low-runs
+uv run uv run python scripts/research/run-scenario.py k6-mixed --seed 42 --runs 3 --allow-low-runs
 
 # Кастомный бинарник
-python scripts/research/run-scenario.py k6-mixed --so3-bin ./target/debug/so3 --runs 3 --allow-low-runs
+uv run uv run python scripts/research/run-scenario.py k6-mixed --so3-bin ./target/debug/so3 --runs 3 --allow-low-runs
 ```
 
 ## Полный список параметров CLI

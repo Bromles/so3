@@ -4,7 +4,7 @@
 SO3 рассматривается как proof of concept, поэтому результаты нужны для оценки работоспособности архитектуры, а не для
 продуктового сравнения с готовыми S3-совместимыми системами.
 
-Последняя локальная проверка Maelstrom: 2026-05-15 на macOS, один физический хост c M4 Pro.
+Последняя локальная проверка Maelstrom: 2026-05-22 на macOS, один физический хост c M4 Pro.
 Последняя локальная проверка k6: 2026-05-17 на macOS, один физический хост c M4 Pro.
 
 ## Как интерпретировать результаты
@@ -30,16 +30,16 @@ cargo build --release -p so3 -p so3-maelstrom
 Maelstrom:
 
 ```bash
-BINARY_PATH=target/release/so3-maelstrom NO_BUILD=1 bash scripts/maelstrom/smoke-lin-kv.sh
-BINARY_PATH=target/release/so3-maelstrom NO_BUILD=1 bash scripts/maelstrom/smoke-3-node-lin-kv.sh
-BINARY_PATH=target/release/so3-maelstrom NO_BUILD=1 bash scripts/maelstrom/fault-3-node-lin-kv.sh
+uv run python scripts/maelstrom/smoke.py
+uv run python scripts/maelstrom/smoke_3node.py
+uv run python scripts/maelstrom/fault_3node.py
 ```
 
 k6 baseline для SO3:
 
 ```bash
-python scripts/k6/run-backend-benchmark.py --backend so3 --runs 30 --outdir /tmp/so3-k6-backend-clean-30-json
-python scripts/k6/run-backend-benchmark.py --backend so3-cluster --runs 30 --outdir /tmp/so3-cluster-k6-clean-30-json
+uv run python scripts/k6/run-backend-benchmark.py --backend so3 --runs 30 --outdir /tmp/so3-k6-backend-clean-30-json
+uv run python scripts/k6/run-backend-benchmark.py --backend so3-cluster --runs 30 --outdir /tmp/so3-cluster-k6-clean-30-json
 ```
 
 ## Maelstrom
@@ -67,8 +67,8 @@ Checker: strict-serializable / Knossos linearizability.
 - все три запуска вернули `:valid? true`;
 - `fail` ожидаем для чтений отсутствующих ключей/CAS и CAS precondition failures при конкуренции;
 - partition-запуск включает nemesis-операции типа `info`;
-- это результаты Maelstrom-адаптера; адаптер все еще пересылает клиентские команды на `node_ids.first()`, поэтому не
-  проверяет production-входные точки с несколькими координаторами;
+- это результаты Maelstrom-адаптера; каждый Maelstrom-узел теперь координирует клиентские запросы локально,
+  но адаптер по-прежнему не покрывает все production-сценарии (blob-валидация, CAS-атомарность, дедлайны);
 - Maelstrom остается полезным smoke-инструментом для safety/correctness, но не закрывает весь PoC-план из
   [research-plan.md](research-plan.md).
 

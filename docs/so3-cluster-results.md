@@ -10,7 +10,7 @@
 ## Команда
 
 ```bash
-BACKEND_START_TIMEOUT_SECS=30 python scripts/k6/run-backend-benchmark.py --backend so3-cluster --runs 30 --outdir /tmp/so3-cluster-k6-clean-30-json
+BACKEND_START_TIMEOUT_SECS=30 uv run python scripts/k6/run-backend-benchmark.py --backend so3-cluster --runs 30 --outdir /tmp/so3-cluster-k6-clean-30-json
 ```
 
 ## Методика

@@ -13,60 +13,49 @@
 
 - Java доступна в `PATH`.
 - Исполняемый jar файл Maelstrom доступен в `PATH`, через `MAELSTROM_JAR` или через явный аргумент
-  скрипта `-MaelstromJar` / `-MaelstromBin`.
+  скрипта `--maelstrom-jar` / `--maelstrom-bin`.
+- [uv](https://docs.astral.sh/uv/) установлен (для `uv run`).
 
 ## Установка
 
 ```bash
-./scripts/maelstrom/install-maelstrom.sh
-```
-
-```powershell
-./scripts/maelstrom/install-maelstrom.ps1
+uv run python scripts/maelstrom/install.py
 ```
 
 Установщик скачивает официальный релиз `jepsen-io/maelstrom` в `.tools/maelstrom/maelstrom`.
 
 ## Запуски
 
+Все скрипты — кросс-платформенные Python.
+
 Smoke-тест на одном узле:
 
 ```bash
-./scripts/maelstrom/smoke-lin-kv.sh
-```
-
-```powershell
-./scripts/maelstrom/smoke-lin-kv.ps1 -MaelstromJar .\.tools\maelstrom\maelstrom\lib\maelstrom.jar
+uv run python scripts/maelstrom/smoke.py
 ```
 
 Smoke-тест на трех узлах:
 
 ```bash
-./scripts/maelstrom/smoke-3-node-lin-kv.sh
+uv run python scripts/maelstrom/smoke_3node.py
 ```
 
-```powershell
-./scripts/maelstrom/smoke-3-node-lin-kv.ps1 -MaelstromJar .\.tools\maelstrom\maelstrom\lib\maelstrom.jar
-```
-
-Общий запуск `lin-kv`:
+Общий запуск `lin-kv` с гибкими параметрами:
 
 ```bash
-./scripts/maelstrom/run-lin-kv.sh
-```
-
-```powershell
-./scripts/maelstrom/run-lin-kv.ps1 -MaelstromJar .\.tools\maelstrom\maelstrom\lib\maelstrom.jar
+uv run python scripts/maelstrom/run.py --node-count 3 --time-limit 30 --rate 100 --concurrency 2n
 ```
 
 Трехузловой запуск с partition nemesis:
 
 ```bash
-./scripts/maelstrom/fault-3-node-lin-kv.sh
+uv run python scripts/maelstrom/fault_3node.py
 ```
 
-```powershell
-./scripts/maelstrom/fault-3-node-lin-kv.ps1 -MaelstromJar .\.tools\maelstrom\maelstrom\lib\maelstrom.jar
+30 прогонов с агрегацией pass/fail:
+
+```bash
+uv run python scripts/maelstrom/run_30.py --node-count 3 --rate 100 --nemesis partition --nemesis-interval 5
 ```
 
 Значения по умолчанию для fault-wrapper:
@@ -80,9 +69,9 @@ Smoke-тест на трех узлах:
 | `NEMESIS`          | `partition` |
 | `NEMESIS_INTERVAL` | `5`         |
 
-Общие скрипты пробрасывают дополнительные настройки Maelstrom, включая `NEMESIS`,
-`NEMESIS_INTERVAL`, `LATENCY`, `LATENCY_DIST`, `AVAILABILITY`, `CONSISTENCY_MODELS`,
-`LOG_NET_SEND` и `LOG_NET_RECV`.
+Общие скрипты пробрасывают дополнительные настройки Maelstrom, включая `--nemesis`,
+`--nemesis-interval`, `--latency`, `--latency-dist`, `--availability`, `--consistency-models`,
+`--log-net-send` и `--log-net-recv`.
 
 ## Модель выполнения
 
@@ -95,49 +84,43 @@ Maelstrom запускает каждый узел отдельным проце
 - `InboundConsensusUseCaseImpl` обрабатывает входящие сообщения консенсуса;
 - Maelstrom-клиенты узлов кодируют запросы ядра в JSON payloads.
 
-Маршрутизация клиентских запросов намеренно отличается от production-узла:
-
-- `node_ids.first()` считается координатором;
-- клиентские запросы, доставленные followers, пересылаются этому координатору;
-- координатору исполняет операцию ядра и возвращает ответ через пересылающий узел.
-
-В production-бинаре `so3` такого слоя пересылки координатору нет: любой узел может координировать
-запросы, пришедшие через его S3-подобный API.
+Каждый Maelstrom-узел обрабатывает поступающие клиентские запросы локально, координируя операцию
+через собственный Accord-координатор. Это соответствует поведению production-узла `so3`, где любой
+узел может координировать запросы, пришедшие на его S3-подобный API.
 
 ## Текущие ограничения
 
 Адаптер полезен для smoke-проверки семантики команд через истории Maelstrom, но пока не достигает
 полного соответствия production runtime:
 
-- он скрывает конкурентных production-координаторов, потому что все клиентские команды Maelstrom
-  пересылаются одному координатору;
 - `cas` с `create_if_not_exists=true` выполняет скоординированное чтение, затем запись, поэтому две
   конкурентные create-операции могут обе вернуть `cas_ok`;
 - blob push/fetch использует один JSON payload и не проверяет размер или SHA-256 так, как production
   tonic `BlobService`;
-- ожидающие consensus, blob и forward-запросы ждут oneshot-ответы без дедлайнов операций.
+- ожидающие consensus, blob и metadata-query-запросы ждут oneshot-ответы без дедлайнов операций.
 
 Результаты Maelstrom следует использовать как smoke-покрытие протокола, а не как полное доказательство
 поведения production-узлов. Полный набор требуемых PoC-проверок описан в [research-plan.md](research-plan.md).
 
 ## Последняя проверка
 
-Последняя локальная проверка Maelstrom зафиксирована в [results.md](results.md) как 2026-05-15.
-Сводные результаты запусков с `target/release/so3-maelstrom` прошли Knossos (`:valid? true`)
-для следующих сценариев:
+Последняя локальная проверка Maelstrom: 2026-05-22 на macOS, M4 Pro, debug-сборка.
+
+3-узловой запуск с partition nemesis (`fault_3node.py`, `run_30.py` с `--allow-low-runs --runs 1`)
+показал нарушения линеаризуемости на ключах 2 и 3 (Knossos `:valid? false`):
+stale reads и дублированные значения после network partition. Это указывает на сохраняющуюся проблему
+с visibility guarantees при partition recovery.
+
+Ранее (2026-05-15) на release-сборке были зафиксированы успешные результаты:
 
 | Сценарий              | Узлы | Rate | Concurrency | Nemesis        | Ops |  Ok | Fail | Info | Результат      |
 |-----------------------|------|------|-------------|----------------|----:|----:|-----:|-----:|----------------|
-| `smoke-lin-kv`        | 1    | 20   | `2n`        | none           | 197 | 144 |   53 |    0 | `:valid? true` |
-| `smoke-3-node-lin-kv` | 3    | 10   | `2n`        | none           |  95 |  67 |   28 |    0 | `:valid? true` |
-| `fault-3-node-lin-kv` | 3    | 20   | `2n`        | `partition/5s` | 238 |  53 |  108 |   77 | `:valid? true` |
-
-Полные счетчики и ограничения интерпретации находятся в [results.md](results.md).
+| `smoke.py`            | 1    | 20   | `2n`        | none           | 197 | 144 |   53 |    0 | `:valid? true` |
+| `smoke_3node.py`      | 3    | 10   | `2n`        | none           |  95 |  67 |   28 |    0 | `:valid? true` |
+| `fault_3node.py`      | 3    | 20   | `2n`        | `partition/5s` | 238 |  53 |  108 |   77 | `:valid? true` |
 
 ## Платформенные заметки
 
-- Windows: используйте `*.ps1` под PowerShell 7.
-- macOS/Linux: используйте `*.sh` под bash/zsh.
-- WSL: предпочтительно собирать Linux-бинарь `so3-maelstrom` внутри WSL.
+- macOS/Linux: Python-скрипты запускаются через `uv run` или напрямую.
 - Maelstrom пишет подробные истории в `store/lin-kv/`; эта директория игнорируется git.
 - Helper-скрипты создают свежую временную `SO3_MAELSTROM_DATA_DIR`, если она не задана явно.

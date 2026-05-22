@@ -112,12 +112,19 @@ cargo clippy --workspace --all-targets -- -W clippy::pedantic
 Maelstrom-скрипты, сценарии запуска и ограничения описаны в [docs/maelstrom.md](docs/maelstrom.md).
 Методология исследовательской проверки зафиксирована в [docs/research-plan.md](docs/research-plan.md).
 
-Для нагрузочных проверок следует использовать release-сборку. Общий k6 runner отказывается
-измерять non-release `so3` и печатает агрегаты CPU/RSS:
+Для нагрузочных проверок следует использовать release-сборку:
 
 ```bash
 cargo build --release -p so3
-python scripts/k6/run-backend-benchmark.py --backend so3 --runs 30
+```
+
+Python-скрипты в `scripts/` используют [uv](https://docs.astral.sh/uv/) для управления зависимостями
+(`scripts/pyproject.toml` + `scripts/uv.lock`). Запуск через `uv run`:
+
+```bash
+uv run python scripts/k6/run-backend-benchmark.py --backend so3 --runs 30
+uv run python scripts/research/run-scenario.py k6-mixed --runs 30
+uv run python scripts/maelstrom/run_30.py --runs 30
 ```
 
 Важно: k6-сценарии в этом репозитории не являются заявкой на абсолютную производительность SO3 и

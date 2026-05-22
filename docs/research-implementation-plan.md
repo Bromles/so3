@@ -14,9 +14,10 @@ SO3 рассматривается как экспериментальный pro
 Сделано:
 
 - Общая структура Python-инфраструктуры вынесена на уровень `scripts/`:
-    - `scripts/requirements.txt` содержит общие зависимости (`psutil`, `boto3`, `numpy`, `scipy`, `matplotlib`);
-    - `scripts/venv/` используется как общий локальный venv для `scripts/research`, `scripts/verify` и legacy k6 runner;
-    - venv больше не находится внутри `scripts/k6/`.
+    - `scripts/pyproject.toml` описывает проект с зависимостями (`psutil`, `aioboto3`, `numpy`, `scipy`, `matplotlib`);
+    - `scripts/uv.lock` фиксирует версии;
+    - управление окружением через [uv](https://docs.astral.sh/uv/): `uv run python ...`;
+    - `scripts/.venv/` — локальное uv-окружение.
 - Скрипты `scripts/maelstrom/` переписаны с bash/PowerShell на Python:
     - `install.py` — кросс-платформенный установщик Maelstrom;
     - `run.py` — запуск одного Maelstrom теста;
@@ -28,7 +29,7 @@ SO3 рассматривается как экспериментальный pro
     - запрещает `runs < 30` без `--allow-low-runs`;
     - создает единый каталог результата;
     - пишет `manifest.json`, `events.jsonl`, `summary.json`, `aggregate-summary.json`, `report.md`;
-    - поддерживает `k6-mixed`, `e1-correctness`, `e2-fault-safety`, `e3-degradation`, `e4-hot-key`,
+    - `k6-mixed`, `e2-fault-safety`, `e3-degradation`, `e4-hot-key`,
       `e5-leaderless`, `e6-recovery` как CLI-сценарии;
     - делегирует каждый сценарий своему модулю в `scenarios/`;
     - для `e3-degradation` и `e6-recovery` умеет выполнять phase-aware crash/restart timeline:
@@ -85,7 +86,7 @@ SO3 рассматривается как экспериментальный pro
     - `scripts/k6/workloads/s3_leaderless.js`;
     - `scripts/k6/workloads/s3_recovery.js`.
 - Добавлен correctness driver через настоящий S3 SDK:
-    - `scripts/research/correctness_driver.py` использует `boto3.client("s3")` и реальные S3 calls: `put_object`,
+    - `scripts/research/correctness_driver.py` использует `aioboto3` и реальные async S3 calls: `put_object`,
       `get_object`, `head_object`, `delete_object` (прямой import без fallback);
     - пишет `client-history.jsonl` с `client: "boto3"` и `api: "s3"`;
     - счётчик `errors` не учитывает таймауты повторно (они считаются отдельно в `timeouts`);
@@ -107,8 +108,8 @@ SO3 рассматривается как экспериментальный pro
 - Проведены smoke-проверки:
     - `ruff check scripts` проходит;
     - Python compile для `scripts/research`, `scripts/verify`, `scripts/k6/run-backend-benchmark.py` проходит;
-    - `k6-mixed` smoke через `scripts/venv/bin/python` проходит;
-    - `e1-correctness` smoke через `boto3` driver проходит на 1-node и коротком 3-node запуске;
+    - `k6-mixed` smoke через `uv run` проходит;
+    - `e2-fault-safety` smoke через `aioboto3` driver проходит на 1-node и коротком 3-node запуске;
     - `client-history.jsonl`, `resources.jsonl` и `verifier-result.json` создаются.
 
 Остается доработать:
@@ -120,8 +121,8 @@ SO3 рассматривается как экспериментальный pro
   `cluster.log` в `server.consensus.*`. Inbound apply path пишет `apply_backlog` events для reorder buffer,
   dependency wait и apply latency; runner парсит их в `server.apply.*`. Остаются полноценный dependency depth
   по графу зависимостей и более детальные recovery-specific backlog breakdowns.
-- Maelstrom hidden-leader behavior исправлен для обычных client requests: узел, получивший клиентскую операцию,
-  координирует ее локально и пишет structured `tracing` log через подключенный logger с `entry_node`,
+- Maelstrom hidden-leader behavior исправлен: каждый Maelstrom-узел координирует клиентские запросы
+  локально и пишет structured `tracing` log через подключенный logger с `entry_node`,
   `coordinator_node`, `operation_id`, `operation`, `source`, `consensus_path`.
 - E6: сценарий повторного падения узла во время синхронизации реализован через флаг `--e6-re-crash`:
   после начальной recovery-фазы узел снова «убивается» (`re_crash`), выполняется
@@ -169,9 +170,9 @@ SO3 рассматривается как экспериментальный pro
 Рекомендуемая структура:
 
 - `scripts/`
-    - `requirements.txt` — общие Python-зависимости для research, verify и legacy k6 runner;
-    - `venv/` — локальное виртуальное окружение для всех Python-скриптов из `scripts/`; каталог не является частью
-      исходного кода.
+    - `pyproject.toml` — общие Python-зависимости для research, verify и legacy k6 runner;
+    - `uv.lock` — зафиксированные версии зависимостей;
+    - `.venv/` — локальное виртуальное окружение (uv); каталог не является частью исходного кода.
 - `scripts/research/`
     - `run-scenario.py` — главный CLI для запуска исследовательских сценариев;
     - `cluster.py` — запуск, остановка, restart и kill узлов SO3;
@@ -185,7 +186,6 @@ SO3 рассматривается как экспериментальный pro
     - `plot.py` — генерация PNG-графиков для reports;
     - `runner.py` — общий `run_k6()` и `run_k6_phase()`, импортируется scenario-модулями;
     - `scenarios/` — отдельные модули сценариев:
-        - `e1_correctness.py`;
         - `e2_fault_safety.py`;
         - `e3_node_degradation.py`;
         - `e4_hot_key.py`;
@@ -412,8 +412,8 @@ markdown-таблицу с CI-колонкой.
 
 ## Этап 4. Добавить correctness driver и verifier
 
-Статус: частично сделано. Добавлен `correctness_driver.py` на реальном S3 SDK (`boto3`), `client-history.jsonl`,
-`verify-history.py`, импортируемый `verify_history.py` и `history-schema.md`; `e1-correctness` подключен к
+Статус: частично сделано. Добавлен `correctness_driver.py` на реальном S3 SDK (`aioboto3`), `client-history.jsonl`,
+`verify-history.py`, импортируемый `verify_history.py` и `history-schema.md`. E2 safety driver подключен к
 `run-scenario.py`. CAS/`If-None-Match`/idempotency пока маркируются как `unsupported`; E2 safety history еще предстоит
 расширить. `GET` и `HEAD` верифицируются раздельно: `GET` — через SHA-256 тела, `HEAD` — через ETag из
 PUT/GET-ответов. Добавлен класс `RecoverySentinel` для инварианта `recovery_preserves_confirmed_writes`: пишет
@@ -457,14 +457,14 @@ PUT/GET-ответов. Добавлен класс `RecoverySentinel` для и
 6. Если S3 API пока не поддерживает условные операции или idempotency, помечать эти проверки как `unsupported`, а не как
    passed.
 
-Результат этапа: E1 получает строгий verifier, а не только k6 latency.
+Результат этапа: E1 получает строгий Knossos verifier через Maelstrom, E2 — history verifier через aioboto3 driver.
 
 ## Этап 5. Исправить Maelstrom path для leaderless-проверок
 
-Статус: в основном сделано. Скрипты `scripts/maelstrom/` переписаны на Python. `run_30.py` запускает Maelstrom 30 раз
+Статус: сделано. Скрипты `scripts/maelstrom/` переписаны на Python. `run_30.py` запускает Maelstrom 30 раз
 и пишет `aggregate.json` + `report.md` с pass_rate и per-run verdict. `fault_3node.py` использует `nemesis=partition`
-и покрывает partition/leaderless symmetry. Hidden-leader path исправлен: каждый узел координирует локально.
-Остается: majority/minority partition split через отдельный nemesis config.
+и покрывает partition/leaderless symmetry. Hidden-leader path исправлен: каждый Maelstrom-узел координирует
+клиентские запросы локально. Остается: majority/minority partition split через отдельный nemesis config.
 
 Цель: Maelstrom не должен скрыто превращать систему в leader-based вариант.
 
@@ -473,8 +473,8 @@ PUT/GET-ответов. Добавлен класс `RecoverySentinel` для и
 
 Работы:
 
-1. Изменить client path в `so3-maelstrom` так, чтобы каждый узел мог сам координировать клиентскую операцию.
-2. Убрать обязательное forwarding на `node_ids[0]` для обычных client requests.
+1. ~~Изменить client path в `so3-maelstrom` так, чтобы каждый узел мог сам координировать клиентскую операцию.~~ (Сделано)
+2. ~~Убрать обязательное forwarding на `node_ids[0]` для обычных client requests.~~ (Сделано)
 3. Оставить peer RPC для consensus/blob обмена.
 4. Добавить метрики или логи:
     - entry node;
@@ -494,7 +494,7 @@ PUT/GET-ответов. Добавлен класс `RecoverySentinel` для и
 
 Статус: покрыт Maelstrom. Линеаризуемость проверяется через `scripts/maelstrom/run_30.py`
 (30 прогонов, `--nemesis partition`) и `smoke_3node.py` (без фейлов). Knossos checker даёт
-формально строгую гарантию linearizability. Отдельный boto3 correctness driver для E1 удалён —
+формально строгую гарантию linearizability. Отдельный production-node correctness driver для E1 не нужен —
 S3 API-level correctness (PUT/GET/DELETE семантика) покрывает E2 fault safety driver под нагрузкой.
 
 Цель: доказать object-level correctness без fault injection.

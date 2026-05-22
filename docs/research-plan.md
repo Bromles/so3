@@ -78,16 +78,12 @@ Cluster-level инварианты:
 
 Цель: доказать, что объектные операции поверх Accord-подобной координации корректны без fault injection.
 
-Сценарии:
+Покрывается Maelstrom: Knossos checker даёт формально строгую гарантию linearizability через
+`scripts/maelstrom/run_30.py` (30 прогонов, partition nemesis) и smoke-запуски.
+S3 API-level correctness (PUT/GET/DELETE семантика) дополнительно покрывается E2 fault safety driver
+под нагрузкой.
 
-- concurrent `PUT` по разным ключам;
-- concurrent overwrite одного ключа;
-- concurrent `PUT`/`DELETE`;
-- `GET`/`HEAD` во время записей;
-- условные операции и CAS-like сценарии;
-- retry после timeout, если поддерживается idempotency key.
-
-Результат: история операций проходит верификатор или набор инвариантов объектного уровня.
+Результат: история операций проходит Knossos linearizability checker (`:valid? true`).
 
 ### E2. Fault safety
 
@@ -179,6 +175,9 @@ Cluster-level инварианты:
 
 ## Что нужно логировать
 
+Реализовано частично. Server-side observability через structured `tracing` events покрывает
+координатор и inbound apply path (см. `docs/research-results.md`, раздел Server-side observability).
+
 На стороне клиента:
 
 - идентификатор операции и idempotency key;
@@ -188,7 +187,7 @@ Cluster-level инварианты:
 - код результата, таймаут или ошибка;
 - входной узел.
 
-На стороне сервера:
+На стороне сервера (реализовано через tracing events):
 
 - координирующий узел;
 - время фаз (`PreAccept`, `Accept`, `Commit`, `Apply`, `Recover`);
@@ -200,11 +199,10 @@ Cluster-level инварианты:
 
 На уровне кластера:
 
-- состояние узлов (живые/упавшие);
-- состояние сетевого раздела;
-- очередь и незавершённые операции;
-- накопленное отставание при восстановлении;
-- CPU/RSS/сеть по каждому узлу, если доступно.
+- состояние узлов (живые/упавшие) — через event log;
+- состояние сетевого раздела — через Maelstrom nemesis;
+- очередь и незавершённые операции — через server-side apply_backlog events;
+- CPU/RSS по каждому узлу — через psutil resource sampling.
 
 ## Критерии успеха PoC
 
