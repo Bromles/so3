@@ -8,8 +8,8 @@ use so3_core::domain::object::key::ObjectKey;
 use so3_core::use_case::object::ObjectUseCase;
 
 use crate::protocol::{
-    CRASH_CODE, KEY_DOES_NOT_EXIST_CODE, MALFORMED_REQUEST_CODE, PRECONDITION_FAILED_CODE,
-    ResponseBody, error_response,
+    error_response, ResponseBody, CRASH_CODE, KEY_DOES_NOT_EXIST_CODE,
+    MALFORMED_REQUEST_CODE, PRECONDITION_FAILED_CODE,
 };
 
 pub struct MaelstromService<O: ObjectUseCase> {

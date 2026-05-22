@@ -6,6 +6,8 @@ use crate::domain::consensus::transport::{
     PreAcceptRequest, PreAcceptResponse, RecoverRequest, RecoverResponse,
 };
 use crate::domain::error::So3Result;
+use crate::domain::object::key::ObjectKey;
+use crate::domain::object::metadata::ObjectMetadata;
 use async_trait::async_trait;
 
 #[async_trait]
@@ -27,4 +29,9 @@ pub trait BlobPeerClient: Send + Sync + 'static {
         data: BlobStream,
     ) -> So3Result<()>;
     async fn fetch(&self, blob_id: &BlobId) -> So3Result<BlobStream>;
+}
+
+#[async_trait]
+pub trait MetadataQueryClient: Send + Sync + 'static {
+    async fn get_metadata(&self, key: &ObjectKey) -> So3Result<Option<ObjectMetadata>>;
 }

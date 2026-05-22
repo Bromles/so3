@@ -1,4 +1,4 @@
-use crate::client::interface::BlobPeerClient;
+use crate::client::interface::{BlobPeerClient, MetadataQueryClient};
 use crate::domain::blob::stream::BlobStream;
 use crate::domain::command::{CasResult, CommandResult, ObjectCommand};
 use crate::domain::error::{So3Error, So3Result};
@@ -10,13 +10,14 @@ use crate::repository::metadata::ObjectMetadataRepository;
 use crate::service::consensus_coordinator::ConsensusCoordinatorService;
 use crate::use_case::object::use_case::ObjectUseCaseImpl;
 
-impl<CCS, CJR, OMR, BR, BC> ObjectUseCaseImpl<CCS, CJR, OMR, BR, BC>
+impl<CCS, CJR, OMR, BR, BC, MQC> ObjectUseCaseImpl<CCS, CJR, OMR, BR, BC, MQC>
 where
     CCS: ConsensusCoordinatorService,
     CJR: ConsensusJournalRepository,
     OMR: ObjectMetadataRepository,
     BR: BlobRepository,
     BC: BlobPeerClient,
+    MQC: MetadataQueryClient,
 {
     pub async fn cas_internal(
         &self,

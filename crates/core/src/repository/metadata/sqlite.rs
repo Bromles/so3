@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow, SqliteSynchronous,
 };
-use sqlx::{Row, SqlitePool, query};
+use sqlx::{query, Row, SqlitePool};
 use std::path::Path;
 use std::time::Duration;
 use tokio::fs;
@@ -26,27 +26,31 @@ const CREATE_TABLE_SQL: &str = r"
         blob_id            TEXT    NOT NULL,
         sha256             BLOB    NOT NULL,
         size               INTEGER NOT NULL,
-        last_modified_ms   INTEGER NOT NULL
+        last_modified_ms   INTEGER NOT NULL,
+        deleted            INTEGER NOT NULL DEFAULT 0
     )
 ";
 
 const LOAD_SQL: &str = r"
-    SELECT key, version, blob_id, sha256, size, last_modified_ms
+    SELECT key, version, blob_id, sha256, size, last_modified_ms, deleted
     FROM objects WHERE key = ?
 ";
 
 const UPSERT_SQL: &str = r"
-    INSERT INTO objects (key, version, blob_id, sha256, size, last_modified_ms)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO objects (key, version, blob_id, sha256, size, last_modified_ms, deleted)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(key) DO UPDATE SET
         version          = excluded.version,
         blob_id          = excluded.blob_id,
         sha256           = excluded.sha256,
         size             = excluded.size,
-        last_modified_ms = excluded.last_modified_ms
+        last_modified_ms = excluded.last_modified_ms,
+        deleted          = excluded.deleted
 ";
 
-const DELETE_SQL: &str = "DELETE FROM objects WHERE key = ?";
+const MARK_DELETED_SQL: &str = r"
+    UPDATE objects SET deleted = 1 WHERE key = ?
+";
 
 #[derive(Clone)]
 pub struct SqliteObjectMetadataRepository {
@@ -89,6 +93,7 @@ impl SqliteObjectMetadataRepository {
             .map_err(|_| So3Error::Storage("negative size in db".into()))?;
         let last_modified_ms = u64::try_from(row.try_get::<i64, _>("last_modified_ms")?)
             .map_err(|_| So3Error::Storage("negative last_modified_ms in db".into()))?;
+        let deleted = row.try_get::<bool, _>("deleted")?;
 
         Ok(ObjectMetadata {
             key,
@@ -97,6 +102,7 @@ impl SqliteObjectMetadataRepository {
             sha256,
             size,
             last_modified_ms,
+            deleted,
         })
     }
 }
@@ -125,13 +131,14 @@ impl ObjectMetadataRepository for SqliteObjectMetadataRepository {
                 i64::try_from(metadata.last_modified_ms)
                     .map_err(|_| So3Error::Storage("last_modified_ms overflow".into()))?,
             )
+            .bind(metadata.deleted)
             .execute(&self.pool)
             .await?;
         Ok(())
     }
 
     async fn delete(&self, key: &ObjectKey) -> So3Result<()> {
-        query(DELETE_SQL)
+        query(MARK_DELETED_SQL)
             .bind(key.as_ref())
             .execute(&self.pool)
             .await?;

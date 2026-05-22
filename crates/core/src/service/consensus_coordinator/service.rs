@@ -13,15 +13,15 @@ use crate::domain::node::NodeId;
 use crate::domain::object::key::ObjectKey;
 use crate::repository::consensus_journal::ConsensusJournalRepository;
 use crate::repository::metadata::ObjectMetadataRepository;
-use crate::service::consensus_coordinator::ConsensusCoordinatorService;
 use crate::service::consensus_coordinator::apply_engine::AccordApplyEngine;
+use crate::service::consensus_coordinator::ConsensusCoordinatorService;
 use async_trait::async_trait;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinSet;
-use tokio::time::{Duration, Instant, sleep};
+use tokio::time::{sleep, Duration, Instant};
 use tracing::info;
 
 pub struct AccordConsensusCoordinatorService<CJR, CPC, OMR>

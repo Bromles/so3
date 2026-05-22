@@ -13,8 +13,8 @@ use crate::proto::mappers::{
 use async_trait::async_trait;
 use std::time::Duration;
 use tokio::time::timeout;
-use tonic::Response;
 use tonic::transport::{Channel, Endpoint};
+use tonic::Response;
 
 pub struct ConsensusTransportClient {
     channel: Channel,

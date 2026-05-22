@@ -1,9 +1,10 @@
-use crate::api::rpc::RpcApi;
 use crate::api::rpc::tonic::tonic_server::TonicRpcServer;
-use crate::api::s3::S3Api;
+use crate::api::rpc::RpcApi;
 use crate::api::s3::axum::axum_server::AxumS3Server;
+use crate::api::s3::S3Api;
 use crate::client::blob_client::BlobClient;
 use crate::client::consensus_transport_client::ConsensusTransportClient;
+use crate::client::metadata_query_client::MetadataQueryTonicClient;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -18,27 +19,36 @@ use crate::domain::error::{So3Error, So3Result};
 use crate::domain::node::NodeId;
 use crate::node::config::NodeConfig;
 use crate::repository::blob::fs::FileSystemBlobRepository;
-use crate::repository::consensus_journal::ConsensusJournalRepository;
 use crate::repository::consensus_journal::sqlite::SqliteConsensusJournal;
-use crate::repository::metadata::ObjectMetadataRepository;
+use crate::repository::consensus_journal::ConsensusJournalRepository;
 use crate::repository::metadata::sqlite::SqliteObjectMetadataRepository;
+use crate::repository::metadata::ObjectMetadataRepository;
 use crate::repository::node_identity::fs::FileSystemNodeIdentityRepository;
 use crate::repository::registry::RepositoryRegistry;
 use crate::service::consensus_coordinator::service::AccordConsensusCoordinatorService;
 use crate::use_case::blob::use_case::BlobUseCaseImpl;
 use crate::use_case::inbound_consensus::use_case::InboundConsensusUseCaseImpl;
-use crate::use_case::node_identity::NodeIdentityUseCase;
+use crate::use_case::metadata_query::use_case::MetadataQueryUseCaseImpl;
 use crate::use_case::node_identity::use_case::NodeIdentityUseCaseImpl;
+use crate::use_case::node_identity::NodeIdentityUseCase;
 use crate::use_case::object::use_case::ObjectUseCaseImpl;
 
 type Journal = SqliteConsensusJournal;
 type MetadataRepository = SqliteObjectMetadataRepository;
 type BlobRepository = FileSystemBlobRepository;
 type ConsensusClient = ConsensusTransportClient;
+type MetadataQueryClient = MetadataQueryTonicClient;
 type BlobPeer = BlobClient;
 type Coordinator = AccordConsensusCoordinatorService<Journal, ConsensusClient, MetadataRepository>;
-type ObjectUseCase =
-    ObjectUseCaseImpl<Coordinator, Journal, MetadataRepository, BlobRepository, BlobPeer>;
+type MetadataQueryUC = MetadataQueryUseCaseImpl<MetadataRepository>;
+type ObjectUseCase = ObjectUseCaseImpl<
+    Coordinator,
+    Journal,
+    MetadataRepository,
+    BlobRepository,
+    BlobPeer,
+    MetadataQueryClient,
+>;
 type InboundConsensusUseCase =
     InboundConsensusUseCaseImpl<Journal, Coordinator, BlobRepository, BlobPeer>;
 type LocalBlobUseCase = BlobUseCaseImpl<BlobRepository>;
@@ -47,6 +57,7 @@ pub struct Node {
     config: NodeConfig,
     object_use_case: Arc<ObjectUseCase>,
     inbound_consensus_use_case: Arc<InboundConsensusUseCase>,
+    metadata_query_use_case: Arc<MetadataQueryUC>,
     blob_use_case: Arc<LocalBlobUseCase>,
 }
 
@@ -56,6 +67,7 @@ pub struct BoundNode {
     rpc_listener: TcpListener,
     object_use_case: Arc<ObjectUseCase>,
     inbound_consensus_use_case: Arc<InboundConsensusUseCase>,
+    metadata_query_use_case: Arc<MetadataQueryUC>,
     blob_use_case: Arc<LocalBlobUseCase>,
 }
 
@@ -73,6 +85,7 @@ impl Node {
 
         let mut consensus_clients = HashMap::new();
         let mut blob_clients = HashMap::new();
+        let mut metadata_query_clients = HashMap::new();
         for peer in &config.cluster.peers {
             let peer_id = NodeId::new(peer.node_id.to_string());
             let endpoint = rpc_endpoint(peer.addr);
@@ -83,7 +96,17 @@ impl Node {
                     config.consensus_rpc_deadline,
                 )?),
             );
-            blob_clients.insert(peer_id, Arc::new(BlobClient::new(endpoint)?));
+            blob_clients.insert(
+                peer_id.clone(),
+                Arc::new(BlobClient::new(endpoint.clone())?),
+            );
+            metadata_query_clients.insert(
+                peer_id,
+                Arc::new(MetadataQueryTonicClient::new(
+                    endpoint,
+                    config.consensus_rpc_deadline,
+                )?),
+            );
         }
 
         reconcile_applied_metadata(&consensus_journal, &metadata_repository).await?;
@@ -134,12 +157,17 @@ impl Node {
             bg_recovery_done.store(true, std::sync::atomic::Ordering::Release);
         });
 
+        let metadata_query_use_case = Arc::new(MetadataQueryUseCaseImpl::new(Arc::clone(
+            &metadata_repository,
+        )));
+
         let object_use_case = Arc::new(ObjectUseCaseImpl::new(
             coordinator,
             Arc::clone(&consensus_journal),
             metadata_repository,
             Arc::clone(&blob_repository),
             blob_clients,
+            metadata_query_clients,
         ));
         let blob_use_case = Arc::new(BlobUseCaseImpl::new(blob_repository));
 
@@ -147,6 +175,7 @@ impl Node {
             config,
             object_use_case,
             inbound_consensus_use_case,
+            metadata_query_use_case,
             blob_use_case,
         })
     }
@@ -168,6 +197,7 @@ impl Node {
             rpc_listener,
             object_use_case: self.object_use_case,
             inbound_consensus_use_case: self.inbound_consensus_use_case,
+            metadata_query_use_case: self.metadata_query_use_case,
             blob_use_case: self.blob_use_case,
         })
     }
@@ -197,6 +227,7 @@ impl BoundNode {
         let rpc_listener = self.rpc_listener;
         let object_use_case = Arc::clone(&self.object_use_case);
         let inbound_consensus_use_case = Arc::clone(&self.inbound_consensus_use_case);
+        let metadata_query_use_case = Arc::clone(&self.metadata_query_use_case);
         let blob_use_case = Arc::clone(&self.blob_use_case);
 
         let object_task = tokio::spawn(async move {
@@ -211,6 +242,7 @@ impl BoundNode {
                     rpc_token,
                     inbound_consensus_use_case,
                     blob_use_case,
+                    metadata_query_use_case,
                 )
                 .await
         });

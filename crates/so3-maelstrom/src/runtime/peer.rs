@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use prost::Message as ProstMessage;
 use tokio_stream::StreamExt;
 
-use so3_core::client::interface::{BlobPeerClient, ConsensusPeerClient};
+use so3_core::client::interface::{BlobPeerClient, ConsensusPeerClient, MetadataQueryClient};
 use so3_core::domain::blob::checksum::Sha256Digest;
 use so3_core::domain::blob::id::BlobId;
 use so3_core::domain::blob::stream::BlobStream;
@@ -13,6 +13,8 @@ use so3_core::domain::consensus::transport::{
     PreAcceptRequest, PreAcceptResponse, RecoverRequest, RecoverResponse,
 };
 use so3_core::domain::error::{So3Error, So3Result};
+use so3_core::domain::object::key::ObjectKey;
+use so3_core::domain::object::metadata::ObjectMetadata;
 use so3_core::proto::consensus::{
     AcceptResponse as ProtoAcceptResponse, ApplyResponse as ProtoApplyResponse,
     CommitResponse as ProtoCommitResponse, PreAcceptResponse as ProtoPreAcceptResponse,
@@ -23,6 +25,8 @@ use so3_core::proto::mappers::{
     commit_req_to_proto, commit_res_to_domain, pre_accept_req_to_proto, pre_accept_res_to_domain,
     recover_req_to_proto, recover_res_to_domain,
 };
+use so3_core::proto::metadata_query::GetMetadataRequest as ProtoGetMetadataRequest;
+use so3_core::proto::metadata_query_mappers::proto_response_to_metadata_option;
 
 use crate::protocol::{ConsensusRpc, Message, RequestBody};
 use crate::runtime::types::{BlobResponse, SharedState};
@@ -201,5 +205,52 @@ impl ConsensusPeerClient for MaelstromConsensusPeerClient {
         let proto = ProtoRecoverResponse::decode(bytes.as_slice())
             .map_err(|e| So3Error::Serialization(e.to_string()))?;
         recover_res_to_domain(proto)
+    }
+}
+
+pub(super) struct MaelstromMetadataQueryPeerClient {
+    pub peer_id: String,
+    pub shared: Arc<SharedState>,
+}
+
+impl MaelstromMetadataQueryPeerClient {
+    async fn send_metadata_query(&self, payload: Vec<u8>) -> So3Result<Vec<u8>> {
+        let msg_id = self.shared.next_msg_id();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.shared
+            .pending_metadata_queries
+            .lock()
+            .unwrap()
+            .insert(msg_id, tx);
+
+        let encoded = serde_json::to_vec(&Message {
+            src: self.shared.node_id.clone(),
+            dest: self.peer_id.clone(),
+            body: RequestBody::MetadataQuery { msg_id, payload },
+        })
+        .map_err(|e| So3Error::Serialization(e.to_string()))?;
+
+        self.shared
+            .output
+            .send(encoded)
+            .map_err(|_| So3Error::PeerUnavailable("output channel closed".into()))?;
+
+        rx.await.map_err(|_| {
+            So3Error::PeerUnavailable("metadata query response channel dropped".into())
+        })?
+    }
+}
+
+#[async_trait]
+impl MetadataQueryClient for MaelstromMetadataQueryPeerClient {
+    async fn get_metadata(&self, key: &ObjectKey) -> So3Result<Option<ObjectMetadata>> {
+        let proto_req = ProtoGetMetadataRequest {
+            key: key.as_ref().to_string(),
+        };
+        let bytes = self.send_metadata_query(proto_req.encode_to_vec()).await?;
+        let proto_res =
+            so3_core::proto::metadata_query::GetMetadataResponse::decode(bytes.as_slice())
+                .map_err(|e| So3Error::Serialization(e.to_string()))?;
+        proto_response_to_metadata_option(proto_res)
     }
 }

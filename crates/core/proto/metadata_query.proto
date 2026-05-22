@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package metadata_query;
+
+import "base.proto";
+
+service MetadataQuery {
+  rpc GetMetadata(GetMetadataRequest) returns (GetMetadataResponse) {}
+}
+
+message GetMetadataRequest {
+  string key = 1;
+}
+
+message GetMetadataResponse {
+  optional base.ObjectMetadata entry = 1;
+}

@@ -1,11 +1,14 @@
-use crate::api::rpc::RpcApi;
 use crate::api::rpc::tonic::blob_service::BlobService;
 use crate::api::rpc::tonic::consensus_transport_service::ConsensusTransportService;
+use crate::api::rpc::tonic::metadata_query_service::MetadataQueryService;
+use crate::api::rpc::RpcApi;
 use crate::domain::error::{So3Error, So3Result};
 use crate::proto::blob::blob_service_server::BlobServiceServer;
 use crate::proto::consensus::consensus_transport_server::ConsensusTransportServer;
+use crate::proto::metadata_query::metadata_query_server::MetadataQueryServer;
 use crate::use_case::blob::BlobUseCase;
 use crate::use_case::inbound_consensus::InboundConsensusUseCase;
+use crate::use_case::metadata_query::MetadataQueryUseCase;
 use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -24,12 +27,13 @@ impl TonicRpcServer {
 
 #[async_trait]
 impl RpcApi for TonicRpcServer {
-    async fn start<I: InboundConsensusUseCase, B: BlobUseCase>(
+    async fn start<I: InboundConsensusUseCase, B: BlobUseCase, M: MetadataQueryUseCase>(
         self,
         listener: TcpListener,
         cancellation_token: CancellationToken,
         inbound_consensus_use_case: Arc<I>,
         blob_use_case: Arc<B>,
+        metadata_query_use_case: Arc<M>,
     ) -> So3Result<()> {
         let local_addr = listener.local_addr()?;
         info!(%local_addr, "rpc server started");
@@ -40,6 +44,9 @@ impl RpcApi for TonicRpcServer {
                 ConsensusTransportService::new(inbound_consensus_use_case),
             ))
             .add_service(BlobServiceServer::new(BlobService::new(blob_use_case)))
+            .add_service(MetadataQueryServer::new(MetadataQueryService::new(
+                metadata_query_use_case,
+            )))
             .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async move {
                 cancellation_token.cancelled().await;
             })

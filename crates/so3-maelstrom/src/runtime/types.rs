@@ -11,10 +11,13 @@ use so3_core::repository::consensus_journal::sqlite::SqliteConsensusJournal;
 use so3_core::repository::metadata::sqlite::SqliteObjectMetadataRepository;
 use so3_core::service::consensus_coordinator::service::AccordConsensusCoordinatorService;
 use so3_core::use_case::inbound_consensus::use_case::InboundConsensusUseCaseImpl;
+use so3_core::use_case::metadata_query::use_case::MetadataQueryUseCaseImpl;
 use so3_core::use_case::object::use_case::ObjectUseCaseImpl;
 
 use crate::protocol::{Message, ResponseBody};
-use crate::runtime::peer::{MaelstromBlobPeerClient, MaelstromConsensusPeerClient};
+use crate::runtime::peer::{
+    MaelstromBlobPeerClient, MaelstromConsensusPeerClient, MaelstromMetadataQueryPeerClient,
+};
 use crate::service::MaelstromService;
 
 pub(super) type Journal = SqliteConsensusJournal;
@@ -25,8 +28,15 @@ pub(super) type Coordinator =
     AccordConsensusCoordinatorService<Journal, MaelstromConsensusPeerClient, MetaRepo>;
 pub(super) type Handler =
     InboundConsensusUseCaseImpl<Journal, Coordinator, BlobRepo, MaelstromBlobPeerClient>;
-pub(super) type ObjectUC =
-    ObjectUseCaseImpl<Coordinator, Journal, MetaRepo, BlobRepo, MaelstromBlobPeerClient>;
+pub(super) type ObjectUC = ObjectUseCaseImpl<
+    Coordinator,
+    Journal,
+    MetaRepo,
+    BlobRepo,
+    MaelstromBlobPeerClient,
+    MaelstromMetadataQueryPeerClient,
+>;
+pub(super) type MetadataQueryUC = MetadataQueryUseCaseImpl<MetaRepo>;
 pub(super) type Service = MaelstromService<ObjectUC>;
 
 pub(super) struct SharedState {
@@ -34,6 +44,7 @@ pub(super) struct SharedState {
     pub output: mpsc::UnboundedSender<Vec<u8>>,
     pub pending_consensus: Mutex<HashMap<u64, oneshot::Sender<So3Result<Vec<u8>>>>>,
     pub pending_blobs: Mutex<HashMap<u64, oneshot::Sender<So3Result<BlobResponse>>>>,
+    pub pending_metadata_queries: Mutex<HashMap<u64, oneshot::Sender<So3Result<Vec<u8>>>>>,
     pub next_msg_id: AtomicU64,
 }
 
@@ -52,6 +63,7 @@ pub(super) struct SharedRuntime {
     pub service: Service,
     pub local_handler: Arc<Handler>,
     pub local_blobs: Arc<BlobRepo>,
+    pub local_metadata_query: Arc<MetadataQueryUC>,
     pub shared: Arc<SharedState>,
     pub pending_forwards: Mutex<HashMap<u64, oneshot::Sender<So3Result<ResponseBody>>>>,
 }
@@ -71,4 +83,5 @@ pub(super) struct RuntimeComponents {
     pub service: Service,
     pub local_handler: Arc<Handler>,
     pub local_blobs: Arc<BlobRepo>,
+    pub local_metadata_query: Arc<MetadataQueryUC>,
 }

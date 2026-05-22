@@ -22,27 +22,28 @@ use crate::domain::error::{So3Error, So3Result};
 use crate::domain::node::NodeId;
 use crate::domain::object::key::ObjectKey;
 use crate::domain::object::metadata::ObjectMetadata as DomainObjectMetadata;
-use crate::proto::consensus::cas_result::Outcome as ProtoCasOutcome;
-use crate::proto::consensus::command_result::Result as ProtoResult;
-use crate::proto::consensus::object_command::Op as ProtoOp;
-use crate::proto::consensus::read_result::Outcome as ProtoReadOutcome;
+use crate::proto::base::cas_result::Outcome as ProtoCasOutcome;
+use crate::proto::base::command_result::Result as ProtoResult;
+use crate::proto::base::object_command::Op as ProtoOp;
+use crate::proto::base::read_result::Outcome as ProtoReadOutcome;
+use crate::proto::base::{
+    CasConflict as ProtoCasConflict, CasOp as ProtoCasOp, CasResult as ProtoCasResult,
+    CasSuccess as ProtoCasSuccess, CommandResult as ProtoCommandResult, DeleteOp as ProtoDeleteOp,
+    DeleteResult as ProtoDeleteResult, LogicalTimestamp as ProtoLogicalTimestamp,
+    NotFound as ProtoNotFound, ObjectCommand as ProtoObjectCommand,
+    ObjectMetadata as ProtoObjectMetadata, ReadOp as ProtoReadOp, ReadResult as ProtoReadResult,
+    WriteOp as ProtoWriteOp, WriteResult as ProtoWriteResult,
+};
 use crate::proto::consensus::recover_response::Outcome as ProtoRecoverOutcome;
 use crate::proto::consensus::{
     AcceptRequest as ProtoAcceptRequest, AcceptResponse as ProtoAcceptResponse,
     AppliedSet as ProtoAppliedSet, ApplyRequest as ProtoApplyRequest,
-    ApplyResponse as ProtoApplyResponse, Ballot as ProtoBallot, CasConflict as ProtoCasConflict,
-    CasOp as ProtoCasOp, CasResult as ProtoCasResult, CasSuccess as ProtoCasSuccess,
-    CommandId as ProtoCommandId, CommandResult as ProtoCommandResult,
+    ApplyResponse as ProtoApplyResponse, Ballot as ProtoBallot, CommandId as ProtoCommandId,
     CommitRequest as ProtoCommitRequest, CommitResponse as ProtoCommitResponse,
-    DeleteOp as ProtoDeleteOp, DeleteResult as ProtoDeleteResult,
-    DependencySet as ProtoDependencySet, LogicalTimestamp as ProtoLogicalTimestamp,
-    NotFound as ProtoNotFound, ObjectCommand as ProtoObjectCommand,
-    ObjectMetadata as ProtoObjectMetadata, PreAcceptRequest as ProtoPreAcceptRequest,
-    PreAcceptResponse as ProtoPreAcceptResponse, ReadOp as ProtoReadOp,
-    ReadResult as ProtoReadResult, RecoverNack as ProtoRecoverNack,
+    DependencySet as ProtoDependencySet, PreAcceptRequest as ProtoPreAcceptRequest,
+    PreAcceptResponse as ProtoPreAcceptResponse, RecoverNack as ProtoRecoverNack,
     RecoverRequest as ProtoRecoverRequest, RecoverResponse as ProtoRecoverResponse,
-    RecoverSuccess as ProtoRecoverSuccess, State as ProtoState, WriteOp as ProtoWriteOp,
-    WriteResult as ProtoWriteResult,
+    RecoverSuccess as ProtoRecoverSuccess, State as ProtoState,
 };
 
 pub fn map_tonic_status(status: tonic::Status) -> So3Error {
@@ -70,6 +71,7 @@ pub fn object_metadata_to_proto(metadata: DomainObjectMetadata) -> ProtoObjectMe
         sha256: metadata.sha256.as_bytes().to_vec().into(),
         size: metadata.size,
         last_modified_ms: metadata.last_modified_ms,
+        deleted: metadata.deleted,
     }
 }
 
@@ -81,6 +83,7 @@ pub fn object_metadata_to_domain(metadata: ProtoObjectMetadata) -> So3Result<Dom
         sha256: metadata.sha256.try_into()?,
         size: metadata.size,
         last_modified_ms: metadata.last_modified_ms,
+        deleted: metadata.deleted,
     })
 }
 

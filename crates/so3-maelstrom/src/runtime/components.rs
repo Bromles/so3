@@ -8,10 +8,13 @@ use so3_core::repository::consensus_journal::sqlite::SqliteConsensusJournal;
 use so3_core::repository::metadata::sqlite::SqliteObjectMetadataRepository;
 use so3_core::service::consensus_coordinator::service::AccordConsensusCoordinatorService;
 use so3_core::use_case::inbound_consensus::use_case::InboundConsensusUseCaseImpl;
+use so3_core::use_case::metadata_query::use_case::MetadataQueryUseCaseImpl;
 use so3_core::use_case::object::use_case::ObjectUseCaseImpl;
 
 use crate::config::StorageRoots;
-use crate::runtime::peer::{MaelstromBlobPeerClient, MaelstromConsensusPeerClient};
+use crate::runtime::peer::{
+    MaelstromBlobPeerClient, MaelstromConsensusPeerClient, MaelstromMetadataQueryPeerClient,
+};
 use crate::runtime::types::{RuntimeComponents, SharedState};
 use crate::service::MaelstromService;
 
@@ -53,6 +56,19 @@ pub(super) async fn build_components(
         })
         .collect();
 
+    let metadata_query_clients: HashMap<NodeId, Arc<MaelstromMetadataQueryPeerClient>> = peer_ids
+        .iter()
+        .map(|id| {
+            (
+                NodeId::new(id.clone()),
+                Arc::new(MaelstromMetadataQueryPeerClient {
+                    peer_id: id.clone(),
+                    shared: Arc::clone(&shared),
+                }),
+            )
+        })
+        .collect();
+
     let apply_notify = Arc::new(tokio::sync::Notify::new());
     let coordinator = AccordConsensusCoordinatorService::new(
         NodeId::new(node_id.to_owned()),
@@ -85,17 +101,21 @@ pub(super) async fn build_components(
         startup_recovery_done,
     ));
 
+    let local_metadata_query = Arc::new(MetadataQueryUseCaseImpl::new(Arc::clone(&meta)));
+
     let object_uc = ObjectUseCaseImpl::new(
         coordinator,
         Arc::clone(&journal),
         Arc::clone(&meta),
         Arc::clone(&blobs),
         blob_clients,
+        metadata_query_clients,
     );
 
     Ok(RuntimeComponents {
         service: MaelstromService::new(object_uc),
         local_handler,
         local_blobs: blobs,
+        local_metadata_query,
     })
 }

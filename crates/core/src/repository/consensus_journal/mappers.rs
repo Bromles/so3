@@ -5,8 +5,8 @@ use crate::domain::consensus::command_id::{CommandId, DependencySet};
 use crate::domain::consensus::journal::{JournalEntry, JournalState};
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::node::NodeId;
-use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
+use sqlx::Row;
 
 pub fn sequence_to_i64(sequence: u64) -> So3Result<i64> {
     i64::try_from(sequence)

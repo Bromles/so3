@@ -2,15 +2,17 @@ use std::sync::Arc;
 
 use so3_core::domain::error::{So3Error, So3Result};
 
-use crate::protocol::{CRASH_CODE, ClientRequest, Message, RequestBody, error_response};
+use crate::protocol::{error_response, ClientRequest, Message, RequestBody, CRASH_CODE};
 use crate::runtime::handler::blob::{handle_blob_fetch, handle_blob_push};
 use crate::runtime::handler::client::{handle_client_message, handle_forward};
 use crate::runtime::handler::consensus::handle_consensus;
+use crate::runtime::handler::metadata::handle_metadata_query;
 use crate::runtime::types::{BlobResponse, SharedRuntime};
 
 mod blob;
 mod client;
 mod consensus;
+mod metadata;
 
 pub(super) fn route_or_spawn(shared: &Arc<SharedRuntime>, message: Message<RequestBody>) {
     match &message.body {
@@ -53,6 +55,20 @@ pub(super) fn route_or_spawn(shared: &Arc<SharedRuntime>, message: Message<Reque
                 let _ = tx.send(Ok(BlobResponse::Fetched(payload.clone())));
             }
         }
+        RequestBody::MetadataQueryOk {
+            in_reply_to,
+            payload,
+        } => {
+            if let Some(tx) = shared
+                .shared
+                .pending_metadata_queries
+                .lock()
+                .unwrap()
+                .remove(in_reply_to)
+            {
+                let _ = tx.send(Ok(payload.clone()));
+            }
+        }
         RequestBody::ForwardOk {
             in_reply_to,
             response,
@@ -83,6 +99,14 @@ fn complete_pending_error(shared: &SharedRuntime, in_reply_to: u64, text: &str) 
         .unwrap()
         .remove(&in_reply_to);
     if let Some(tx) = consensus_tx {
+        let _ = tx.send(Err(So3Error::InvalidRequest(text.to_owned())));
+    } else if let Some(tx) = shared
+        .shared
+        .pending_metadata_queries
+        .lock()
+        .unwrap()
+        .remove(&in_reply_to)
+    {
         let _ = tx.send(Err(So3Error::InvalidRequest(text.to_owned())));
     } else if let Some(tx) = shared.pending_forwards.lock().unwrap().remove(&in_reply_to) {
         let _ = tx.send(Err(So3Error::InvalidRequest(text.to_owned())));
@@ -152,10 +176,14 @@ async fn handle_message(
         RequestBody::BlobFetch { msg_id, blob_id } => {
             handle_blob_fetch(shared, src, msg_id, blob_id).await
         }
+        RequestBody::MetadataQuery { msg_id, payload } => {
+            handle_metadata_query(shared, src, msg_id, payload).await
+        }
         RequestBody::ForwardOk { .. }
         | RequestBody::ConsensusOk { .. }
         | RequestBody::BlobPushOk { .. }
         | RequestBody::BlobFetchOk { .. }
+        | RequestBody::MetadataQueryOk { .. }
         | RequestBody::Error { .. } => Ok(()),
     }
 }

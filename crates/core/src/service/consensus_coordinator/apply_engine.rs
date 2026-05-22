@@ -1,4 +1,4 @@
-use crate::domain::clock::{LogicalTimestamp, physical_millis_now};
+use crate::domain::clock::{physical_millis_now, LogicalTimestamp};
 use crate::domain::command::{CasResult, CommandResult, ObjectCommand, ReadResult, WriteResult};
 use crate::domain::consensus::command_id::CommandId;
 use crate::domain::consensus::journal::JournalEntry;
@@ -14,7 +14,7 @@ use dashmap::DashMap;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
-use tokio::time::{Duration, Instant, timeout_at};
+use tokio::time::{timeout_at, Duration, Instant};
 use tracing::info;
 
 type ReorderBuffer = DashMap<ObjectKey, BTreeMap<LogicalTimestamp, CommandId>>;
@@ -209,6 +209,7 @@ where
                         sha256: sha256.clone(),
                         size: *size,
                         last_modified_ms: physical_millis_now(),
+                        deleted: false,
                     },
                 })
             }
@@ -228,6 +229,7 @@ where
                         sha256: sha256.clone(),
                         size: *size,
                         last_modified_ms: physical_millis_now(),
+                        deleted: false,
                     }))
                 }
                 Some(meta) => CommandResult::Cas(CasResult::Conflict {
@@ -247,7 +249,10 @@ where
 
         let metadata_apply_started = Instant::now();
         match (&req.command, &result) {
-            (ObjectCommand::Write { key, .. }, CommandResult::Write(WriteResult { metadata })) => {
+            (
+                ObjectCommand::Write { key: _, .. },
+                CommandResult::Write(WriteResult { metadata }),
+            ) => {
                 self.metadata.store(metadata).await?;
             }
             (ObjectCommand::Delete { key }, CommandResult::Delete) => {

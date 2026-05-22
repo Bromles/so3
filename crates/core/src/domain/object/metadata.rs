@@ -12,6 +12,7 @@ pub struct ObjectMetadata {
     pub sha256: Sha256Digest,
     pub size: u64,
     pub last_modified_ms: u64,
+    pub deleted: bool,
 }
 
 pub struct StoredObject {

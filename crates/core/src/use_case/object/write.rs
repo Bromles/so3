@@ -1,4 +1,4 @@
-use crate::client::interface::BlobPeerClient;
+use crate::client::interface::{BlobPeerClient, MetadataQueryClient};
 use crate::domain::blob::stream::BlobStream;
 use crate::domain::command::{CommandResult, ObjectCommand};
 use crate::domain::error::{So3Error, So3Result};
@@ -11,13 +11,14 @@ use crate::service::consensus_coordinator::ConsensusCoordinatorService;
 use crate::use_case::object::use_case::ObjectUseCaseImpl;
 use tracing::warn;
 
-impl<CCS, CJR, OMR, BR, BC> ObjectUseCaseImpl<CCS, CJR, OMR, BR, BC>
+impl<CCS, CJR, OMR, BR, BC, MQC> ObjectUseCaseImpl<CCS, CJR, OMR, BR, BC, MQC>
 where
     CCS: ConsensusCoordinatorService,
     CJR: ConsensusJournalRepository,
     OMR: ObjectMetadataRepository,
     BR: BlobRepository,
     BC: BlobPeerClient,
+    MQC: MetadataQueryClient,
 {
     pub async fn write_internal(
         &self,

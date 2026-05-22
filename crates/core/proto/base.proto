@@ -1,0 +1,91 @@
+syntax = "proto3";
+
+package base;
+
+message ObjectMetadata {
+  string key = 1;
+  int64 version = 2;
+  string blob_id = 3;
+  bytes sha256 = 4;
+  uint64 size = 5;
+  uint64 last_modified_ms = 6;
+  bool deleted = 7;
+}
+
+message LogicalTimestamp {
+  uint64 epoch = 1;
+  uint64 physical_millis = 2;
+  uint64 logical = 3;
+  string node_id = 4;
+}
+
+message ObjectCommand {
+  oneof op {
+    ReadOp read = 1;
+    WriteOp write = 2;
+    CasOp cas = 3;
+    DeleteOp delete = 4;
+  }
+}
+
+message ReadOp {
+  string key = 1;
+}
+
+message WriteOp {
+  string key = 1;
+  string blob_id = 2;
+  bytes sha256 = 3;
+  uint64 size = 4;
+}
+
+message CasOp {
+  string key = 1;
+  int64 expected_version = 2;
+  string blob_id = 3;
+  bytes sha256 = 4;
+  uint64 size = 5;
+}
+
+message DeleteOp {
+  string key = 1;
+}
+
+message CommandResult {
+  oneof result {
+    ReadResult read = 1;
+    WriteResult write = 2;
+    CasResult cas = 3;
+    DeleteResult delete = 4;
+  }
+}
+
+message ReadResult {
+  oneof outcome {
+    ObjectMetadata metadata = 1;
+    NotFound not_found = 2;
+  }
+}
+
+message NotFound {}
+
+message WriteResult {
+  ObjectMetadata metadata = 1;
+}
+
+message CasResult {
+  oneof outcome {
+    CasSuccess success = 1;
+    CasConflict conflict = 2;
+  }
+}
+
+message CasSuccess {
+  ObjectMetadata metadata = 1;
+}
+
+message CasConflict {
+  int64 current_version = 1;
+}
+
+message DeleteResult {}

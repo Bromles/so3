@@ -1,4 +1,4 @@
-use crate::client::interface::BlobPeerClient;
+use crate::client::interface::{BlobPeerClient, MetadataQueryClient};
 use crate::domain::command::{CommandResult, ObjectCommand};
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::object::key::ObjectKey;
@@ -8,13 +8,14 @@ use crate::repository::metadata::ObjectMetadataRepository;
 use crate::service::consensus_coordinator::ConsensusCoordinatorService;
 use crate::use_case::object::use_case::ObjectUseCaseImpl;
 
-impl<CCS, CJR, OMR, BR, BC> ObjectUseCaseImpl<CCS, CJR, OMR, BR, BC>
+impl<CCS, CJR, OMR, BR, BC, MQC> ObjectUseCaseImpl<CCS, CJR, OMR, BR, BC, MQC>
 where
     CCS: ConsensusCoordinatorService,
     CJR: ConsensusJournalRepository,
     OMR: ObjectMetadataRepository,
     BR: BlobRepository,
     BC: BlobPeerClient,
+    MQC: MetadataQueryClient,
 {
     pub async fn delete_internal(&self, key: &ObjectKey) -> So3Result<()> {
         let result = self

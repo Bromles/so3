@@ -1,4 +1,4 @@
-use crate::client::interface::BlobPeerClient;
+use crate::client::interface::{BlobPeerClient, MetadataQueryClient};
 use crate::domain::blob::checksum::{Sha256Digest, Sha256Hasher};
 use crate::domain::blob::id::BlobId;
 use crate::domain::blob::stream::BlobStream;
@@ -17,6 +17,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio_stream::StreamExt;
+use tracing::warn;
 
 pub struct ObjectUseCaseImpl<
     CCS: ConsensusCoordinatorService,
@@ -24,21 +25,24 @@ pub struct ObjectUseCaseImpl<
     OMR: ObjectMetadataRepository,
     BR: BlobRepository,
     BC: BlobPeerClient,
+    MQC: MetadataQueryClient,
 > {
     pub consensus_coordinator_service: Arc<CCS>,
     pub consensus_journal_repository: Arc<CJR>,
     pub object_metadata_repository: Arc<OMR>,
     pub blob_repository: Arc<BR>,
     pub blob_client_map: HashMap<NodeId, Arc<BC>>,
+    pub metadata_query_client_map: HashMap<NodeId, Arc<MQC>>,
 }
 
-impl<CCS, CJR, OMR, BR, BC> ObjectUseCaseImpl<CCS, CJR, OMR, BR, BC>
+impl<CCS, CJR, OMR, BR, BC, MQC> ObjectUseCaseImpl<CCS, CJR, OMR, BR, BC, MQC>
 where
     CCS: ConsensusCoordinatorService,
     CJR: ConsensusJournalRepository,
     OMR: ObjectMetadataRepository,
     BR: BlobRepository,
     BC: BlobPeerClient,
+    MQC: MetadataQueryClient,
 {
     pub fn new(
         consensus_coordinator_service: Arc<CCS>,
@@ -46,6 +50,7 @@ where
         object_metadata_repository: Arc<OMR>,
         blob_repository: Arc<BR>,
         blob_client_map: HashMap<NodeId, Arc<BC>>,
+        metadata_query_client_map: HashMap<NodeId, Arc<MQC>>,
     ) -> Self {
         Self {
             consensus_coordinator_service,
@@ -53,6 +58,7 @@ where
             object_metadata_repository,
             blob_repository,
             blob_client_map,
+            metadata_query_client_map,
         }
     }
 
@@ -60,6 +66,31 @@ where
         Err(So3Error::InvalidRequest(format!(
             "unexpected state machine result for {operation}: {result:?}"
         )))
+    }
+
+    pub(crate) async fn quorum_read_metadata(
+        &self,
+        key: &ObjectKey,
+    ) -> So3Result<Option<ObjectMetadata>> {
+        let mut best = self.object_metadata_repository.load(key).await?;
+
+        for client in self.metadata_query_client_map.values() {
+            match client.get_metadata(key).await {
+                Ok(Some(remote_meta)) => {
+                    if best.as_ref().map_or(true, |local| {
+                        remote_meta.version.get() > local.version.get()
+                    }) {
+                        best = Some(remote_meta);
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    warn!(key = key.as_ref(), error = %e, "metadata query to peer failed");
+                }
+            }
+        }
+
+        Ok(best.filter(|m| !m.deleted))
     }
 
     pub(crate) async fn fetch_blob_from_any_peer(&self, blob_id: &BlobId) -> So3Result<()> {
@@ -113,13 +144,14 @@ where
 }
 
 #[async_trait]
-impl<CCS, CJR, OMR, BR, BC> ObjectUseCase for ObjectUseCaseImpl<CCS, CJR, OMR, BR, BC>
+impl<CCS, CJR, OMR, BR, BC, MQC> ObjectUseCase for ObjectUseCaseImpl<CCS, CJR, OMR, BR, BC, MQC>
 where
     CCS: ConsensusCoordinatorService,
     CJR: ConsensusJournalRepository,
     OMR: ObjectMetadataRepository,
     BR: BlobRepository,
     BC: BlobPeerClient,
+    MQC: MetadataQueryClient,
 {
     async fn head(&self, key: &ObjectKey) -> So3Result<Option<ObjectMetadata>> {
         self.head_internal(key).await

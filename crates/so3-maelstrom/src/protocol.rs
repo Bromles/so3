@@ -57,6 +57,10 @@ pub enum RequestBody {
         msg_id: u64,
         blob_id: String,
     },
+    MetadataQuery {
+        msg_id: u64,
+        payload: Vec<u8>,
+    },
     ForwardOk {
         in_reply_to: u64,
         response: ResponseBody,
@@ -69,6 +73,10 @@ pub enum RequestBody {
         in_reply_to: u64,
     },
     BlobFetchOk {
+        in_reply_to: u64,
+        payload: Vec<u8>,
+    },
+    MetadataQueryOk {
         in_reply_to: u64,
         payload: Vec<u8>,
     },
