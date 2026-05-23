@@ -228,8 +228,8 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
         .bind(encode_deps(&deps.0)?)
         .bind(command_id.origin_node_id.as_ref())
         .bind(seq)
-        .bind(JournalState::Accepted.as_i32()) // only advance, never regress
-        .bind(ballot_round) // only accept if no higher ballot
+        .bind(JournalState::Accepted.as_i32())
+        .bind(ballot_round)
         .execute(&self.pool)
         .await?
         .rows_affected();
@@ -264,7 +264,7 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
         .bind(encode_deps(&deps.0)?)
         .bind(command_id.origin_node_id.as_ref())
         .bind(seq)
-        .bind(JournalState::Committed.as_i32()) // only advance, never regress
+        .bind(JournalState::Committed.as_i32())
         .execute(&self.pool)
         .await?
         .rows_affected();
@@ -288,7 +288,7 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
         .bind(encode_result(result)?)
         .bind(command_id.origin_node_id.as_ref())
         .bind(seq)
-        .bind(JournalState::Applied.as_i32()) // only advance, never regress
+        .bind(JournalState::Applied.as_i32())
         .execute(&self.pool)
         .await?
         .rows_affected();

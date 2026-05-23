@@ -20,7 +20,6 @@ where
     pub(super) async fn recover_internal(&self, req: RecoverRequest) -> So3Result<RecoverResponse> {
         let entry = self.journal.load(&req.command_id).await?;
 
-        // Nack if we already have a higher ballot.
         if let Some(ref e) = entry
             && let Some(ref stored) = e.ballot
             && *stored > req.ballot
@@ -60,7 +59,6 @@ where
                 }))
             }
             Some(e) => {
-                // Stamp the recovery ballot to block lower-ballot coordinators.
                 self.journal
                     .record_ballot(&req.command_id, &req.ballot)
                     .await?;

@@ -1347,7 +1347,7 @@ where
             .check_conflicts_and_record_pre_accepted(&command_id, &command, &timestamp_zero)
             .await?;
 
-        // --- PreAccept (parallel, quorum-driven with drain for fast path) ---
+        // PreAccept: parallel quorum with drain for fast path.
         let peers: Vec<Arc<CPC>> = self.consensus_peer_client_map.values().cloned().collect();
         let quorum = self.quorum_size();
         let peers_needed = quorum.saturating_sub(1); // self already counts as 1
@@ -1421,7 +1421,6 @@ where
         }
         let pre_accept_ms = elapsed_ms(pre_accept_started);
 
-        // Final timestamp = max of self + all responding peers.
         let final_timestamp =
             pre_ok
                 .iter()
@@ -1430,7 +1429,6 @@ where
                     if t > &max { t.clone() } else { max }
                 });
 
-        // Union dependency sets from self and all responding peers.
         let mut all_deps: Vec<CommandId> = local_deps;
         for r in &pre_ok {
             all_deps.extend(r.dependencies.0.iter().cloned());
@@ -1463,7 +1461,7 @@ where
         let (commit_timestamp, commit_deps) = if fast_path {
             (timestamp_zero.clone(), all_deps)
         } else {
-            // --- Slow path: Accept (parallel, quorum-driven) ---
+            // Slow path: Accept (parallel quorum).
             let accept_started = Instant::now();
             self.consensus_journal_repository
                 .record_accepted(

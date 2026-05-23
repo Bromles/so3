@@ -561,10 +561,6 @@ def run_one(
             shutil.rmtree(data_dir, ignore_errors=True)
 
 
-# ---------------------------------------------------------------------------
-# Matrix-runs mode: run a phased scenario across multiple node counts
-# ---------------------------------------------------------------------------
-
 MATRIX_SCENARIOS = {"e3-degradation", "e6-recovery"}
 
 
