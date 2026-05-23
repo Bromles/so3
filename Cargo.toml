@@ -29,48 +29,25 @@ strip = true
 [workspace.dependencies]
 so3-core = { path = "crates/core" }
 
-# compression
-zstd = { version = "0.13", default-features = false }
-async-compression = { version = "0.4", default-features = false }
+# serialization/deserialization
+serde = { version = "1.0", default-features = false }
+serde_json = { version = "1.0", default-features = false }
+postcard = { version = "1.1", default-features = false }
+toml = { version = "1.0", default-features = false }
 
 # encoding
-md-5 = { version = "0.11", default-features = false }
 sha2 = { version = "0.11", default-features = false }
-hmac = { version = "0.13", default-features = false }
 const-hex = { version = "1.17", default-features = false }
-crc-fast = { version = "1.10", default-features = false }
 
 # async
 futures-core = { version = "0.3", default-features = false }
 tokio = { version = "1.49", default-features = false }
 tokio-util = { version = "0.7", default-features = false }
 tokio-stream = { version = "0.1", default-features = false }
-async-channel = { version = "2.5", default-features = false }
 tower-http = { version = "0.6", default-features = false }
-tower = { version = "0.5", default-features = false }
-
-# serialization/deserialization
-serde = { version = "1.0", default-features = false }
-serde_bytes = { version = "0.11", default-features = false }
-serde_json = { version = "1.0", default-features = false }
-quick-xml = { version = "0.39", default-features = false }
-postcard = { version = "1.1", default-features = false }
-toml = { version = "1.0", default-features = false }
-
-# logging and tracing
-tracing = { version = "0.1", default-features = false }
-tracing-subscriber = { version = "0.3", default-features = false }
-
-# db
-heed = { version = "0.22", default-features = false }
-redb = { version = "4.1", default-features = false }
-sqlx = { version = "0.8", default-features = false }
 
 # http
-http = { version = "1.4", default-features = false }
 httpdate = { version = "1.0", default-features = false }
-hyper = { version = "1.8", default-features = false }
-hyper-util = { version = "0.1", default-features = false }
 
 # rpc
 tonic = { version = "0.14", default-features = false }
@@ -78,28 +55,22 @@ prost = { version = "0.14", default-features = false }
 tonic-prost = { version = "0.14", default-features = false }
 tonic-prost-build = { version = "0.14", default-features = false }
 
-# tmp for PoC
+# http framework
 axum = { version = "0.8" }
-axum-extra = { version = "0.12", default-features = false }
-reqwest = { version = "0.13", default-features = false }
 
-# cli
-clap = { version = "4.5", default-features = false }
+# db
+sqlx = { version = "0.9", default-features = false }
+
+# logging and tracing
+tracing = { version = "0.1", default-features = false }
+tracing-subscriber = { version = "0.3", default-features = false }
 
 # concurrent collections
 dashmap = { version = "6", default-features = false }
 
 # utils
-chrono = { version = "0.4", default-features = false }
 uuid = { version = "1.19", default-features = false }
-bitflags = { version = "2.10", default-features = false }
 async-trait = { version = "0.1", default-features = false }
 thiserror = { version = "2.0", default-features = false }
-anyhow = { version = "1.0", default-features = false }
-mime = { version = "0.3", default-features = false }
-tempfile = { version = "3.24", default-features = false }
-url = { version = "2.5", default-features = false }
 bytes = { version = "1.11", default-features = false }
-
-# testing
-mockall = { version = "0.14", default-features = false }
+tempfile = { version = "3.24", default-features = false }

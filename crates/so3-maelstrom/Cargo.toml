@@ -17,8 +17,3 @@ tokio-stream = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt", "std"] }
-tempfile = { workspace = true }
-uuid = { workspace = true }
-
-[dev-dependencies]
-tempfile = { workspace = true }

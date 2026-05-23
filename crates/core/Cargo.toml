@@ -12,11 +12,9 @@ tokio-util = { workspace = true, features = ["io"] }
 tokio-stream = { workspace = true, features = ["net"] }
 axum = { workspace = true, features = ["macros"] }
 tower-http = { workspace = true, features = ["trace", "timeout"] }
-tower = { workspace = true, features = ["util"] }
 bytes = { workspace = true }
 httpdate = { workspace = true }
 serde = { workspace = true, features = ["derive", "std"] }
-serde_json = { workspace = true, features = ["std"] }
 tonic = { workspace = true, features = ["codegen", "router", "transport"] }
 tonic-prost = { workspace = true }
 prost = { workspace = true, features = ["derive", "std"] }
@@ -30,12 +28,7 @@ futures-core = { workspace = true }
 sha2 = { workspace = true }
 const-hex = { workspace = true, features = ["alloc"] }
 tempfile = { workspace = true }
-chrono = { workspace = true, features = ["std", "clock"] }
 dashmap = { workspace = true }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }
-
-[dev-dependencies]
-reqwest = { workspace = true, features = ["json"] }
-mockall = { workspace = true }

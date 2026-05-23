@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
-use sqlx::{query, query_scalar, Row, SqlitePool};
+use sqlx::{query, query_scalar, AssertSqlSafe, Row, SqlitePool};
 use std::path::Path;
 use std::time::Duration;
 use tokio::fs;
@@ -100,10 +100,9 @@ impl SqliteConsensusJournal {
 impl ConsensusJournalRepository for SqliteConsensusJournal {
     async fn load(&self, command_id: &CommandId) -> So3Result<Option<JournalEntry>> {
         let seq = sequence_to_i64(command_id.sequence)?;
-        let row = query(&format!(
-            "SELECT {SELECT_COLS} FROM consensus_journal \
-             WHERE origin_node_id = ? AND sequence = ?"
-        ))
+        let row = query(AssertSqlSafe(format!(
+            "SELECT {SELECT_COLS} FROM consensus_journal WHERE origin_node_id = ? AND sequence = ?"
+        )))
         .bind(command_id.origin_node_id.as_ref())
         .bind(seq)
         .fetch_optional(&self.pool)
@@ -303,9 +302,9 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
     }
 
     async fn list_by_state(&self, state: JournalState) -> So3Result<Vec<JournalEntry>> {
-        let rows = query(&format!(
+        let rows = query(AssertSqlSafe(format!(
             "SELECT {SELECT_COLS} FROM consensus_journal WHERE state = ?"
-        ))
+        )))
         .bind(state.as_i32())
         .fetch_all(&self.pool)
         .await?;
@@ -368,14 +367,14 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
         timestamp: &LogicalTimestamp,
     ) -> So3Result<Vec<JournalEntry>> {
         let (epoch, physical, logical) = Self::ts_to_i64s(timestamp)?;
-        let rows = query(&format!(
+        let rows = query(AssertSqlSafe(format!(
             "SELECT {SELECT_COLS} FROM consensus_journal \
              WHERE key = ? AND state = ? \
                AND (COALESCE(t_epoch, t0_epoch) > ? \
                     OR (COALESCE(t_epoch, t0_epoch) = ? AND COALESCE(t_physical_ms, t0_physical_ms) > ?) \
                     OR (COALESCE(t_epoch, t0_epoch) = ? AND COALESCE(t_physical_ms, t0_physical_ms) = ? AND COALESCE(t_logical, t0_logical) > ?)) \
              LIMIT 1"
-        ))
+        )))
         .bind(key)
         .bind(JournalState::Applied.as_i32())
         .bind(epoch)

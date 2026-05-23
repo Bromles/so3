@@ -744,7 +744,7 @@ where
                     write_buffer.remove(&spawn_key);
                 }
             }
-            if let Ok(r) = result {
+            if let Ok(_) = result {
                 for peer in peers_owned {
                     let req = ApplyRequest {
                         command_id: apply_req.command_id.clone(),
