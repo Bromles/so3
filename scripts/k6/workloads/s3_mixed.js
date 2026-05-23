@@ -1,16 +1,17 @@
+/* global __ENV */
 import {
   buildClients,
   keyByDistribution,
   putGetHeadDeleteCycle,
-  researchOptions,
-} from "../lib/research.js";
+  researchOptions
+} from '../lib/research.js'
 
-const SCENARIO = "s3_mixed";
-const clients = buildClients();
+const SCENARIO = 's3_mixed'
+const clients = buildClients()
 
-export const options = researchOptions({ duration: "30s", vus: 10 });
+export const options = researchOptions({ duration: '30s', vus: 10 })
 
 export default async function () {
-  const keyInfo = keyByDistribution(__ENV.KEY_DISTRIBUTION || "rotating", SCENARIO);
-  await putGetHeadDeleteCycle({ clients, scenario: SCENARIO, keyInfo });
+  const keyInfo = keyByDistribution(__ENV.KEY_DISTRIBUTION || 'rotating', SCENARIO)
+  await putGetHeadDeleteCycle({ clients, scenario: SCENARIO, keyInfo })
 }

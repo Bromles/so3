@@ -11,12 +11,20 @@ from run import main
 
 if __name__ == "__main__":
     raise SystemExit(
-        main([
-            "--workload", "g-set",
-            "--node-count", "3",
-            "--time-limit", "30",
-            "--rate", "10",
-            "--nemesis", "partition",
-            "--nemesis-interval", "5",
-        ])
+        main(
+            [
+                "--workload",
+                "g-set",
+                "--node-count",
+                "3",
+                "--time-limit",
+                "30",
+                "--rate",
+                "10",
+                "--nemesis",
+                "partition",
+                "--nemesis-interval",
+                "5",
+            ]
+        )
     )

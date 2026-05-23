@@ -9,3 +9,36 @@ dependencies = [
     "scipy>=1.13",
     "matplotlib>=3.9",
 ]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "D",       # docstrings
+    "ANN",     # type annotations
+    "T201",    # print()
+    "PLR2004", # magic value comparison
+    "PLR0912", # too many branches
+    "PLR0915", # too many statements
+    "PLR0913", # too many arguments
+    "C901",    # complexity
+    "TD",      # TODO comments
+    "FIX",     # fixme comments
+    "COM812",  # trailing comma (conflicts with formatter)
+    "ISC001",  # implicit string concat (conflicts with formatter)
+    "TRY301",  # abstract raise to inner function (guard clauses in try blocks are intentional)
+    "G004",    # f-string in logging
+    "BLE001",  # blind except (benchmark scripts must survive any error)
+    "S603",    # subprocess without shell=False
+    "S607",    # partial executable path
+    "S105",    # hardcoded passwords (test credentials)
+    "S311",    # non-crypto random (not needed for benchmarks)
+    "S110",    # try-except-pass (intentional in fault-tolerant scripts)
+    "S310",    # URL open audit
+    "RUF001",  # ambiguous unicode chars (σ is intentional in stats output)
+    "PLC0415", # late imports (lazy matplotlib is intentional)
+    "TC",      # type-checking imports (sys.path scripts don't support lazy imports)
+    "N999",    # invalid module name (CLI entry points with hyphens)
+]

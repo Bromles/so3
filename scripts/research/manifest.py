@@ -7,13 +7,15 @@ import platform
 import subprocess
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def git_revision(repo_root: Path) -> str | None:
@@ -37,9 +39,19 @@ def binary_version(binary_path: Path, repo_root: Path) -> dict[str, Any]:
     resolved = binary_path if binary_path.is_absolute() else repo_root / binary_path
     try:
         st = resolved.stat()
-        return {"path": str(binary_path), "exists": True, "mtime": st.st_mtime, "size_bytes": st.st_size}
+        return {
+            "path": str(binary_path),
+            "exists": True,
+            "mtime": st.st_mtime,
+            "size_bytes": st.st_size,
+        }
     except OSError:
-        return {"path": str(binary_path), "exists": False, "mtime": None, "size_bytes": None}
+        return {
+            "path": str(binary_path),
+            "exists": False,
+            "mtime": None,
+            "size_bytes": None,
+        }
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:

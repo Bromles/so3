@@ -14,7 +14,7 @@ import shutil
 import sys
 import time
 from pathlib import Path
-from typing import Any, Sequence
+from typing import TYPE_CHECKING, Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[1]
@@ -34,6 +34,9 @@ from scenarios.e4_hot_key import run_e4_hot_key  # noqa: E402
 from scenarios.e5_leaderless import run_e5_leaderless  # noqa: E402
 from scenarios.e6_recovery import run_e6_recovery  # noqa: E402
 from topology import SUPPORTED_NODE_COUNTS, generate_topology  # noqa: E402
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 DEFAULT_ACCESS_KEY = "so3testkey000000"
 DEFAULT_SECRET_KEY = "so3testsecret0000000000000000000"
@@ -68,7 +71,7 @@ def parse_args(argv: Sequence[str]) -> tuple[argparse.Namespace, list[str]]:
         "scenario",
         nargs="?",
         default="k6-mixed",
-        choices=tuple([*CORRECTNESS_SCENARIOS, *WORKLOAD_SCRIPTS]),
+        choices=(*CORRECTNESS_SCENARIOS, *WORKLOAD_SCRIPTS),
         help="scenario to run",
     )
     parser.add_argument("--runs", type=int, default=30)
@@ -191,7 +194,8 @@ def parse_args(argv: Sequence[str]) -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument(
         "--e6-re-crash-duration",
         default="15s",
-        help="duration of the degraded phase after the second crash in e6-recovery (default: 15s)",
+        help="duration of the degraded phase after the second crash "
+        "in e6-recovery (default: 15s)",
     )
     parser.add_argument("--keep-data-dirs", action="store_true")
     parser.add_argument(
@@ -225,7 +229,8 @@ def default_outdir(scenario: str) -> Path:
 
 def selected_k6_script(args: argparse.Namespace) -> Path:
     if args.scenario not in WORKLOAD_SCRIPTS and args.k6_script is None:
-        raise ValueError(f"scenario {args.scenario} does not use a k6 workload")
+        msg = f"scenario {args.scenario} does not use a k6 workload"
+        raise ValueError(msg)
     script = (
         args.k6_script
         if args.k6_script is not None
@@ -453,7 +458,9 @@ def run_one(
             status = "passed" if verifier_result["verdict"] == "passed" else "failed"
             status_error = None if status == "passed" else "verifier failed"
         elif args.scenario == "e3-degradation":
-            assert k6_script is not None
+            if k6_script is None:
+                msg = f"scenario {args.scenario} requires a k6 workload script"
+                raise RuntimeError(msg)
             run_metrics = run_e3_node_degradation(
                 args=args,
                 k6_script=k6_script,
@@ -469,7 +476,9 @@ def run_one(
             else:
                 status, status_error = status_from_k6_metrics(run_metrics)
         elif args.scenario == "e4-hot-key":
-            assert k6_script is not None
+            if k6_script is None:
+                msg = f"scenario {args.scenario} requires a k6 workload script"
+                raise RuntimeError(msg)
             run_metrics = run_e4_hot_key(
                 args=args,
                 k6_script=k6_script,
@@ -480,7 +489,9 @@ def run_one(
             )
             status, status_error = "passed", None  # errors are intentional data
         elif args.scenario == "e5-leaderless":
-            assert k6_script is not None
+            if k6_script is None:
+                msg = f"scenario {args.scenario} requires a k6 workload script"
+                raise RuntimeError(msg)
             run_metrics = run_e5_leaderless(
                 args=args,
                 k6_script=k6_script,
@@ -491,7 +502,9 @@ def run_one(
             )
             status, status_error = status_from_k6_metrics(run_metrics)
         elif args.scenario == "e6-recovery":
-            assert k6_script is not None
+            if k6_script is None:
+                msg = f"scenario {args.scenario} requires a k6 workload script"
+                raise RuntimeError(msg)
             run_metrics = run_e6_recovery(
                 args=args,
                 k6_script=k6_script,
@@ -505,8 +518,9 @@ def run_one(
             )
             status, status_error = "passed", None  # errors are intentional data
         else:
-            # k6-mixed: single-phase k6 run
-            assert k6_script is not None
+            if k6_script is None:
+                msg = f"scenario {args.scenario} requires a k6 workload script"
+                raise RuntimeError(msg)
             events.record("baseline_start")
             run_k6(
                 k6_script=k6_script,
@@ -709,22 +723,18 @@ def write_matrix_report(
                 "| --- | ---: | --- |",
             ]
         )
-        for nc_key in sorted(by_nc, key=lambda k: int(k)):
+        for nc_key in sorted(by_nc, key=int):
             entry = by_nc[nc_key]
             mean = entry.get("mean")
             ci = entry.get("ci")
             mean_str = f"{mean:.6g}" if mean is not None else "—"
-            if ci is not None:
-                ci_str = f"[{ci[0]:.6g}, {ci[1]:.6g}]"
-            else:
-                ci_str = "—"
+            ci_str = f"[{ci[0]:.6g}, {ci[1]:.6g}]" if ci is not None else "—"
             lines.append(f"| {nc_key} | {mean_str} | {ci_str} |")
         lines.append("")
 
     # Per-node subdirectory links
     lines.extend(["## Per-node details", ""])
-    for nc in sorted(per_node):
-        lines.append(f"- [nodes-{nc}](nodes-{nc}/report.md)")
+    lines.extend(f"- [nodes-{nc}](nodes-{nc}/report.md)" for nc in sorted(per_node))
     lines.append("")
 
     path.write_text("\n".join(lines), encoding="utf-8")
@@ -818,13 +828,15 @@ def main(argv: Sequence[str]) -> int:
     args, extra_k6_args = parse_args(argv)
     if args.runs < 30 and not args.allow_low_runs:
         print(
-            "error: research scenarios require --runs >= 30; use --allow-low-runs for debugging",
+            "error: research scenarios require --runs >= 30; "
+            "use --allow-low-runs for debugging",
             file=sys.stderr,
         )
         return 2
     if phased_scenario(args) and not 1 <= args.fault_node <= args.node_count:
         print(
-            f"error: --fault-node must be between 1 and --node-count ({args.node_count})",
+            f"error: --fault-node must be between 1 and "
+            f"--node-count ({args.node_count})",
             file=sys.stderr,
         )
         return 2

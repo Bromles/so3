@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 SUPPORTED_NODE_COUNTS = (1, 3, 5, 7)
 
@@ -30,7 +33,7 @@ class NodeSpec:
     def peer_entry(self) -> str:
         return f"{self.node_id}@{self.rpc_addr}"
 
-    def env(self, peers: list["NodeSpec"]) -> dict[str, str]:
+    def env(self, peers: list[NodeSpec]) -> dict[str, str]:
         return {
             "SO3_NODE_ID": self.node_id,
             "SO3_OBJECT_ADDR": self.object_addr,
@@ -76,7 +79,8 @@ def stable_node_id(index: int) -> str:
     """Return deterministic UUIDs so persisted data dirs are reproducible."""
 
     if index < 1:
-        raise ValueError("node index must be positive")
+        msg = "node index must be positive"
+        raise ValueError(msg)
     return f"00000000-0000-0000-0000-{index:012d}"
 
 
@@ -92,9 +96,8 @@ def generate_topology(
 
     if node_count not in SUPPORTED_NODE_COUNTS:
         supported = ", ".join(str(value) for value in SUPPORTED_NODE_COUNTS)
-        raise ValueError(
-            f"unsupported node count {node_count}; expected one of {supported}"
-        )
+        msg = f"unsupported node count {node_count}; expected one of {supported}"
+        raise ValueError(msg)
 
     nodes = [
         NodeSpec(

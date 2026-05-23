@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 import math
-from pathlib import Path
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from scipy import stats as scipy_stats
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+    from pathlib import Path
 
 DEFAULT_PERCENTILES = (10, 25, 50, 75, 90, 95, 99)
 
@@ -190,13 +193,13 @@ def write_aggregate_summary(result_dir: Path) -> dict[str, Any]:
 
 def markdown_table_for_metrics(metrics: dict[str, Any]) -> str:
     lines = [
-        "| metric | n | mean | 95% CI | median | stddev | cv % | p90 | p95 | p99 | min | max |",
-        "| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| metric | n | mean | 95% CI | median | stddev | cv % | p90 | p95 | p99 | min | max |",  # noqa: E501
+        "| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",  # noqa: E501
     ]
     for name, stat in metrics.items():
 
-        def fmt(key: str) -> str:
-            v = stat.get(key)
+        def fmt(key: str, _stat: dict[str, Any] = stat) -> str:
+            v = _stat.get(key)
             if v is None:
                 return ""
             return str(v) if isinstance(v, int) else f"{v:.6g}"

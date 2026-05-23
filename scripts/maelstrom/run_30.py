@@ -19,7 +19,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Sequence
+from typing import TYPE_CHECKING
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[1]
@@ -28,6 +28,9 @@ DEFAULT_RESULTS_DIR = REPO_ROOT / "results" / "maelstrom"
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from run import main as run_maelstrom  # noqa: E402
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
@@ -58,11 +61,16 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 def run_once(args: argparse.Namespace, run_index: int, run_dir: Path) -> dict:
     run_dir.mkdir(parents=True, exist_ok=True)
     argv = [
-        "--node-count", str(args.node_count),
-        "--time-limit", str(args.time_limit),
-        "--rate", str(args.rate),
-        "--concurrency", args.concurrency,
-        "--data-dir", str(run_dir / "maelstrom-data"),
+        "--node-count",
+        str(args.node_count),
+        "--time-limit",
+        str(args.time_limit),
+        "--rate",
+        str(args.rate),
+        "--concurrency",
+        args.concurrency,
+        "--data-dir",
+        str(run_dir / "maelstrom-data"),
         "--no-build",
     ]
     if args.nemesis:
@@ -139,7 +147,7 @@ def write_report(outdir: Path, aggregate: dict) -> Path:
     for r in aggregate["run_results"]:
         ok = "yes" if r["passed"] else "**no**"
         lines.append(
-            f"| {r['run_index']:03d} | {ok} | {r['elapsed_secs']:.1f} | {r['returncode']} |"
+            f"| {r['run_index']:03d} | {ok} | {r['elapsed_secs']:.1f} | {r['returncode']} |"  # noqa: E501
         )
 
     report_path = outdir / "report.md"
@@ -167,11 +175,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = subprocess.run(
             ["cargo", "build", "--release", "-p", "so3-maelstrom"],
             cwd=REPO_ROOT,
+            check=False,
         )
         if result.returncode != 0:
             return result.returncode
 
-    print(f"Maelstrom lin-kv x{args.runs} ({args.node_count} nodes, nemesis={args.nemesis or 'none'})")
+    print(
+        f"Maelstrom lin-kv x{args.runs} "
+        f"({args.node_count} nodes, nemesis={args.nemesis or 'none'})"
+    )
     print()
 
     run_results: list[dict] = []
@@ -193,7 +205,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     print()
     print(f"aggregate: {outdir / 'aggregate.json'}")
     print(f"report:    {report_path}")
-    print(f"verdict:   {aggregate['verdict']}  ({aggregate['runs_passed']}/{aggregate['runs_total']} passed)")
+    print(
+        f"verdict:   {aggregate['verdict']}  "
+        f"({aggregate['runs_passed']}/{aggregate['runs_total']} passed)"
+    )
     return 0 if aggregate["runs_failed"] == 0 else 1
 
 

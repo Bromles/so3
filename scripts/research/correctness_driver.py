@@ -14,14 +14,16 @@ import json
 import random
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
 import aioboto3
 import aiohttp
 from botocore.client import Config
 from botocore.exceptions import BotoCoreError, ClientError
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 DEFAULT_ACCESS_KEY = "so3testkey000000"
 DEFAULT_SECRET_KEY = "so3testsecret0000000000000000000"
@@ -29,7 +31,7 @@ DEFAULT_REGION = "us-east-1"
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def sha256_hex(data: bytes) -> str:
@@ -165,7 +167,8 @@ class CorrectnessDriver:
         faulty_node_fn: Any | None = None,
     ) -> None:
         if not entry_urls:
-            raise ValueError("at least one entry URL is required")
+            msg = "at least one entry URL is required"
+            raise ValueError(msg)
         self.entry_urls = entry_urls
         self.history = HistoryWriter(history_path)
         self.bucket = bucket
@@ -276,7 +279,8 @@ class CorrectnessDriver:
                 response = await client.delete_object(Bucket=self.bucket, Key=key)
                 result = self._result_from_response(response)
             else:
-                raise ValueError(f"unsupported operation type: {operation_type}")
+                msg = f"unsupported operation type: {operation_type}"
+                raise ValueError(msg)
         except (ClientError, BotoCoreError, aiohttp.ClientError) as error:
             result = S3CallResult(
                 status=status_from_exception(error),
@@ -450,7 +454,8 @@ class RecoverySentinel:
         object_size: int = 64,
     ) -> None:
         if not entry_urls:
-            raise ValueError("at least one entry URL is required")
+            msg = "at least one entry URL is required"
+            raise ValueError(msg)
         self.bucket = bucket
         self.seed = seed
         self.count = count

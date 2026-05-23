@@ -1,16 +1,21 @@
-"""E3 node degradation scenario: phased baseline → fail → degraded → recover → restored."""
+"""E3 node degradation scenario:
+phased baseline → fail → degraded → recover → restored.
+"""
 
 from __future__ import annotations
 
 import time
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import faults
-import manifest
 import metrics as metrics_module
 import metrics_timeseries
 from runner import run_k6_phase
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    import manifest
 
 
 def _alive_entry_urls(all_urls: list[str], fault_node: int) -> list[str]:
@@ -63,7 +68,7 @@ def run_e3_node_degradation(
         phase="degraded",
         duration=phase_durations["degraded"],
         events=events,
-        entry_urls_override=alive_urls if alive_urls else None,
+        entry_urls_override=alive_urls or None,
     )
 
     recovery_start = time.monotonic()
@@ -95,7 +100,7 @@ def run_e3_node_degradation(
         events.record("restored_warmup_end")
 
     events.record("normal_restored", node_index=args.fault_node)
-    phase_exports["restored"], restored_stream = run_k6_phase(
+    phase_exports["restored"], _restored_stream = run_k6_phase(
         args=args,
         k6_script=k6_script,
         run_dir=run_dir,

@@ -8,9 +8,10 @@ unsupported operation until a proxy-based network layer is introduced.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import NoReturn
+from typing import TYPE_CHECKING, NoReturn
 
-from cluster import So3Cluster
+if TYPE_CHECKING:
+    from cluster import So3Cluster
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,8 @@ def restart_node(cluster: So3Cluster, node_index: int) -> FaultEvent:
 
 
 def unsupported_partition() -> NoReturn:
-    raise NotImplementedError(
-        "real-cluster network partitions require a proxy-based fault layer; use Maelstrom scenarios for now"
+    msg = (
+        "real-cluster network partitions require a proxy-based fault "
+        "layer; use Maelstrom scenarios for now"
     )
+    raise NotImplementedError(msg)

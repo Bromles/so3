@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import itertools
 import json
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from _common import (
     detect_scenario as _detect_scenario,
@@ -21,6 +21,9 @@ from _common import (
 from _common import (
     node_total_samples as _node_total_samples,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 PHASE_ORDER = (
     "baseline",
@@ -54,9 +57,9 @@ TIMELINE_FALLBACK_POSITIONS = {
 
 
 def _pyplot() -> Any:
-    import matplotlib
+    import matplotlib as mpl
 
-    matplotlib.use("Agg")
+    mpl.use("Agg")
     import matplotlib.pyplot as plt
 
     return plt
@@ -146,14 +149,14 @@ def _plot_repeatability(
     if latency_y:
         axes[0].plot(latency_x, latency_y, marker="o", linewidth=1.5)
         axes[0].set_ylabel(latency_label)
-        axes[0].grid(True, alpha=0.3)
+        axes[0].grid(visible=True, alpha=0.3)
     else:
         axes[0].axis("off")
     if throughput_y:
         axes[1].plot(throughput_x, throughput_y, marker="o", linewidth=1.5)
         axes[1].set_ylabel(throughput_label)
         axes[1].set_xlabel("run")
-        axes[1].grid(True, alpha=0.3)
+        axes[1].grid(visible=True, alpha=0.3)
     else:
         axes[1].axis("off")
     fig.suptitle("Repeatability across runs")
@@ -180,8 +183,8 @@ def _load_events(path: Path) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     try:
         with path.open(encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
+            for raw_line in f:
+                line = raw_line.strip()
                 if not line:
                     continue
                 try:
@@ -210,9 +213,7 @@ def _interpolate_event_position(
         return None
     if event_time <= phase_times[0][0]:
         return phase_times[0][1]
-    for (left_time, left_x), (right_time, right_x) in zip(
-        phase_times, phase_times[1:], strict=False
-    ):
+    for (left_time, left_x), (right_time, right_x) in itertools.pairwise(phase_times):
         if event_time <= right_time:
             span = right_time - left_time
             if span <= 0.0:
@@ -311,7 +312,7 @@ def _plot_phases(plt: Any, aggregate: dict[str, Any], plots_dir: Path) -> Path |
     ax.set_xticklabels(phases)
     ax.set_ylabel("normalized to baseline")
     ax.set_title("Phase behavior vs baseline")
-    ax.grid(True, axis="y", alpha=0.3)
+    ax.grid(visible=True, axis="y", alpha=0.3)
     ax.legend()
     return _save(fig, plots_dir / "phases.png")
 
@@ -411,7 +412,7 @@ def _plot_timeline(
     ax.set_xticklabels(phases)
     ax.set_ylabel("normalized to baseline")
     ax.set_title("Fault timeline")
-    ax.grid(True, alpha=0.3)
+    ax.grid(visible=True, alpha=0.3)
     ax.legend(loc="best")
     return _save(fig, plots_dir / "timeline.png")
 
@@ -435,7 +436,7 @@ def _plot_accord_paths(
     ax.set_ylim(0.0, 1.05)
     ax.set_ylabel("operation ratio")
     ax.set_title("Consensus path ratios")
-    ax.grid(True, axis="y", alpha=0.3)
+    ax.grid(visible=True, axis="y", alpha=0.3)
     return _save(fig, plots_dir / "accord_paths.png")
 
 
@@ -480,7 +481,7 @@ def _plot_recovery(plt: Any, aggregate: dict[str, Any], plots_dir: Path) -> Path
                 label=label,
             )
     ax_latency.set_ylabel("latency, ms")
-    ax_latency.grid(True, alpha=0.3)
+    ax_latency.grid(visible=True, alpha=0.3)
 
     ax_success = ax_latency.twinx()
     if any(value is not None for value in success_ratio):
@@ -581,7 +582,7 @@ def _plot_symmetry(
     ax.set_xticklabels([f"node{node}" for node in nodes])
     ax.set_ylabel("degradation factor vs baseline")
     ax.set_title("Symmetry of node failures")
-    ax.grid(True, axis="y", alpha=0.3)
+    ax.grid(visible=True, axis="y", alpha=0.3)
     ax.legend()
     return _save(fig, plots_dir / "symmetry.png")
 
@@ -622,7 +623,7 @@ def _plot_hot_key(
     ax.set_xticklabels(metrics)
     ax.set_ylabel("p95 latency, ms")
     ax.set_title("Hot-key vs independent-key latency")
-    ax.grid(True, axis="y", alpha=0.3)
+    ax.grid(visible=True, axis="y", alpha=0.3)
     ax.legend()
     return _save(fig, plots_dir / "hot_key.png")
 
@@ -667,12 +668,12 @@ def _plot_nodes(
     axes[0].bar(x, shares)
     axes[0].set_ylabel("request share, %")
     axes[0].set_title("Per-node entry distribution")
-    axes[0].grid(True, axis="y", alpha=0.3)
+    axes[0].grid(visible=True, axis="y", alpha=0.3)
     axes[1].bar(x, put_p95_means)
     axes[1].set_ylabel("put p95 latency, ms")
     axes[1].set_xticks(x)
     axes[1].set_xticklabels(nodes)
-    axes[1].grid(True, axis="y", alpha=0.3)
+    axes[1].grid(visible=True, axis="y", alpha=0.3)
     return _save(fig, plots_dir / "nodes.png")
 
 
@@ -697,30 +698,32 @@ def generate_plots(
     plt = _pyplot()
     generated: list[Path] = []
     try:
-        for path in (
-            _plot_repeatability(plt, summaries, plots_dir, scenario),
-            _plot_accord_paths(plt, aggregate, plots_dir),
-            _plot_phases(plt, aggregate, plots_dir)
-            if scenario in {"e3-degradation", "e6-recovery"}
-            else None,
-            _plot_timeline(plt, aggregate, result_dir, plots_dir)
-            if scenario in {"e3-degradation", "e6-recovery"}
-            else None,
-            _plot_symmetry(plt, summaries, plots_dir)
-            if scenario in {"e3-degradation", "e6-recovery"}
-            else None,
-            _plot_recovery(plt, aggregate, plots_dir)
-            if scenario == "e6-recovery"
-            else None,
-            _plot_hot_key(plt, summaries, plots_dir)
-            if scenario == "e4-hot-key"
-            else None,
-            _plot_nodes(plt, summaries, plots_dir)
-            if scenario == "e5-leaderless"
-            else None,
-        ):
-            if path is not None:
-                generated.append(path)
+        generated.extend(
+            p
+            for p in (
+                _plot_repeatability(plt, summaries, plots_dir, scenario),
+                _plot_accord_paths(plt, aggregate, plots_dir),
+                _plot_phases(plt, aggregate, plots_dir)
+                if scenario in {"e3-degradation", "e6-recovery"}
+                else None,
+                _plot_timeline(plt, aggregate, result_dir, plots_dir)
+                if scenario in {"e3-degradation", "e6-recovery"}
+                else None,
+                _plot_symmetry(plt, summaries, plots_dir)
+                if scenario in {"e3-degradation", "e6-recovery"}
+                else None,
+                _plot_recovery(plt, aggregate, plots_dir)
+                if scenario == "e6-recovery"
+                else None,
+                _plot_hot_key(plt, summaries, plots_dir)
+                if scenario == "e4-hot-key"
+                else None,
+                _plot_nodes(plt, summaries, plots_dir)
+                if scenario == "e5-leaderless"
+                else None,
+            )
+            if p is not None
+        )
     finally:
         plt.close("all")
     return generated

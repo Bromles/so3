@@ -5,15 +5,18 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import faults
-import manifest
 import metrics as metrics_module
 import metrics_timeseries
 from correctness_driver import RecoverySentinel
 from runner import run_k6_phase
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    import manifest
 
 
 def _alive_entry_urls(all_urls: list[str], fault_node: int) -> list[str]:
@@ -39,7 +42,8 @@ def run_e6_recovery(
     after the degraded phase before being restarted. Tests whether the cluster
     recovers correctly after a longer absence.
 
-    Phases: baseline -> (crash) -> degraded -> (wait) -> (restart) -> recovery -> restored.
+    Phases: baseline -> (crash) -> degraded -> (wait) -> (restart)
+    -> recovery -> restored.
 
     When --e6-re-crash is enabled, the node is crashed AGAIN after the initial
     recovery phase, then restarted a second time:
@@ -95,7 +99,7 @@ def run_e6_recovery(
         phase="degraded",
         duration=phase_durations["degraded"],
         events=events,
-        entry_urls_override=alive_urls if alive_urls else None,
+        entry_urls_override=alive_urls or None,
     )
 
     if long_downtime_secs > 0:
@@ -142,7 +146,7 @@ def run_e6_recovery(
             phase="re_crash_degraded",
             duration=re_crash_duration,
             events=events,
-            entry_urls_override=alive_urls if alive_urls else None,
+            entry_urls_override=alive_urls or None,
         )
 
         re_recovery_start = time.monotonic()

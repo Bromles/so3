@@ -1,8 +1,10 @@
+#!/usr/bin/env python3
 """Cross-platform k6 S3 benchmark runner for SO3.
 
 Usage:
   python scripts/k6/run-backend-benchmark.py --backend so3 --runs 30
-  python scripts/k6/run-backend-benchmark.py --backend so3-cluster --runs 30 --outdir /tmp/so3-cluster-k6-clean-30-json
+  python scripts/k6/run-backend-benchmark.py --backend so3-cluster \
+      --runs 30 --outdir /tmp/so3-cluster-k6-clean-30-json
 
 Dependencies:
   - k6 is required for this Python runner
@@ -12,6 +14,7 @@ Dependencies:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import shutil
@@ -24,11 +27,13 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import TYPE_CHECKING
 
 import numpy as np
 import psutil
 
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
 
 SUPPORTED_BACKENDS = {"so3", "so3-cluster"}
 
@@ -51,7 +56,7 @@ class Settings:
     so3_bucket: str
 
     managed_processes: list[subprocess.Popen[bytes]] = field(default_factory=list)
-    sampler: "ResourceSampler | None" = None
+    sampler: ResourceSampler | None = None
     run_data_dir: Path | None = None
     run_log_file: Path | None = None
 
@@ -68,7 +73,7 @@ class Settings:
     so3_addr: str = ""
 
 
-def env_get_bool(env: dict[str, str], name: str, default: bool) -> bool:
+def env_get_bool(env: dict[str, str], name: str, *, default: bool) -> bool:
     value = env.get(name)
     if value is None:
         return default
@@ -98,9 +103,8 @@ def build_settings(argv: Sequence[str]) -> Settings:
     backend = args.backend
     if backend not in SUPPORTED_BACKENDS:
         expected = "|".join(sorted(SUPPORTED_BACKENDS))
-        raise SystemExit(
-            f"error: unsupported backend {backend!r} (expected {expected})"
-        )
+        msg = f"error: unsupported backend {backend!r} (expected {expected})"
+        raise SystemExit(msg)
 
     env = os.environ.copy()
     out_dir = (
@@ -144,11 +148,11 @@ def build_settings(argv: Sequence[str]) -> Settings:
             env, "BACKEND_START_TIMEOUT_SECS", 20.0
         ),
         backend_stop_timeout_secs=env_get_float(env, "BACKEND_STOP_TIMEOUT_SECS", 10.0),
-        keep_run_dirs=env_get_bool(env, "KEEP_RUN_DIRS", False),
+        keep_run_dirs=env_get_bool(env, "KEEP_RUN_DIRS", default=False),
         so3_object_addr=so3_object_addr,
         so3_rpc_addr=so3_rpc_addr,
         so3_bin=so3_bin,
-        so3_require_release=env_get_bool(env, "SO3_REQUIRE_RELEASE", True),
+        so3_require_release=env_get_bool(env, "SO3_REQUIRE_RELEASE", default=True),
         so3_addr=so3_addr,
     )
     settings.resource_file.write_text("", encoding="utf-8")
@@ -168,15 +172,17 @@ def assert_release_binary(settings: Settings) -> None:
         or normalized == "target/release/so3.exe"
     )
     if not allowed:
-        raise SystemExit(
+        msg = (
             f"error: refusing to benchmark non-release so3 binary {settings.so3_bin}\n"
-            "       set SO3_BIN=target/release/so3, or set SO3_REQUIRE_RELEASE=0 for script debugging only"
+            "       set SO3_BIN=target/release/so3, or set "
+            "SO3_REQUIRE_RELEASE=0 for script debugging only"
         )
+        raise SystemExit(msg)
 
 
 def http_ready(url: str) -> bool:
     try:
-        with urllib.request.urlopen(url, timeout=1):  # noqa: S310 - benchmark-local URL
+        with urllib.request.urlopen(url, timeout=1):
             return True
     except urllib.error.HTTPError:
         return True
@@ -185,27 +191,35 @@ def http_ready(url: str) -> bool:
 
 
 def wait_for_ready(settings: Settings, url: str) -> None:
-    assert settings.run_log_file is not None
+    if settings.run_log_file is None:
+        msg = "run_log_file must be set before calling wait_for_ready"
+        raise RuntimeError(msg)
     deadline = time.monotonic() + settings.backend_start_timeout_secs
     while time.monotonic() < deadline:
         for proc in settings.managed_processes:
             if proc.poll() is not None:
-                raise RuntimeError(
-                    f"backend process exited before becoming ready; see {settings.run_log_file}"
+                msg = (
+                    f"backend process exited before becoming ready; "
+                    f"see {settings.run_log_file}"
                 )
+                raise RuntimeError(msg)
 
         if http_ready(url):
             return
         time.sleep(0.2)
-    raise RuntimeError(
-        f"backend did not become ready within {settings.backend_start_timeout_secs}s; see {settings.run_log_file}"
+    msg = (
+        f"backend did not become ready within "
+        f"{settings.backend_start_timeout_secs}s; see {settings.run_log_file}"
     )
+    raise RuntimeError(msg)
 
 
 def popen_backend(
     settings: Settings, env_updates: dict[str, str], *, append_log: bool
 ) -> subprocess.Popen[bytes]:
-    assert settings.run_log_file is not None
+    if settings.run_log_file is None:
+        msg = "run_log_file must be set before calling popen_backend"
+        raise RuntimeError(msg)
     env = settings.env.copy()
     env.update(env_updates)
     mode = "ab" if append_log else "wb"
@@ -220,7 +234,9 @@ def popen_backend(
 
 def start_so3_cluster(settings: Settings) -> None:
     assert_release_binary(settings)
-    assert settings.run_data_dir is not None
+    if settings.run_data_dir is None:
+        msg = "run_data_dir must be set before calling start_so3_cluster"
+        raise RuntimeError(msg)
     node1_id = "11111111-1111-1111-1111-111111111111"
     node2_id = "22222222-2222-2222-2222-222222222222"
     node3_id = "33333333-3333-3333-3333-333333333333"
@@ -298,20 +314,16 @@ def start_backend(settings: Settings, run_index: int) -> None:
 def stop_backend(settings: Settings) -> None:
     for proc in settings.managed_processes:
         if proc.poll() is None:
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 proc.terminate()
-            except ProcessLookupError:
-                pass
     deadline = time.monotonic() + settings.backend_stop_timeout_secs
     for proc in settings.managed_processes:
         remaining = max(0.0, deadline - time.monotonic())
         try:
             proc.wait(timeout=remaining)
         except subprocess.TimeoutExpired:
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 proc.kill()
-            except ProcessLookupError:
-                pass
             proc.wait(timeout=5)
     settings.managed_processes = []
 
@@ -325,7 +337,8 @@ def cleanup_run_data_dir(settings: Settings) -> None:
             shutil.rmtree(settings.run_data_dir, ignore_errors=True)
         else:
             print(
-                f"warning: refusing to remove unexpected data dir {settings.run_data_dir}",
+                f"warning: refusing to remove unexpected data dir "
+                f"{settings.run_data_dir}",
                 file=sys.stderr,
             )
     settings.run_data_dir = None
@@ -419,7 +432,8 @@ def metric_value(run: dict, metric_key: str, stat: str) -> float | None:
     metric = run.get("metrics", {}).get(metric_key)
     if not isinstance(metric, dict):
         return None
-    # Modern k6 summary-export nests stats under "values"; fall back to flat metric for older versions.
+    # Modern k6 summary-export nests stats under "values";
+    # fall back to flat metric for older versions.
     values = metric.get("values", {})
     if not isinstance(values, dict):
         values = {}
@@ -501,11 +515,13 @@ def aggregate_resources(settings: Settings) -> None:
         return
     n, mean, sd, _var, _cv, mn, mx = aggregate_values(cpu_values)
     print(
-        f"  CPU %        :  n={n:<4d} mean={mean:8.2f}  σ={sd:8.2f}  min={mn:8.2f}  max={mx:8.2f}"
+        f"  CPU %        :  n={n:<4d} mean={mean:8.2f}  "
+        f"σ={sd:8.2f}  min={mn:8.2f}  max={mx:8.2f}"
     )
     n, mean, sd, _var, _cv, mn, mx = aggregate_values(rss_values)
     print(
-        f"  RSS MiB      :  n={n:<4d} mean={mean:8.2f}  σ={sd:8.2f}  min={mn:8.2f}  max={mx:8.2f}"
+        f"  RSS MiB      :  n={n:<4d} mean={mean:8.2f}  "
+        f"σ={sd:8.2f}  min={mn:8.2f}  max={mx:8.2f}"
     )
 
 
@@ -556,9 +572,6 @@ def main(argv: Sequence[str]) -> int:
             finally:
                 cleanup(settings)
             print("done")
-        print()
-        print_summary(settings)
-        return 0
     except KeyboardInterrupt:
         cleanup(settings)
         print("interrupted", file=sys.stderr)
@@ -567,6 +580,10 @@ def main(argv: Sequence[str]) -> int:
         cleanup(settings)
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    else:
+        print()
+        print_summary(settings)
+        return 0
 
 
 if __name__ == "__main__":

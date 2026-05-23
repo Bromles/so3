@@ -7,12 +7,15 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Sequence
+from typing import TYPE_CHECKING
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from verify_history import verify_history_file  # noqa: E402
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:

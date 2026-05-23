@@ -6,10 +6,12 @@ import bisect
 import json
 import math
 from datetime import datetime
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import stats as stats_module
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 K6_LATENCY_METRICS = {"s3_put_ms", "s3_get_ms", "s3_head_ms", "s3_delete_ms"}
 K6_RATE_METRICS = {"s3_errors", "s3_timeouts", "s3_successes"}
@@ -38,8 +40,8 @@ def parse_k6_stream(
     want = metric_names or (K6_LATENCY_METRICS | K6_RATE_METRICS)
 
     with path.open(encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
+        for raw_line in f:
+            line = raw_line.strip()
             if not line:
                 continue
             try:
@@ -57,7 +59,8 @@ def parse_k6_stream(
             tag_value = _tag_key(record, tag_key)
             if tag_value is None:
                 tag_value = "__untagged__"
-            buckets.setdefault(tag_value, {}).setdefault(metric, []).append(float(value))
+            by_tag = buckets.setdefault(tag_value, {})
+            by_tag.setdefault(metric, []).append(float(value))
 
     return buckets
 
@@ -116,7 +119,8 @@ def stabilization_time_secs(
     threshold: float = 0.9,
     window_secs: float = 5.0,
 ) -> float | None:
-    """Return seconds from phase start until throughput reaches threshold * baseline_rate.
+    """Return seconds from phase start until throughput reaches
+    threshold * baseline_rate.
 
     Counts latency-metric Points per fixed-size time window and returns the
     elapsed time of the first full window whose observed request rate meets or
@@ -125,8 +129,8 @@ def stabilization_time_secs(
     """
     timestamps: list[float] = []
     with stream_path.open(encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
+        for raw_line in f:
+            line = raw_line.strip()
             if not line:
                 continue
             try:

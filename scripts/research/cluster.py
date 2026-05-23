@@ -13,11 +13,14 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import psutil
-from topology import NodeSpec, Topology
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from topology import NodeSpec, Topology
 
 
 @dataclass
@@ -33,7 +36,7 @@ class So3Cluster:
     binary: Path
     topology: Topology
     log_dir: Path
-    env: dict[str, str] = field(default_factory=lambda: os.environ.copy())
+    env: dict[str, str] = field(default_factory=os.environ.copy)
     start_timeout_secs: float = 20.0
     stop_timeout_secs: float = 10.0
     nodes: dict[int, ManagedNode] = field(default_factory=dict)
@@ -46,9 +49,11 @@ class So3Cluster:
         ):
             self.binary = self.binary.with_suffix(".exe")
         if not self.binary.exists():
-            raise FileNotFoundError(f"SO3 binary does not exist: {self.binary}")
+            msg = f"SO3 binary does not exist: {self.binary}"
+            raise FileNotFoundError(msg)
         if self.binary.is_dir():
-            raise IsADirectoryError(f"SO3 binary path is a directory: {self.binary}")
+            msg = f"SO3 binary path is a directory: {self.binary}"
+            raise IsADirectoryError(msg)
 
     def node_log_path(self, node_index: int) -> Path:
         return self.log_dir / f"node-{node_index}.log"
@@ -117,23 +122,25 @@ class So3Cluster:
             if http_ready(f"{url}/"):
                 return
             time.sleep(0.2)
-        raise TimeoutError(
-            f"SO3 node did not become ready within {self.start_timeout_secs}s: {url}"
-        )
+        msg = f"SO3 node did not become ready within {self.start_timeout_secs}s: {url}"
+        raise TimeoutError(msg)
 
     def raise_if_any_exited(self) -> None:
         for managed in self.nodes.values():
             code = managed.process.poll()
             if code is not None:
-                raise RuntimeError(
-                    f"SO3 {managed.spec.name} exited before cluster became ready with status {code}; see {self.log_dir}"
+                msg = (
+                    f"SO3 {managed.spec.name} exited before cluster became "
+                    f"ready with status {code}; see {self.log_dir}"
                 )
+                raise RuntimeError(msg)
 
     def node_spec(self, node_index: int) -> NodeSpec:
         for node in self.topology.nodes:
             if node.index == node_index:
                 return node
-        raise ValueError(f"unknown node index {node_index}")
+        msg = f"unknown node index {node_index}"
+        raise ValueError(msg)
 
     def process_ids(self) -> dict[str, int]:
         return {
@@ -171,7 +178,7 @@ class So3Cluster:
 
 def http_ready(url: str) -> bool:
     try:
-        with urllib.request.urlopen(url, timeout=1):  # noqa: S310 - benchmark-local URL
+        with urllib.request.urlopen(url, timeout=1):
             return True
     except urllib.error.HTTPError:
         return True

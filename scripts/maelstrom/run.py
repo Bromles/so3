@@ -14,7 +14,10 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Sequence
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[1]
@@ -70,9 +73,10 @@ def check_symlink_support() -> bool:
         link = tmp / "link.txt"
         target.write_text("ok")
         link.symlink_to(target)
-        return True
     except (OSError, NotImplementedError):
         return False
+    else:
+        return True
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -99,8 +103,15 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--maelstrom-bin", default="", metavar="PATH")
     parser.add_argument("--maelstrom-jar", default="", metavar="PATH")
-    parser.add_argument("--binary-path", default="", metavar="PATH", help="path to so3-maelstrom binary")
-    parser.add_argument("--data-dir", default="", metavar="DIR", help="SO3 data directory (temp dir if omitted)")
+    parser.add_argument(
+        "--binary-path", default="", metavar="PATH", help="path to so3-maelstrom binary"
+    )
+    parser.add_argument(
+        "--data-dir",
+        default="",
+        metavar="DIR",
+        help="SO3 data directory (temp dir if omitted)",
+    )
     return parser.parse_args(argv)
 
 
@@ -119,6 +130,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = subprocess.run(
             ["cargo", "build", "--release", "-p", "so3-maelstrom"],
             cwd=REPO_ROOT,
+            check=False,
         )
         if result.returncode != 0:
             return result.returncode
@@ -136,12 +148,18 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     command = [
         *resolve_maelstrom_command(args.maelstrom_bin, args.maelstrom_jar),
-        "--workload", args.workload,
-        "--bin", str(binary),
-        "--node-count", str(args.node_count),
-        "--time-limit", str(args.time_limit),
-        "--rate", str(args.rate),
-        "--concurrency", args.concurrency,
+        "--workload",
+        args.workload,
+        "--bin",
+        str(binary),
+        "--node-count",
+        str(args.node_count),
+        "--time-limit",
+        str(args.time_limit),
+        "--rate",
+        str(args.rate),
+        "--concurrency",
+        args.concurrency,
         "--no-ssh",
     ]
 
@@ -167,7 +185,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"Running: {' '.join(command)}")
     print(f"SO3_MAELSTROM_DATA_DIR={data_dir}")
 
-    return subprocess.run(command, cwd=REPO_ROOT, env=env).returncode
+    return subprocess.run(command, cwd=REPO_ROOT, env=env, check=False).returncode
 
 
 if __name__ == "__main__":

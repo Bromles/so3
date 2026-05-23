@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import shlex
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 CONSENSUS_PATHS = ("fast", "slow", "recovery")
 
@@ -117,9 +119,7 @@ def summary_from_k6_payload(k6: dict[str, Any]) -> dict[str, Any]:
     return metrics
 
 
-def safe_divide(
-    numerator: float | int | None, denominator: float | int | None
-) -> float | None:
+def safe_divide(numerator: float | None, denominator: float | None) -> float | None:
     if numerator is None or denominator is None:
         return None
     denominator = float(denominator)

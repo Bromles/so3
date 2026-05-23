@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 SUPPORTED_INVARIANTS = [
     "reads_return_only_successfully_written_values",
@@ -69,16 +71,15 @@ class VerificationResult:
 def load_history(path: Path) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     with path.open(encoding="utf-8") as f:
-        for line_number, line in enumerate(f, start=1):
-            line = line.strip()
+        for line_number, raw_line in enumerate(f, start=1):
+            line = raw_line.strip()
             if not line:
                 continue
             try:
                 records.append(json.loads(line))
             except json.JSONDecodeError as error:
-                raise ValueError(
-                    f"invalid JSONL at {path}:{line_number}: {error}"
-                ) from error
+                msg = f"invalid JSONL at {path}:{line_number}: {error}"
+                raise ValueError(msg) from error
     records.sort(
         key=lambda record: (
             float(record.get("start_monotonic_secs", 0.0)),
@@ -186,7 +187,8 @@ def verify_history(records: list[dict[str, Any]]) -> VerificationResult:
                         invariant="reads_return_only_successfully_written_values",
                         operation_id=record.get("operation_id"),
                         key=key,
-                        message=f"GET returned value {returned_hash} that was never successfully written for this key",
+                        message=f"GET returned value {returned_hash} "
+                        "that was never successfully written for this key",
                     )
                 )
             if _read_after_delete(records, key, read_start):
@@ -195,7 +197,8 @@ def verify_history(records: list[dict[str, Any]]) -> VerificationResult:
                         invariant="successful_delete_hides_prior_value_until_next_successful_put",
                         operation_id=record.get("operation_id"),
                         key=key,
-                        message="GET returned a value after successful DELETE and before a later successful PUT",
+                        message="GET returned a value after successful DELETE "
+                        "and before a later successful PUT",
                     )
                 )
 
@@ -208,7 +211,8 @@ def verify_history(records: list[dict[str, Any]]) -> VerificationResult:
                             invariant="head_etag_matches_successfully_written_values",
                             operation_id=record.get("operation_id"),
                             key=key,
-                            message="successful HEAD returned no etag but key has known etags",
+                            message="successful HEAD returned no etag "
+                            "but key has known etags",
                         )
                     )
             elif etags and returned_hash not in etags:
@@ -217,7 +221,8 @@ def verify_history(records: list[dict[str, Any]]) -> VerificationResult:
                         invariant="head_etag_matches_successfully_written_values",
                         operation_id=record.get("operation_id"),
                         key=key,
-                        message=f"HEAD returned etag {returned_hash} not seen in any PUT or GET for this key",
+                        message=f"HEAD returned etag {returned_hash} "
+                        "not seen in any PUT or GET for this key",
                     )
                 )
             if _read_after_delete(records, key, read_start):
@@ -226,7 +231,8 @@ def verify_history(records: list[dict[str, Any]]) -> VerificationResult:
                         invariant="successful_delete_hides_prior_value_until_next_successful_put",
                         operation_id=record.get("operation_id"),
                         key=key,
-                        message="HEAD returned 200 after successful DELETE and before a later successful PUT",
+                        message="HEAD returned 200 after successful DELETE "
+                        "and before a later successful PUT",
                     )
                 )
 
@@ -245,9 +251,10 @@ def _read_after_delete(
         if not is_success_or_ambiguous(record):
             continue
         del_end = _end(record)
-        if del_end < read_start:
-            if last_delete_end is None or del_end > last_delete_end:
-                last_delete_end = del_end
+        if del_end < read_start and (
+            last_delete_end is None or del_end > last_delete_end
+        ):
+            last_delete_end = del_end
 
     if last_delete_end is None:
         return False

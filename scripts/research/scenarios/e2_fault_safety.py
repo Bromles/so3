@@ -6,14 +6,18 @@ import asyncio
 import threading
 import time
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import faults
 import manifest
-from cluster import So3Cluster
 from correctness_driver import CorrectnessDriver
+
 from scripts.verify.verify_history import verify_history_file
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from cluster import So3Cluster
 
 
 @dataclass

@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import manifest
 import metrics as metrics_module
 import metrics_timeseries
 from runner import run_k6
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    import manifest
 
 
 def run_e5_leaderless(

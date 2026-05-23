@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import stats
 from _common import (
@@ -21,6 +20,9 @@ from _common import (
 from _common import (
     node_total_samples as _node_total_samples,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 PHASE_ORDER = (
     "baseline",
@@ -76,7 +78,7 @@ def _phase_summary_section(aggregate: dict[str, Any]) -> list[str]:
     lines = ["## Scenario phase summary", ""]
     lines.extend(
         [
-            "| phase | put p95 ms | put p99 ms | http req/s | success rate | timeout rate |",
+            "| phase | put p95 ms | put p99 ms | http req/s | success rate | timeout rate |",  # noqa: E501
             "| --- | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
@@ -117,7 +119,7 @@ def _phase_summary_section(aggregate: dict[str, Any]) -> list[str]:
             [
                 "### Normalized phase-vs-baseline summary",
                 "",
-                "| phase | throughput ratio | success ratio | timeout ratio | put p95 multiplier | get p95 multiplier |",
+                "| phase | throughput ratio | success ratio | timeout ratio | put p95 multiplier | get p95 multiplier |",  # noqa: E501
                 "| --- | ---: | ---: | ---: | ---: | ---: |",
             ]
         )
@@ -191,7 +193,7 @@ def _phase_summary_section(aggregate: dict[str, Any]) -> list[str]:
         if isinstance(verifier_stats, dict) and verifier_stats.get("n"):
             v_mean = verifier_stats.get("mean", 0.0) or 0.0
             v_n = int(verifier_stats.get("n", 0))
-            v_passed = int(round(v_mean * v_n))
+            v_passed = round(v_mean * v_n)
             lines.extend(
                 [
                     "### Verifier",
@@ -257,9 +259,12 @@ def _hot_key_section(summaries: list[dict[str, Any]]) -> list[str]:
         if hot is None and independent is None:
             continue
         ratio = None
-        if isinstance(hot, (int, float)) and isinstance(independent, (int, float)):
-            if float(independent) != 0.0:
-                ratio = float(hot) / float(independent)
+        if (
+            isinstance(hot, (int, float))
+            and isinstance(independent, (int, float))
+            and float(independent) != 0.0
+        ):
+            ratio = float(hot) / float(independent)
         lines.append(
             "| "
             + " | ".join(
