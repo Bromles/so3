@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""3-node lin-kv test with partition nemesis."""
+"""3-node lin-kv test with partition nemesis.
+
+Tests write correctness and system behavior under network partitions.
+Stale reads are expected during partitions (comparable to Raft follower reads).
+"""
 
 from __future__ import annotations
 

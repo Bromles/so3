@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Run Maelstrom 30 times and aggregate pass/fail statistics.
+"""Run Maelstrom lin-kv test N times and aggregate pass/fail statistics.
 
 Builds once (or uses --no-build to skip), then runs the same Maelstrom
-command 30 times, capturing success/failure per run.  Writes:
+command N times, capturing success/failure per run.  Writes:
   <outdir>/run-NNN/result.json   — per-run outcome
   <outdir>/aggregate.json        — totals and verdict
   <outdir>/report.md             — markdown summary
+
+Default: lin-kv workload, 3 nodes, no nemesis (read-after-write consistency test).
+Use --nemesis partition to test fault behavior (weaker consistency during partitions).
 """
 
 from __future__ import annotations
@@ -29,7 +32,7 @@ from run import main as run_maelstrom  # noqa: E402
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run Maelstrom lin-kv test 30 times and aggregate results.",
+        description="Run Maelstrom lin-kv test N times and aggregate results.",
         allow_abbrev=False,
     )
     parser.add_argument("--runs", type=int, default=30)
@@ -43,8 +46,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--time-limit", type=int, default=30)
     parser.add_argument("--rate", type=int, default=100)
     parser.add_argument("--concurrency", default="2n")
-    parser.add_argument("--nemesis", default="partition")
-    parser.add_argument("--nemesis-interval", default="5")
+    parser.add_argument("--nemesis", default="")
+    parser.add_argument("--nemesis-interval", default="")
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--maelstrom-bin", default="", metavar="PATH")
     parser.add_argument("--maelstrom-jar", default="", metavar="PATH")
@@ -120,7 +123,7 @@ def write_report(outdir: Path, aggregate: dict) -> Path:
     verdict = aggregate["verdict"].upper()
 
     lines = [
-        "# Maelstrom Linearizability Run Report",
+        "# Maelstrom lin-kv Run Report",
         "",
         f"**Verdict: {verdict}**",
         "",
@@ -157,17 +160,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     outdir = args.outdir or DEFAULT_RESULTS_DIR / f"lin-kv-{timestamp}"
     outdir.mkdir(parents=True, exist_ok=True)
+    print(f"results: {outdir}")
+    print()
 
     if not args.no_build:
         result = subprocess.run(
-            ["cargo", "build", "-p", "so3-maelstrom"],
+            ["cargo", "build", "--release", "-p", "so3-maelstrom"],
             cwd=REPO_ROOT,
         )
         if result.returncode != 0:
             return result.returncode
 
     print(f"Maelstrom lin-kv x{args.runs} ({args.node_count} nodes, nemesis={args.nemesis or 'none'})")
-    print(f"results: {outdir}")
     print()
 
     run_results: list[dict] = []

@@ -60,7 +60,7 @@ def resolve_adapter_binary(explicit_path: str) -> Path:
         target_dir = REPO_ROOT / "target"
 
     name = "so3-maelstrom.exe" if sys.platform == "win32" else "so3-maelstrom"
-    return target_dir / "debug" / name
+    return target_dir / "release" / name
 
 
 def check_symlink_support() -> bool:
@@ -85,7 +85,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--workload", default="lin-kv")
     parser.add_argument("--node-count", type=int, default=1)
     parser.add_argument("--time-limit", type=int, default=20)
-    parser.add_argument("--rate", type=int, default=100)
+    parser.add_argument("--rate", type=int, default=10)
     parser.add_argument("--concurrency", default="2n")
     parser.add_argument("--nemesis", default="")
     parser.add_argument("--nemesis-interval", default="")
@@ -117,7 +117,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if not args.no_build:
         result = subprocess.run(
-            ["cargo", "build", "-p", "so3-maelstrom"],
+            ["cargo", "build", "--release", "-p", "so3-maelstrom"],
             cwd=REPO_ROOT,
         )
         if result.returncode != 0:

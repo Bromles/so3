@@ -1,5 +1,5 @@
 use crate::client::interface::BlobPeerClient;
-use crate::domain::consensus::transport::{CommitRequest, CommitResponse};
+use crate::domain::consensus::transport::{ApplyRequest, CommitRequest, CommitResponse};
 use crate::domain::error::So3Result;
 use crate::repository::blob::BlobRepository;
 use crate::repository::consensus_journal::ConsensusJournalRepository;
@@ -36,8 +36,11 @@ where
         let origin_node = req.command_id.origin_node_id.clone();
         let operation_id_sequence = req.command_id.sequence;
         let key = Self::command_object_key(&req.command).clone();
-        self.coordinator
-            .register_committed(key, req.timestamp, req.command_id);
+        self.coordinator.register_committed(
+            key.clone(),
+            req.timestamp.clone(),
+            req.command_id.clone(),
+        );
 
         info!(
             coordination_event = "apply_backlog",
@@ -49,6 +52,18 @@ where
             commit_dependency_count,
             "inbound commit"
         );
+
+        let apply_req = ApplyRequest {
+            command_id: req.command_id,
+            command: req.command,
+            timestamp_zero: req.timestamp_zero,
+            timestamp: req.timestamp,
+            dependencies: req.dependencies,
+        };
+        let coordinator = self.coordinator.clone();
+        tokio::spawn(async move {
+            let _ = coordinator.apply(apply_req).await;
+        });
 
         Ok(CommitResponse)
     }

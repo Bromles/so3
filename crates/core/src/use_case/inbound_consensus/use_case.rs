@@ -102,10 +102,16 @@ where
     pub(super) async fn fetch_blob_from_any_peer(&self, blob_id: &BlobId) -> So3Result<()> {
         for client in self.blob_clients.values() {
             if let Ok(mut stream) = client.fetch(blob_id).await {
+                let temp_blob_id = BlobId::new();
                 let mut failed = false;
                 while let Some(chunk) = stream.next().await {
                     if let Ok(c) = chunk {
-                        if self.blob_repository.append_chunk(blob_id, c).await.is_err() {
+                        if self
+                            .blob_repository
+                            .append_chunk(&temp_blob_id, c)
+                            .await
+                            .is_err()
+                        {
                             failed = true;
                             break;
                         }
@@ -115,10 +121,10 @@ where
                     }
                 }
                 if failed {
-                    let _ = self.blob_repository.abort(blob_id).await;
+                    let _ = self.blob_repository.abort(&temp_blob_id).await;
                     continue;
                 }
-                return self.blob_repository.commit(blob_id).await;
+                return self.blob_repository.commit_as(&temp_blob_id, blob_id).await;
             }
         }
         Err(So3Error::NotFound(format!(

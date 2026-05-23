@@ -72,22 +72,36 @@ where
         &self,
         key: &ObjectKey,
     ) -> So3Result<Option<ObjectMetadata>> {
+        let total = 1 + self.metadata_query_client_map.len();
+        let quorum = total / 2 + 1;
+
         let mut best = self.object_metadata_repository.load(key).await?;
+        let mut responses = 1;
 
         for client in self.metadata_query_client_map.values() {
             match client.get_metadata(key).await {
                 Ok(Some(remote_meta)) => {
+                    responses += 1;
                     if best.as_ref().map_or(true, |local| {
                         remote_meta.version.get() > local.version.get()
                     }) {
                         best = Some(remote_meta);
                     }
                 }
-                Ok(None) => {}
+                Ok(None) => {
+                    responses += 1;
+                }
                 Err(e) => {
                     warn!(key = key.as_ref(), error = %e, "metadata query to peer failed");
                 }
             }
+        }
+
+        if responses < quorum {
+            return Err(So3Error::PeerUnavailable(format!(
+                "metadata quorum not reached: {}/{} (need {quorum})",
+                responses, total,
+            )));
         }
 
         Ok(best.filter(|m| !m.deleted))
@@ -96,11 +110,17 @@ where
     pub(crate) async fn fetch_blob_from_any_peer(&self, blob_id: &BlobId) -> So3Result<()> {
         for client in self.blob_client_map.values() {
             if let Ok(mut stream) = client.fetch(blob_id).await {
+                let temp_blob_id = BlobId::new();
                 let mut failed = false;
                 while let Some(chunk) = stream.next().await {
                     match chunk {
                         Ok(c) => {
-                            if self.blob_repository.append_chunk(blob_id, c).await.is_err() {
+                            if self
+                                .blob_repository
+                                .append_chunk(&temp_blob_id, c)
+                                .await
+                                .is_err()
+                            {
                                 failed = true;
                                 break;
                             }
@@ -112,10 +132,10 @@ where
                     }
                 }
                 if failed {
-                    let _ = self.blob_repository.abort(blob_id).await;
+                    let _ = self.blob_repository.abort(&temp_blob_id).await;
                     continue;
                 }
-                return self.blob_repository.commit(blob_id).await;
+                return self.blob_repository.commit_as(&temp_blob_id, blob_id).await;
             }
         }
         Err(So3Error::NotFound(format!(

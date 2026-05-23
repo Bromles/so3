@@ -23,7 +23,12 @@ pub enum RequestBody {
     },
     Read {
         msg_id: u64,
-        key: Value,
+        #[serde(default)]
+        key: Option<Value>,
+    },
+    Add {
+        msg_id: u64,
+        element: Value,
     },
     Write {
         msg_id: u64,
@@ -130,6 +135,9 @@ pub enum ResponseBody {
         in_reply_to: u64,
     },
     CasOk {
+        in_reply_to: u64,
+    },
+    AddOk {
         in_reply_to: u64,
     },
     Error {

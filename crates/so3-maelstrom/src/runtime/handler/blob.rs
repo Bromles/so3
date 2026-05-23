@@ -16,13 +16,17 @@ pub(super) async fn handle_blob_push(
     payload: Vec<u8>,
 ) -> So3Result<()> {
     let result = async {
-        let blob_id = BlobId::try_from(blob_id.as_str())
+        let final_blob_id = BlobId::try_from(blob_id.as_str())
             .map_err(|e| So3Error::InvalidRequest(e.to_string()))?;
+        let temp_blob_id = BlobId::new();
         shared
             .local_blobs
-            .append_chunk(&blob_id, bytes::Bytes::from(payload))
+            .append_chunk(&temp_blob_id, bytes::Bytes::from(payload))
             .await?;
-        shared.local_blobs.commit(&blob_id).await
+        shared
+            .local_blobs
+            .commit_as(&temp_blob_id, &final_blob_id)
+            .await
     }
     .await;
 

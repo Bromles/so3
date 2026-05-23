@@ -235,6 +235,17 @@ where
                 Some(meta) => CommandResult::Cas(CasResult::Conflict {
                     current_version: meta.version,
                 }),
+                None if expected_version == &ObjectVersion::initial() => {
+                    CommandResult::Cas(CasResult::Updated(ObjectMetadata {
+                        key: key.clone(),
+                        version: ObjectVersion::initial().next(),
+                        blob_id: blob_id.clone(),
+                        sha256: sha256.clone(),
+                        size: *size,
+                        last_modified_ms: physical_millis_now(),
+                        deleted: false,
+                    }))
+                }
                 None => CommandResult::Cas(CasResult::Conflict {
                     current_version: ObjectVersion::initial(),
                 }),

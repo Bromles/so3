@@ -5,12 +5,20 @@ use so3_core::domain::blob::stream::BlobStream;
 use so3_core::domain::command::CasResult;
 use so3_core::domain::error::{So3Error, So3Result};
 use so3_core::domain::object::key::ObjectKey;
+use so3_core::domain::object::version::ObjectVersion;
 use so3_core::use_case::object::ObjectUseCase;
 
 use crate::protocol::{
     error_response, ResponseBody, CRASH_CODE, KEY_DOES_NOT_EXIST_CODE,
     MALFORMED_REQUEST_CODE, PRECONDITION_FAILED_CODE,
 };
+
+const SET_KEY_JSON: &str = "\"__set__\"";
+
+fn set_object_key() -> So3Result<ObjectKey> {
+    ObjectKey::new(SET_KEY_JSON.to_string())
+        .map_err(|e| So3Error::InvalidRequest(format!("invalid set key: {e}")))
+}
 
 pub struct MaelstromService<O: ObjectUseCase> {
     object_use_case: O,
@@ -132,6 +140,90 @@ impl<O: ObjectUseCase> MaelstromService<O> {
                 Ok(CasResult::Conflict { .. }) => continue,
                 Err(e) => return map_error(msg_id, &e),
             }
+        }
+    }
+
+    pub async fn handle_set_read(&self, msg_id: u64) -> ResponseBody {
+        let key = match set_object_key() {
+            Ok(k) => k,
+            Err(e) => return map_error(msg_id, &e),
+        };
+        match self.object_use_case.read(&key).await {
+            Ok(Some(obj)) => match collect_blob(obj.blob).await {
+                Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
+                    Ok(value) => ResponseBody::ReadOk {
+                        in_reply_to: msg_id,
+                        value,
+                    },
+                    Err(e) => map_error(msg_id, &So3Error::Serialization(e.to_string())),
+                },
+                Err(e) => map_error(msg_id, &e),
+            },
+            Ok(None) => ResponseBody::ReadOk {
+                in_reply_to: msg_id,
+                value: Value::Array(vec![]),
+            },
+            Err(e) => map_error(msg_id, &e),
+        }
+    }
+
+    pub async fn handle_add(&self, msg_id: u64, element: Value) -> ResponseBody {
+        let key = match set_object_key() {
+            Ok(k) => k,
+            Err(e) => return map_error(msg_id, &e),
+        };
+
+        loop {
+            let (current_version, current_set) = match self.read_current_set(&key).await {
+                Ok(Some((v, s))) => (v, s),
+                Ok(None) => (ObjectVersion::initial(), vec![]),
+                Err(e) => return map_error(msg_id, &e),
+            };
+
+            if current_set.contains(&element) {
+                return ResponseBody::AddOk {
+                    in_reply_to: msg_id,
+                };
+            }
+
+            let mut new_set = current_set;
+            new_set.push(element.clone());
+            let bytes = match value_to_bytes(&Value::Array(new_set)) {
+                Ok(b) => b,
+                Err(e) => return map_error(msg_id, &e),
+            };
+
+            match self
+                .object_use_case
+                .cas(key.clone(), current_version, bytes_to_stream(bytes))
+                .await
+            {
+                Ok(CasResult::Updated(_)) => {
+                    return ResponseBody::AddOk {
+                        in_reply_to: msg_id,
+                    };
+                }
+                Ok(CasResult::Conflict { .. }) => continue,
+                Err(e) => return map_error(msg_id, &e),
+            }
+        }
+    }
+
+    async fn read_current_set(
+        &self,
+        key: &ObjectKey,
+    ) -> So3Result<Option<(ObjectVersion, Vec<Value>)>> {
+        match self.object_use_case.read(key).await {
+            Ok(Some(obj)) => {
+                let bytes = collect_blob(obj.blob).await?;
+                match serde_json::from_slice::<Value>(&bytes) {
+                    Ok(Value::Array(arr)) => Ok(Some((obj.metadata.version, arr))),
+                    Ok(_) => Err(So3Error::Storage("set value is not an array".into())),
+                    Err(e) => Err(So3Error::Serialization(e.to_string())),
+                }
+            }
+            Ok(None) | Err(So3Error::NotFound(_)) => Ok(None),
+            Err(e) => Err(e),
         }
     }
 }

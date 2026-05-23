@@ -132,8 +132,25 @@ async fn handle_message(
             dest: src,
             body: error_response(msg_id, CRASH_CODE, "duplicate init request"),
         }),
-        RequestBody::Read { msg_id, key } => {
-            handle_client_message(shared, src, msg_id, ClientRequest::Read { key }).await
+        RequestBody::Read {
+            msg_id,
+            key: Some(key),
+        } => handle_client_message(shared, src, msg_id, ClientRequest::Read { key }).await,
+        RequestBody::Read { msg_id, key: None } => {
+            let response = shared.service.handle_set_read(msg_id).await;
+            shared.send_message(&Message {
+                src: shared.shared.node_id.clone(),
+                dest: src,
+                body: response,
+            })
+        }
+        RequestBody::Add { msg_id, element } => {
+            let response = shared.service.handle_add(msg_id, element).await;
+            shared.send_message(&Message {
+                src: shared.shared.node_id.clone(),
+                dest: src,
+                body: response,
+            })
         }
         RequestBody::Write { msg_id, key, value } => {
             handle_client_message(shared, src, msg_id, ClientRequest::Write { key, value }).await
@@ -184,6 +201,7 @@ async fn handle_message(
         | RequestBody::BlobPushOk { .. }
         | RequestBody::BlobFetchOk { .. }
         | RequestBody::MetadataQueryOk { .. }
+        | RequestBody::Add { .. }
         | RequestBody::Error { .. } => Ok(()),
     }
 }

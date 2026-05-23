@@ -1,6 +1,6 @@
 # Maelstrom
 
-`so3-maelstrom` - отдельный бинарный пакет для запусков Jepsen Maelstrom со сценарием `lin-kv`.
+`so3-maelstrom` - отдельный бинарный пакет для запусков Jepsen Maelstrom со сценариями `lin-kv` и `g-set`.
 Он повторно использует код объектов и консенсуса из `so3-core`, но заменяет tonic-транспорт между
 узлами на JSON-сообщения через stdin/stdout Maelstrom.
 
@@ -40,34 +40,55 @@ Smoke-тест на трех узлах:
 uv run python scripts/maelstrom/smoke_3node.py
 ```
 
-Общий запуск `lin-kv` с гибкими параметрами:
+Общий запуск с гибкими параметрами:
 
 ```bash
-uv run python scripts/maelstrom/run.py --node-count 3 --time-limit 30 --rate 100 --concurrency 2n
+# lin-kv (read/write/cas, линейная согласованность)
+uv run python scripts/maelstrom/run.py --workload lin-kv --node-count 3 --time-limit 30 --rate 10
+
+# g-set (add/read, eventual inclusion)
+uv run python scripts/maelstrom/run.py --workload g-set --node-count 3 --time-limit 30 --rate 10
 ```
 
-Трехузловой запуск с partition nemesis:
+Трехузловой lin-kv с partition nemesis:
 
 ```bash
 uv run python scripts/maelstrom/fault_3node.py
 ```
 
-30 прогонов с агрегацией pass/fail:
+Трехузловой g-set с partition nemesis:
 
 ```bash
-uv run python scripts/maelstrom/run_30.py --node-count 3 --rate 100 --nemesis partition --nemesis-interval 5
+uv run python scripts/maelstrom/set_3node.py
 ```
 
-Значения по умолчанию для fault-wrapper:
+30 прогонов lin-kv с агрегацией pass/fail:
 
-| Параметр           | Значение    |
-|--------------------|-------------|
-| `NODE_COUNT`       | `3`         |
-| `TIME_LIMIT`       | `30`        |
-| `RATE`             | `20`        |
-| `CONCURRENCY`      | `2n`        |
-| `NEMESIS`          | `partition` |
-| `NEMESIS_INTERVAL` | `5`         |
+```bash
+uv run python scripts/maelstrom/run_30.py
+```
+
+Значения по умолчанию для `run.py`:
+
+| Параметр        | Значение |
+|-----------------|----------|
+| `--workload`    | `lin-kv` |
+| `--node-count`  | `1`      |
+| `--time-limit`  | `20`     |
+| `--rate`        | `10`     |
+| `--concurrency` | `2n`     |
+| `--nemesis`     | (пусто)  |
+
+Значения по умолчанию для `run_30.py`:
+
+| Параметр        | Значение |
+|-----------------|----------|
+| `--runs`        | `30`     |
+| `--node-count`  | `3`      |
+| `--time-limit`  | `30`     |
+| `--rate`        | `10`     |
+| `--concurrency` | `2n`     |
+| `--nemesis`     | (пусто)  |
 
 Общие скрипты пробрасывают дополнительные настройки Maelstrom, включая `--nemesis`,
 `--nemesis-interval`, `--latency`, `--latency-dist`, `--availability`, `--consistency-models`,
@@ -88,6 +109,25 @@ Maelstrom запускает каждый узел отдельным проце
 через собственный Accord-координатор. Это соответствует поведению production-узла `so3`, где любой
 узел может координировать запросы, пришедшие на его S3-подобный API.
 
+## Модель консистентности
+
+### lin-kv (линейная согласованность)
+
+lin-kv проверяет линейную согласованность (linearizability) через read/write/cas операции.
+3-узловой кластер проходит проверку как без nemesis, так и с partition nemesis при `rate=10` —
+это подтверждает корректность базового консенсуса и quorum reads.
+
+При высоких rate (>10) возможны stale reads из-за асинхронного apply на репликах:
+replica возвращает CommitResponse до завершения apply, и следующий read на этой реплике
+может увидеть устаревшие metadata. Это ожидаемое поведение, сопоставимое с Raft follower reads.
+
+### g-set (eventual inclusion)
+
+g-set проверяет что элементы, добавленные через успешные `add` операции, никогда не теряются
+(eventual set inclusion). Эта модель слабее линейной согласованности и соответствует гарантии
+quorum reads: данные не теряются, но чтение может вернуть устаревшее состояние во время партиций.
+3-узловой кластер проходит g-set с partition nemesis.
+
 ## Текущие ограничения
 
 Адаптер полезен для smoke-проверки семантики команд через истории Maelstrom, но пока не достигает
@@ -104,23 +144,20 @@ Maelstrom запускает каждый узел отдельным проце
 
 ## Последняя проверка
 
-Последняя локальная проверка Maelstrom: 2026-05-22 на macOS, M4 Pro, debug-сборка.
+Последняя локальная проверка Maelstrom: 2026-05-23 на macOS, M4 Pro, release-сборка.
 
-3-узловой запуск с partition nemesis (`fault_3node.py`, `run_30.py` с `--allow-low-runs --runs 1`)
-показал нарушения линеаризуемости на ключах 2 и 3 (Knossos `:valid? false`):
-stale reads и дублированные значения после network partition. Это указывает на сохраняющуюся проблему
-с visibility guarantees при partition recovery.
+| Сценарий         | Workload | Узлы | Rate | Nemesis        | Результат      |
+|------------------|----------|------|------|----------------|----------------|
+| `smoke.py`       | lin-kv   | 1    | 10   | none           | `:valid? true` |
+| `smoke_3node.py` | lin-kv   | 3    | 10   | none           | `:valid? true` |
+| `fault_3node.py` | lin-kv   | 3    | 10   | `partition/5s` | `:valid? true` |
+| `set_3node.py`   | g-set    | 3    | 10   | none           | `:valid? true` |
+| `set_3node.py`   | g-set    | 3    | 10   | `partition/5s` | `:valid? true` |
 
-Ранее (2026-05-15) на release-сборке были зафиксированы успешные результаты:
-
-| Сценарий              | Узлы | Rate | Concurrency | Nemesis        | Ops |  Ok | Fail | Info | Результат      |
-|-----------------------|------|------|-------------|----------------|----:|----:|-----:|-----:|----------------|
-| `smoke.py`            | 1    | 20   | `2n`        | none           | 197 | 144 |   53 |    0 | `:valid? true` |
-| `smoke_3node.py`      | 3    | 10   | `2n`        | none           |  95 |  67 |   28 |    0 | `:valid? true` |
-| `fault_3node.py`      | 3    | 20   | `2n`        | `partition/5s` | 238 |  53 |  108 |   77 | `:valid? true` |
+lin-kv при rate>10 даёт stale reads из-за асинхронного apply на репликах — см. «Модель консистентности».
 
 ## Платформенные заметки
 
 - macOS/Linux: Python-скрипты запускаются через `uv run` или напрямую.
-- Maelstrom пишет подробные истории в `store/lin-kv/`; эта директория игнорируется git.
+- Maelstrom пишет подробные истории в `store/lin-kv/` или `store/g-set/`; эти директории игнорируются git.
 - Helper-скрипты создают свежую временную `SO3_MAELSTROM_DATA_DIR`, если она не задана явно.

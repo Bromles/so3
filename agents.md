@@ -4,6 +4,17 @@
 but the workspace still emits many warnings. The remaining issues below are correctness, durability, Accord
 conformance, Maelstrom parity, and operational risks that current tests do not cover.
 
+## Architecture Decision: Read Path
+
+Reads use **quorum metadata reads** — no consensus, no read barrier, no journal writes on the read path.
+This provides read-after-write consistency (the coordinator applies synchronously in `complete_from_commit`,
+so its metadata is always up-to-date and included in the quorum). During partitions, stale reads are possible —
+this is comparable to Raft follower reads and existing S3 object storage systems.
+
+The thesis does not require linearizable reads. It requires showing that the **write path** degrades linearly
+under conflicts and failures (comparable to Raft, unlike EPaxos which has unbounded dependency set growth).
+Read-after-write consistency is sufficient for this claim.
+
 ## High Risk
 
 1. Accept after missed PreAccept discards local conflict dependencies.

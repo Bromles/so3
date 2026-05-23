@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""1-node lin-kv smoke test (quick sanity check)."""
+"""1-node lin-kv smoke test (quick sanity check, no nemesis)."""
 
 from __future__ import annotations
 
