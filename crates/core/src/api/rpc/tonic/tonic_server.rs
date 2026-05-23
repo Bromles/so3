@@ -1,7 +1,7 @@
+use crate::api::rpc::RpcApi;
 use crate::api::rpc::tonic::blob_service::BlobService;
 use crate::api::rpc::tonic::consensus_transport_service::ConsensusTransportService;
 use crate::api::rpc::tonic::metadata_query_service::MetadataQueryService;
-use crate::api::rpc::RpcApi;
 use crate::domain::error::{So3Error, So3Result};
 use crate::proto::blob::blob_service_server::BlobServiceServer;
 use crate::proto::consensus::consensus_transport_server::ConsensusTransportServer;
@@ -18,6 +18,12 @@ use tonic::transport::Server;
 use tracing::info;
 
 pub struct TonicRpcServer {}
+
+impl Default for TonicRpcServer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl TonicRpcServer {
     pub fn new() -> Self {

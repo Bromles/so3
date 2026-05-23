@@ -44,7 +44,7 @@ impl So3Error {
     }
 
     #[must_use]
-    pub fn cas_mismatch(key: &ObjectKey, expected: ObjectVersion, actual: ObjectVersion) -> Self {
+    pub fn cas_mismatch(key: &ObjectKey, expected: &ObjectVersion, actual: &ObjectVersion) -> Self {
         Self::CasMismatch {
             key: key.as_ref().to_owned(),
             expected: expected.get(),

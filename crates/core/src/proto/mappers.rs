@@ -46,7 +46,7 @@ use crate::proto::consensus::{
     RecoverSuccess as ProtoRecoverSuccess, State as ProtoState,
 };
 
-pub fn map_tonic_status(status: tonic::Status) -> So3Error {
+pub fn map_tonic_status(status: &tonic::Status) -> So3Error {
     match status.code() {
         tonic::Code::Unavailable | tonic::Code::DeadlineExceeded => So3Error::PeerUnavailable(
             format!("peer returned {}: {}", status.code(), status.message()),
@@ -59,11 +59,11 @@ pub fn map_tonic_status(status: tonic::Status) -> So3Error {
     }
 }
 
-pub fn node_id_to_proto(node_id: NodeId) -> String {
+pub fn node_id_to_proto(node_id: &NodeId) -> String {
     node_id.as_ref().to_string()
 }
 
-pub fn object_metadata_to_proto(metadata: DomainObjectMetadata) -> ProtoObjectMetadata {
+pub fn object_metadata_to_proto(metadata: &DomainObjectMetadata) -> ProtoObjectMetadata {
     ProtoObjectMetadata {
         key: metadata.key.as_ref().to_string(),
         version: metadata.version.get(),
@@ -89,7 +89,7 @@ pub fn object_metadata_to_domain(metadata: ProtoObjectMetadata) -> So3Result<Dom
 
 pub fn command_id_to_proto(command_id: &DomainCommandId) -> ProtoCommandId {
     ProtoCommandId {
-        origin_node_id: node_id_to_proto(command_id.origin_node_id.clone()),
+        origin_node_id: node_id_to_proto(&command_id.origin_node_id),
         sequence: command_id.sequence,
     }
 }
@@ -101,12 +101,12 @@ pub fn command_id_to_domain(command_id: &ProtoCommandId) -> DomainCommandId {
     }
 }
 
-pub fn logical_timestamp_to_proto(timestamp: DomainLogicalTimestamp) -> ProtoLogicalTimestamp {
+pub fn logical_timestamp_to_proto(timestamp: &DomainLogicalTimestamp) -> ProtoLogicalTimestamp {
     ProtoLogicalTimestamp {
         epoch: timestamp.epoch,
         physical_millis: timestamp.physical_millis,
         logical: timestamp.logical,
-        node_id: node_id_to_proto(timestamp.node_id),
+        node_id: node_id_to_proto(&timestamp.node_id),
     }
 }
 
@@ -119,13 +119,13 @@ pub fn logical_timestamp_to_domain(timestamp: ProtoLogicalTimestamp) -> DomainLo
     }
 }
 
-pub fn dependency_set_to_proto(dependency_set: DomainDependencySet) -> ProtoDependencySet {
+pub fn dependency_set_to_proto(dependency_set: &DomainDependencySet) -> ProtoDependencySet {
     ProtoDependencySet {
         command_ids: dependency_set.0.iter().map(command_id_to_proto).collect(),
     }
 }
 
-pub fn dependency_set_to_domain(dependency_set: ProtoDependencySet) -> DomainDependencySet {
+pub fn dependency_set_to_domain(dependency_set: &ProtoDependencySet) -> DomainDependencySet {
     DomainDependencySet(
         dependency_set
             .command_ids
@@ -135,13 +135,13 @@ pub fn dependency_set_to_domain(dependency_set: ProtoDependencySet) -> DomainDep
     )
 }
 
-pub fn applied_set_to_proto(applied_set: DomainAppliedSet) -> ProtoAppliedSet {
+pub fn applied_set_to_proto(applied_set: &DomainAppliedSet) -> ProtoAppliedSet {
     ProtoAppliedSet {
         command_ids: applied_set.0.iter().map(command_id_to_proto).collect(),
     }
 }
 
-pub fn applied_set_to_domain(applied_set: ProtoAppliedSet) -> DomainAppliedSet {
+pub fn applied_set_to_domain(applied_set: &ProtoAppliedSet) -> DomainAppliedSet {
     DomainAppliedSet(
         applied_set
             .command_ids
@@ -151,10 +151,10 @@ pub fn applied_set_to_domain(applied_set: ProtoAppliedSet) -> DomainAppliedSet {
     )
 }
 
-pub fn ballot_to_proto(ballot: DomainBallot) -> ProtoBallot {
+pub fn ballot_to_proto(ballot: &DomainBallot) -> ProtoBallot {
     ProtoBallot {
         round: ballot.round,
-        node_id: node_id_to_proto(ballot.node_id),
+        node_id: node_id_to_proto(&ballot.node_id),
     }
 }
 
@@ -252,7 +252,7 @@ pub fn command_result_to_proto(res: DomainCommandResult) -> ProtoCommandResult {
             DomainReadResult::Found(metadata) => ProtoCommandResult {
                 result: Some(ProtoResult::Read(ProtoReadResult {
                     outcome: Some(ProtoReadOutcome::Metadata(object_metadata_to_proto(
-                        metadata,
+                        &metadata,
                     ))),
                 })),
             },
@@ -264,14 +264,14 @@ pub fn command_result_to_proto(res: DomainCommandResult) -> ProtoCommandResult {
         },
         DomainCommandResult::Write(DomainWriteResult { metadata }) => ProtoCommandResult {
             result: Some(ProtoResult::Write(ProtoWriteResult {
-                metadata: Some(object_metadata_to_proto(metadata)),
+                metadata: Some(object_metadata_to_proto(&metadata)),
             })),
         },
         DomainCommandResult::Cas(result) => match result {
             DomainCasResult::Updated(metadata) => ProtoCommandResult {
                 result: Some(ProtoResult::Cas(ProtoCasResult {
                     outcome: Some(ProtoCasOutcome::Success(ProtoCasSuccess {
-                        metadata: Some(object_metadata_to_proto(metadata)),
+                        metadata: Some(object_metadata_to_proto(&metadata)),
                     })),
                 })),
             },
@@ -341,7 +341,7 @@ pub fn recovery_state_to_domain(state: ProtoState) -> So3Result<DomainJournalSta
         ProtoState::Accepted => Ok(DomainJournalState::Accepted),
         ProtoState::Committed => Ok(DomainJournalState::Committed),
         ProtoState::Applied => Ok(DomainJournalState::Applied),
-        _ => Err(So3Error::InvalidRequest(format!(
+        ProtoState::Unspecified => Err(So3Error::InvalidRequest(format!(
             "invalid state {}",
             state.as_str_name()
         ))),
@@ -352,12 +352,15 @@ pub fn pre_accept_req_to_proto(req: DomainPreAcceptRequest) -> ProtoPreAcceptReq
     ProtoPreAcceptRequest {
         command_id: Some(command_id_to_proto(&req.command_id)),
         command: Some(object_command_to_proto(req.command)),
-        timestamp_zero: Some(logical_timestamp_to_proto(req.timestamp_zero)),
-        last_applied: Some(applied_set_to_proto(req.last_applied)),
+        timestamp_zero: Some(logical_timestamp_to_proto(&req.timestamp_zero)),
+        last_applied: Some(applied_set_to_proto(&req.last_applied)),
     }
 }
 
 pub fn pre_accept_req_to_domain(req: ProtoPreAcceptRequest) -> So3Result<DomainPreAcceptRequest> {
+    let last_applied = req
+        .last_applied
+        .ok_or_else(|| So3Error::InvalidRequest("empty last_applied".to_string()))?;
     Ok(DomainPreAcceptRequest {
         command_id: command_id_to_domain(
             req.command_id
@@ -372,31 +375,28 @@ pub fn pre_accept_req_to_domain(req: ProtoPreAcceptRequest) -> So3Result<DomainP
             req.timestamp_zero
                 .ok_or_else(|| So3Error::InvalidRequest("empty timestamp zero".to_string()))?,
         ),
-        last_applied: applied_set_to_domain(
-            req.last_applied
-                .ok_or_else(|| So3Error::InvalidRequest("empty last_applied".to_string()))?,
-        ),
+        last_applied: applied_set_to_domain(&last_applied),
     })
 }
 
 pub fn pre_accept_res_to_domain(res: ProtoPreAcceptResponse) -> So3Result<DomainPreAcceptResponse> {
+    let dependencies = res
+        .dependencies
+        .ok_or_else(|| So3Error::InvalidRequest("empty dependencies".to_string()))?;
     Ok(DomainPreAcceptResponse {
         timestamp: logical_timestamp_to_domain(
             res.timestamp
                 .ok_or_else(|| So3Error::InvalidRequest("empty timestamp".to_string()))?,
         ),
-        dependencies: dependency_set_to_domain(
-            res.dependencies
-                .ok_or_else(|| So3Error::InvalidRequest("empty dependencies".to_string()))?,
-        ),
+        dependencies: dependency_set_to_domain(&dependencies),
         nack: res.nack,
     })
 }
 
-pub fn pre_accept_res_to_proto(res: DomainPreAcceptResponse) -> ProtoPreAcceptResponse {
+pub fn pre_accept_res_to_proto(res: &DomainPreAcceptResponse) -> ProtoPreAcceptResponse {
     ProtoPreAcceptResponse {
-        timestamp: Some(logical_timestamp_to_proto(res.timestamp)),
-        dependencies: Some(dependency_set_to_proto(res.dependencies)),
+        timestamp: Some(logical_timestamp_to_proto(&res.timestamp)),
+        dependencies: Some(dependency_set_to_proto(&res.dependencies)),
         nack: res.nack,
     }
 }
@@ -405,15 +405,21 @@ pub fn accept_req_to_proto(req: DomainAcceptRequest) -> ProtoAcceptRequest {
     ProtoAcceptRequest {
         command_id: Some(command_id_to_proto(&req.command_id)),
         command: Some(object_command_to_proto(req.command)),
-        ballot: Some(ballot_to_proto(req.ballot)),
-        timestamp_zero: Some(logical_timestamp_to_proto(req.timestamp_zero)),
-        timestamp: Some(logical_timestamp_to_proto(req.timestamp)),
-        dependencies: Some(dependency_set_to_proto(req.dependencies)),
-        last_applied: Some(applied_set_to_proto(req.last_applied)),
+        ballot: Some(ballot_to_proto(&req.ballot)),
+        timestamp_zero: Some(logical_timestamp_to_proto(&req.timestamp_zero)),
+        timestamp: Some(logical_timestamp_to_proto(&req.timestamp)),
+        dependencies: Some(dependency_set_to_proto(&req.dependencies)),
+        last_applied: Some(applied_set_to_proto(&req.last_applied)),
     }
 }
 
 pub fn accept_req_to_domain(req: ProtoAcceptRequest) -> So3Result<DomainAcceptRequest> {
+    let dependencies = req
+        .dependencies
+        .ok_or_else(|| So3Error::InvalidRequest("empty dependencies".to_string()))?;
+    let last_applied = req
+        .last_applied
+        .ok_or_else(|| So3Error::InvalidRequest("empty last_applied".to_string()))?;
     Ok(DomainAcceptRequest {
         command_id: command_id_to_domain(
             req.command_id
@@ -436,30 +442,24 @@ pub fn accept_req_to_domain(req: ProtoAcceptRequest) -> So3Result<DomainAcceptRe
             req.timestamp
                 .ok_or_else(|| So3Error::InvalidRequest("empty timestamp".to_string()))?,
         ),
-        dependencies: dependency_set_to_domain(
-            req.dependencies
-                .ok_or_else(|| So3Error::InvalidRequest("empty dependencies".to_string()))?,
-        ),
-        last_applied: applied_set_to_domain(
-            req.last_applied
-                .ok_or_else(|| So3Error::InvalidRequest("empty last_applied".to_string()))?,
-        ),
+        dependencies: dependency_set_to_domain(&dependencies),
+        last_applied: applied_set_to_domain(&last_applied),
     })
 }
 
 pub fn accept_res_to_domain(res: ProtoAcceptResponse) -> So3Result<DomainAcceptResponse> {
+    let dependencies = res
+        .dependencies
+        .ok_or_else(|| So3Error::InvalidRequest("empty dependencies".to_string()))?;
     Ok(DomainAcceptResponse {
-        dependencies: dependency_set_to_domain(
-            res.dependencies
-                .ok_or_else(|| So3Error::InvalidRequest("empty dependencies".to_string()))?,
-        ),
+        dependencies: dependency_set_to_domain(&dependencies),
         nack: res.nack,
     })
 }
 
-pub fn accept_res_to_proto(res: DomainAcceptResponse) -> ProtoAcceptResponse {
+pub fn accept_res_to_proto(res: &DomainAcceptResponse) -> ProtoAcceptResponse {
     ProtoAcceptResponse {
-        dependencies: Some(dependency_set_to_proto(res.dependencies)),
+        dependencies: Some(dependency_set_to_proto(&res.dependencies)),
         nack: res.nack,
     }
 }
@@ -468,13 +468,16 @@ pub fn commit_req_to_proto(req: DomainCommitRequest) -> ProtoCommitRequest {
     ProtoCommitRequest {
         command_id: Some(command_id_to_proto(&req.command_id)),
         command: Some(object_command_to_proto(req.command)),
-        timestamp_zero: Some(logical_timestamp_to_proto(req.timestamp_zero)),
-        timestamp: Some(logical_timestamp_to_proto(req.timestamp)),
-        dependencies: Some(dependency_set_to_proto(req.dependencies)),
+        timestamp_zero: Some(logical_timestamp_to_proto(&req.timestamp_zero)),
+        timestamp: Some(logical_timestamp_to_proto(&req.timestamp)),
+        dependencies: Some(dependency_set_to_proto(&req.dependencies)),
     }
 }
 
 pub fn commit_req_to_domain(req: ProtoCommitRequest) -> So3Result<DomainCommitRequest> {
+    let dependencies = req
+        .dependencies
+        .ok_or_else(|| So3Error::InvalidRequest("empty dependencies".to_string()))?;
     Ok(DomainCommitRequest {
         command_id: command_id_to_domain(
             req.command_id
@@ -493,10 +496,7 @@ pub fn commit_req_to_domain(req: ProtoCommitRequest) -> So3Result<DomainCommitRe
             req.timestamp
                 .ok_or_else(|| So3Error::InvalidRequest("empty timestamp".to_string()))?,
         ),
-        dependencies: dependency_set_to_domain(
-            req.dependencies
-                .ok_or_else(|| So3Error::InvalidRequest("empty dependencies".to_string()))?,
-        ),
+        dependencies: dependency_set_to_domain(&dependencies),
     })
 }
 
@@ -512,13 +512,16 @@ pub fn apply_req_to_proto(req: DomainApplyRequest) -> ProtoApplyRequest {
     ProtoApplyRequest {
         command_id: Some(command_id_to_proto(&req.command_id)),
         command: Some(object_command_to_proto(req.command)),
-        timestamp_zero: Some(logical_timestamp_to_proto(req.timestamp_zero)),
-        timestamp: Some(logical_timestamp_to_proto(req.timestamp)),
-        dependencies: Some(dependency_set_to_proto(req.dependencies)),
+        timestamp_zero: Some(logical_timestamp_to_proto(&req.timestamp_zero)),
+        timestamp: Some(logical_timestamp_to_proto(&req.timestamp)),
+        dependencies: Some(dependency_set_to_proto(&req.dependencies)),
     }
 }
 
 pub fn apply_req_to_domain(req: ProtoApplyRequest) -> So3Result<DomainApplyRequest> {
+    let dependencies = req
+        .dependencies
+        .ok_or_else(|| So3Error::InvalidRequest("empty dependencies".to_string()))?;
     Ok(DomainApplyRequest {
         command_id: command_id_to_domain(
             req.command_id
@@ -537,10 +540,7 @@ pub fn apply_req_to_domain(req: ProtoApplyRequest) -> So3Result<DomainApplyReque
             req.timestamp
                 .ok_or_else(|| So3Error::InvalidRequest("empty timestamp".to_string()))?,
         ),
-        dependencies: dependency_set_to_domain(
-            req.dependencies
-                .ok_or_else(|| So3Error::InvalidRequest("empty dependencies".to_string()))?,
-        ),
+        dependencies: dependency_set_to_domain(&dependencies),
     })
 }
 
@@ -563,8 +563,8 @@ pub fn recover_req_to_proto(req: DomainRecoverRequest) -> ProtoRecoverRequest {
     ProtoRecoverRequest {
         command_id: Some(command_id_to_proto(&req.command_id)),
         command: Some(object_command_to_proto(req.command)),
-        ballot: Some(ballot_to_proto(req.ballot)),
-        timestamp_zero: Some(logical_timestamp_to_proto(req.timestamp_zero)),
+        ballot: Some(ballot_to_proto(&req.ballot)),
+        timestamp_zero: Some(logical_timestamp_to_proto(&req.timestamp_zero)),
     }
 }
 
@@ -608,7 +608,7 @@ pub fn recover_res_to_domain(res: ProtoRecoverResponse) -> So3Result<DomainRecov
             wait_for: wait_for.iter().map(command_id_to_domain).collect(),
             superseding,
             dependencies: dependency_set_to_domain(
-                dependencies
+                &dependencies
                     .ok_or_else(|| So3Error::InvalidRequest("empty dependencies".to_string()))?,
             ),
             timestamp_zero: logical_timestamp_to_domain(
@@ -646,16 +646,16 @@ pub fn recover_res_to_proto(res: DomainRecoverResponse) -> ProtoRecoverResponse 
                 local_state: local_state.as_i32(),
                 wait_for: wait_for.iter().map(command_id_to_proto).collect(),
                 superseding,
-                dependencies: Some(dependency_set_to_proto(dependencies)),
-                timestamp_zero: Some(logical_timestamp_to_proto(timestamp_zero)),
-                timestamp: Some(logical_timestamp_to_proto(timestamp)),
-                accepted_ballot: accepted_ballot.map(ballot_to_proto),
+                dependencies: Some(dependency_set_to_proto(&dependencies)),
+                timestamp_zero: Some(logical_timestamp_to_proto(&timestamp_zero)),
+                timestamp: Some(logical_timestamp_to_proto(&timestamp)),
+                accepted_ballot: accepted_ballot.map(|b| ballot_to_proto(&b)),
             })),
         },
         DomainRecoverResponse::Nack(DomainRecoverNack { superseding_ballot }) => {
             ProtoRecoverResponse {
                 outcome: Some(ProtoRecoverOutcome::Nack(ProtoRecoverNack {
-                    superseding_ballot: Some(ballot_to_proto(superseding_ballot)),
+                    superseding_ballot: Some(ballot_to_proto(&superseding_ballot)),
                 })),
             }
         }

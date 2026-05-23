@@ -5,6 +5,12 @@ use sha2::{Digest, Sha256};
 
 pub struct Sha256Hasher(Sha256);
 
+impl Default for Sha256Hasher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Sha256Hasher {
     pub fn new() -> Self {
         Self(Sha256::new())

@@ -37,11 +37,12 @@ where
             }
         };
 
-        if let Some(existing) = self.object_metadata_repository.load(&key).await? {
-            if existing.version == expected_version.next() && existing.sha256 == sha256 {
-                let _ = self.blob_repository.abort(&temp_blob_id).await;
-                return Ok(CasResult::Updated(existing));
-            }
+        if let Some(existing) = self.object_metadata_repository.load(&key).await?
+            && existing.version == expected_version.next()
+            && existing.sha256 == sha256
+        {
+            let _ = self.blob_repository.abort(&temp_blob_id).await;
+            return Ok(CasResult::Updated(existing));
         }
 
         let blob_id = BlobId::from_sha256(&sha256);
@@ -58,7 +59,6 @@ where
         for client in &peers {
             let client = std::sync::Arc::clone(client);
             let blob_id = blob_id.clone();
-            let sha256 = sha256.clone();
             let repo = std::sync::Arc::clone(&self.blob_repository);
             push_set.spawn(async move {
                 let Ok(reader) = repo.open_reader(&blob_id).await else {

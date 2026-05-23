@@ -15,7 +15,7 @@ use so3_core::proto::mappers::{
 };
 use so3_core::use_case::inbound_consensus::InboundConsensusUseCase;
 
-use crate::protocol::{ConsensusRpc, Message, RequestBody, CRASH_CODE};
+use crate::protocol::{CRASH_CODE, ConsensusRpc, Message, RequestBody};
 use crate::runtime::types::SharedRuntime;
 
 pub(super) async fn handle_consensus(
@@ -35,7 +35,7 @@ pub(super) async fn handle_consensus(
                     .local_handler
                     .pre_accept(req)
                     .await
-                    .map(|r| pre_accept_res_to_proto(r).encode_to_vec()),
+                    .map(|r| pre_accept_res_to_proto(&r).encode_to_vec()),
                 Err(e) => Err(e),
             }
         }
@@ -48,7 +48,7 @@ pub(super) async fn handle_consensus(
                     .local_handler
                     .accept(req)
                     .await
-                    .map(|r| accept_res_to_proto(r).encode_to_vec()),
+                    .map(|r| accept_res_to_proto(&r).encode_to_vec()),
                 Err(e) => Err(e),
             }
         }

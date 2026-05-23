@@ -11,6 +11,7 @@ impl Ballot {
     pub fn initial(node_id: NodeId) -> Self {
         Self { round: 0, node_id }
     }
+    #[must_use]
     pub fn next(&self, node_id: NodeId) -> Self {
         Self {
             round: self.round + 1,

@@ -33,8 +33,7 @@ impl TryFrom<i32> for JournalState {
             3 => Ok(JournalState::Committed),
             4 => Ok(JournalState::Applied),
             val => Err(So3Error::InvalidRequest(format!(
-                "invalid journal state: {}",
-                val
+                "invalid journal state: {val}"
             ))),
         }
     }

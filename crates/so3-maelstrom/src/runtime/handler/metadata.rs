@@ -8,7 +8,7 @@ use so3_core::proto::metadata_query::GetMetadataRequest as ProtoRequest;
 use so3_core::proto::metadata_query_mappers::metadata_option_to_proto_response;
 use so3_core::use_case::metadata_query::MetadataQueryUseCase;
 
-use crate::protocol::{Message, RequestBody, CRASH_CODE};
+use crate::protocol::{CRASH_CODE, Message, RequestBody};
 use crate::runtime::types::SharedRuntime;
 
 pub(super) async fn handle_metadata_query(

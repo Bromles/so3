@@ -248,9 +248,9 @@ impl MetadataQueryClient for MaelstromMetadataQueryPeerClient {
             key: key.as_ref().to_string(),
         };
         let bytes = self.send_metadata_query(proto_req.encode_to_vec()).await?;
-        let proto_res =
+        let response =
             so3_core::proto::metadata_query::GetMetadataResponse::decode(bytes.as_slice())
                 .map_err(|e| So3Error::Serialization(e.to_string()))?;
-        proto_response_to_metadata_option(proto_res)
+        proto_response_to_metadata_option(response)
     }
 }

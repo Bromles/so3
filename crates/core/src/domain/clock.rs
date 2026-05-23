@@ -77,7 +77,7 @@ impl HybridLogicalClock {
         }
     }
 
-    /// Used during Accord PreAccept: if the proposed timestamp is strictly ahead of the local
+    /// Used during Accord `PreAccept`: if the proposed timestamp is strictly ahead of the local
     /// wall clock, accept it as-is so the coordinator can detect fast-path agreement (all
     /// replicas return the same T₀). The HLC advances only when the proposal is also ahead
     /// of the current HLC state; otherwise the HLC stays put (it is already ≥ remote).

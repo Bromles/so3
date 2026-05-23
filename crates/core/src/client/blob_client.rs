@@ -51,7 +51,7 @@ impl BlobPeerClient for BlobClient {
             })),
         }));
 
-        let chunks = data.take_while(|r| r.is_ok()).map(|r| {
+        let chunks = data.take_while(std::result::Result::is_ok).map(|r| {
             let chunk = r.unwrap();
             StoreBlobRequest {
                 payload: Some(Payload::Chunk(StoreBlobChunk {

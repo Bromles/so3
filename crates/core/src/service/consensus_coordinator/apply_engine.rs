@@ -1,4 +1,4 @@
-use crate::domain::clock::{physical_millis_now, LogicalTimestamp};
+use crate::domain::clock::{LogicalTimestamp, physical_millis_now};
 use crate::domain::command::{CasResult, CommandResult, ObjectCommand, ReadResult, WriteResult};
 use crate::domain::consensus::command_id::CommandId;
 use crate::domain::consensus::journal::JournalEntry;
@@ -14,7 +14,7 @@ use dashmap::DashMap;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
-use tokio::time::{timeout_at, Duration, Instant};
+use tokio::time::{Duration, Instant, timeout_at};
 use tracing::info;
 
 type ReorderBuffer = DashMap<ObjectKey, BTreeMap<LogicalTimestamp, CommandId>>;
@@ -123,8 +123,7 @@ where
             let blocking = self
                 .reorder_buffer
                 .get(key)
-                .map(|e| e.range(..req.timestamp.clone()).count())
-                .unwrap_or(0);
+                .map_or(0, |e| e.range(..req.timestamp.clone()).count());
             (total, blocking)
         };
 
@@ -135,8 +134,7 @@ where
             let blocking_count = self
                 .reorder_buffer
                 .get(key)
-                .map(|e| e.range(..req.timestamp.clone()).count())
-                .unwrap_or(0);
+                .map_or(0, |e| e.range(..req.timestamp.clone()).count());
             earlier_blocking_count = earlier_blocking_count.max(blocking_count);
             if blocking_count == 0 {
                 break;
@@ -161,9 +159,9 @@ where
             let mut first_pending_sequence = None;
             for dep_id in &req.dependencies.0 {
                 match self.journal.load(dep_id).await? {
-                    None => continue,
+                    None => {}
                     Some(e) if e.state == JournalState::Applied => {}
-                    Some(e) if e.timestamp.as_ref() > Some(&req.timestamp) => continue,
+                    Some(e) if e.timestamp.as_ref() > Some(&req.timestamp) => {}
                     _ => {
                         pending_count += 1;
                         first_pending_sequence.get_or_insert(dep_id.sequence);
@@ -214,7 +212,7 @@ where
                         key: key.clone(),
                         version,
                         blob_id: blob_id.clone(),
-                        sha256: sha256.clone(),
+                        sha256: *sha256,
                         size: *size,
                         last_modified_ms: physical_millis_now(),
                         deleted: false,
@@ -234,7 +232,7 @@ where
                         key: key.clone(),
                         version: meta.version.next(),
                         blob_id: blob_id.clone(),
-                        sha256: sha256.clone(),
+                        sha256: *sha256,
                         size: *size,
                         last_modified_ms: physical_millis_now(),
                         deleted: false,
@@ -248,7 +246,7 @@ where
                         key: key.clone(),
                         version: ObjectVersion::initial().next(),
                         blob_id: blob_id.clone(),
-                        sha256: sha256.clone(),
+                        sha256: *sha256,
                         size: *size,
                         last_modified_ms: physical_millis_now(),
                         deleted: false,
@@ -269,16 +267,14 @@ where
         let metadata_apply_started = Instant::now();
         match (&req.command, &result) {
             (
-                ObjectCommand::Write { key: _, .. },
-                CommandResult::Write(WriteResult { metadata }),
+                ObjectCommand::Write { .. } | ObjectCommand::Cas { .. },
+                CommandResult::Write(WriteResult { metadata })
+                | CommandResult::Cas(CasResult::Updated(metadata)),
             ) => {
                 self.metadata.store(metadata).await?;
             }
             (ObjectCommand::Delete { key }, CommandResult::Delete) => {
                 self.metadata.delete(key).await?;
-            }
-            (ObjectCommand::Cas { .. }, CommandResult::Cas(CasResult::Updated(metadata))) => {
-                self.metadata.store(metadata).await?;
             }
             _ => {}
         }

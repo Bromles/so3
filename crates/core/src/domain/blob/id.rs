@@ -6,6 +6,12 @@ use uuid::Uuid;
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BlobId(String);
 
+impl Default for BlobId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BlobId {
     pub fn new() -> Self {
         Self(Uuid::new_v4().to_string())

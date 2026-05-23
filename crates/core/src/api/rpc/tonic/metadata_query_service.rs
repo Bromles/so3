@@ -1,7 +1,7 @@
 use crate::domain::object::key::ObjectKey;
-use crate::proto::metadata_query::metadata_query_server::MetadataQuery as MetadataQueryTrait;
 use crate::proto::metadata_query::GetMetadataRequest;
 use crate::proto::metadata_query::GetMetadataResponse;
+use crate::proto::metadata_query::metadata_query_server::MetadataQuery as MetadataQueryTrait;
 use crate::proto::metadata_query_mappers::metadata_option_to_proto_response;
 use crate::use_case::metadata_query::MetadataQueryUseCase;
 use async_trait::async_trait;

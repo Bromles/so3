@@ -22,19 +22,19 @@ where
         // ballot, the coordinator must go through recovery to learn the existing decision.
         // Without this check a late-arriving PreAccept could falsely claim fast-path
         // agreement on a command that was already decided.
-        if let Some(entry) = self.journal.load(&req.command_id).await? {
-            if matches!(
+        if let Some(entry) = self.journal.load(&req.command_id).await?
+            && matches!(
                 entry.state,
                 JournalState::Accepted | JournalState::Committed | JournalState::Applied
-            ) {
-                return Ok(PreAcceptResponse {
-                    timestamp: entry
-                        .timestamp
-                        .unwrap_or_else(|| req.timestamp_zero.clone()),
-                    dependencies: entry.dependencies,
-                    nack: true,
-                });
-            }
+            )
+        {
+            return Ok(PreAcceptResponse {
+                timestamp: entry
+                    .timestamp
+                    .unwrap_or_else(|| req.timestamp_zero.clone()),
+                dependencies: entry.dependencies,
+                nack: true,
+            });
         }
 
         let timestamp = self.accept_or_observe(&req.timestamp_zero).await;

@@ -2,13 +2,13 @@ use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
-use tokio::io::{stdin, stdout, AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter, stdin, stdout};
 use tokio::sync::mpsc;
 
 use so3_core::domain::error::{So3Error, So3Result};
 
 use crate::config::StorageRoots;
-use crate::protocol::{reply, RequestBody, ResponseBody};
+use crate::protocol::{RequestBody, ResponseBody, reply};
 use crate::runtime::components::build_components;
 use crate::runtime::handler::route_or_spawn;
 use crate::runtime::io::{next_request, next_request_if_available, write_message};

@@ -15,22 +15,27 @@ use crate::domain::object::key::ObjectKey;
 use crate::domain::object::metadata::ObjectMetadata;
 use crate::repository::consensus_journal::ConsensusJournalRepository;
 use crate::repository::metadata::ObjectMetadataRepository;
-use crate::service::consensus_coordinator::apply_engine::AccordApplyEngine;
 use crate::service::consensus_coordinator::BufferedEntry;
 use crate::service::consensus_coordinator::ConsensusCoordinatorService;
+use crate::service::consensus_coordinator::apply_engine::AccordApplyEngine;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinSet;
-use tokio::time::{sleep, Duration, Instant};
+use tokio::time::{Duration, Instant, sleep};
 use tracing::info;
 
 enum WriteBufferEntry {
-    Write { timestamp: LogicalTimestamp, metadata: ObjectMetadata },
-    Deleted { timestamp: LogicalTimestamp },
+    Write {
+        timestamp: LogicalTimestamp,
+        metadata: ObjectMetadata,
+    },
+    Deleted {
+        timestamp: LogicalTimestamp,
+    },
 }
 
 pub struct AccordConsensusCoordinatorService<CJR, CPC, OMR>
@@ -285,6 +290,7 @@ where
                         "stalled entry applied"
                     );
                     // Fire-and-forget apply RPCs to peers.
+                    #[allow(clippy::unnecessary_to_owned)]
                     for peer in peers.iter().cloned() {
                         let req = apply_req.clone();
                         tokio::spawn(async move {
@@ -327,17 +333,15 @@ where
                 "applying committed-but-not-applied journal entries"
             );
             for entry in &committed_not_applied {
-                let timestamp = match &entry.timestamp {
-                    Some(ts) => ts.clone(),
-                    None => {
-                        tracing::warn!(
-                            origin_node = entry.command_id.origin_node_id.as_ref(),
-                            sequence = entry.command_id.sequence,
-                            "committed entry missing timestamp, skipping"
-                        );
-                        continue;
-                    }
+                let Some(ts) = &entry.timestamp else {
+                    tracing::warn!(
+                        origin_node = entry.command_id.origin_node_id.as_ref(),
+                        sequence = entry.command_id.sequence,
+                        "committed entry missing timestamp, skipping"
+                    );
+                    continue;
                 };
+                let timestamp = ts.clone();
 
                 let apply_req = ApplyRequest {
                     command_id: entry.command_id.clone(),
@@ -364,6 +368,7 @@ where
                             sequence = apply_req.command_id.sequence,
                             "committed entry applied"
                         );
+                        #[allow(clippy::unnecessary_to_owned)]
                         for peer in peers.iter().cloned() {
                             let req = apply_req.clone();
                             tokio::spawn(async move {
@@ -386,9 +391,9 @@ where
     async fn deps_ready(&self, req: &ApplyRequest) -> bool {
         for dep_id in &req.dependencies.0 {
             match self.consensus_journal_repository.load(dep_id).await {
-                Ok(None) | Err(_) => continue,
-                Ok(Some(e)) if e.state == JournalState::Applied => continue,
-                Ok(Some(e)) if e.timestamp.as_ref() > Some(&req.timestamp) => continue,
+                Ok(None) | Err(_) => {}
+                Ok(Some(e)) if e.state == JournalState::Applied => {}
+                Ok(Some(e)) if e.timestamp.as_ref() > Some(&req.timestamp) => {}
                 _ => return false,
             }
         }
@@ -402,11 +407,9 @@ where
         'deps: loop {
             for dep_id in &req.dependencies.0 {
                 match self.consensus_journal_repository.load(dep_id).await? {
-                    None => continue,
-                    Some(e) if e.state == JournalState::Applied => continue,
-                    Some(e) if e.timestamp.as_ref() > Some(&req.timestamp) => {
-                        continue;
-                    }
+                    None => {}
+                    Some(e) if e.state == JournalState::Applied => {}
+                    Some(e) if e.timestamp.as_ref() > Some(&req.timestamp) => {}
                     Some(e) if e.state == JournalState::Committed => {
                         recovery_attempts += 1;
                         if recovery_attempts > max_recovery_attempts {
@@ -456,13 +459,12 @@ where
         let mut committed_entries = Vec::new();
 
         while let Some(id) = queue.pop_front() {
-            let entry = match self.consensus_journal_repository.load(&id).await? {
-                Some(e) => e,
-                None => continue, // not local — resolved on owning peer
+            let Some(entry) = self.consensus_journal_repository.load(&id).await? else {
+                continue;
             };
 
             match entry.state {
-                JournalState::Applied => continue, // already done
+                JournalState::Applied => {}
                 JournalState::Committed => {
                     // Committed but not yet Applied — include in the apply phase.
                     // Also explore its deps for more unapplied entries.
@@ -582,6 +584,7 @@ where
                         sequence = apply_req.command_id.sequence,
                         "on-demand recovery: entry applied"
                     );
+                    #[allow(clippy::unnecessary_to_owned)]
                     for peer in peers.iter().cloned() {
                         let req = apply_req.clone();
                         tokio::spawn(async move {
@@ -606,6 +609,7 @@ where
         peers: &[Arc<CPC>],
         quorum: usize,
     ) -> So3Result<CompletionMetrics> {
+        const MAX_COMMIT_ATTEMPTS: u32 = 10;
         let commit_started = Instant::now();
 
         let key = command_object_key(&commit_req.command).clone();
@@ -623,7 +627,6 @@ where
             )
             .await?;
 
-        const MAX_COMMIT_ATTEMPTS: u32 = 10;
         let mut delay_ms = 10u64;
         let mut commit_reached_quorum = false;
         let mut commit_attempts = 0u32;
@@ -674,6 +677,7 @@ where
             let apply_started = Instant::now();
             let apply_result = self.apply_with_recovery(&apply_req).await;
             let apply_ms = elapsed_ms(apply_started);
+            #[allow(clippy::unnecessary_to_owned)]
             for peer in peers.iter().cloned() {
                 let req = apply_req.clone();
                 tokio::spawn(async move {
@@ -711,7 +715,7 @@ where
                     key: cmd_key.clone(),
                     version,
                     blob_id: blob_id.clone(),
-                    sha256: sha256.clone(),
+                    sha256: *sha256,
                     size: *size,
                     last_modified_ms: physical_millis_now(),
                     deleted: false,
@@ -731,20 +735,20 @@ where
         let write_buffer = Arc::clone(&self.write_buffer);
         let spawn_key = apply_key.clone();
         let spawn_ts = commit_req.timestamp.clone();
-        let peers_owned: Vec<Arc<CPC>> = peers.iter().cloned().collect();
+        let peers_owned: Vec<Arc<CPC>> = peers.to_vec();
         tokio::spawn(async move {
             let result = engine.apply(&apply_req).await;
             if let Some(entry) = write_buffer.get(&spawn_key) {
                 let is_mine = match entry.value() {
-                    WriteBufferEntry::Write { timestamp, .. } => *timestamp == spawn_ts,
-                    WriteBufferEntry::Deleted { timestamp } => *timestamp == spawn_ts,
+                    WriteBufferEntry::Write { timestamp, .. }
+                    | WriteBufferEntry::Deleted { timestamp } => *timestamp == spawn_ts,
                 };
                 drop(entry);
                 if is_mine {
                     write_buffer.remove(&spawn_key);
                 }
             }
-            if let Ok(_) = result {
+            if result.is_ok() {
                 for peer in peers_owned {
                     let req = ApplyRequest {
                         command_id: apply_req.command_id.clone(),
@@ -858,7 +862,7 @@ where
             let notified = self.apply_notify.notified();
             for dep_id in deps {
                 match self.consensus_journal_repository.load(dep_id).await? {
-                    None => continue, // not local — resolved independently on owning peer
+                    None => {}
                     Some(e) if e.state == JournalState::Applied => {}
                     Some(e) if e.state == JournalState::Committed => {
                         // Committed but not yet Applied — will be resolved by inbound apply
@@ -879,7 +883,7 @@ where
     }
 
     /// Recovery phase 1: determine the outcome for a stalled entry and commit it
-    /// locally and on peers, but do NOT apply.  Returns the CommitRequest needed
+    /// locally and on peers, but do NOT apply.  Returns the `CommitRequest` needed
     /// for the subsequent apply phase, or None if recovery failed.
     async fn recover_and_commit(
         &self,
@@ -902,12 +906,11 @@ where
             return None;
         }
 
-        let local_success = match self
+        let Ok(local_success) = self
             .local_recover_success(command_id, command, timestamp_zero)
             .await
-        {
-            Ok(s) => s,
-            Err(_) => return None,
+        else {
+            return None;
         };
 
         let mut successes = vec![local_success];
@@ -1035,14 +1038,15 @@ where
             .await
     }
 
-    /// Commit a request locally (record_committed) and send Commit RPCs to peers.
-    /// Returns Some(commit_req) on success, None on failure.
+    /// Commit a request locally (`record_committed`) and send Commit RPCs to peers.
+    /// Returns `Some(commit_req)` on success, `None` on failure.
     async fn commit_locally_and_on_peers(
         &self,
         commit_req: &CommitRequest,
         peers: &[Arc<CPC>],
         quorum: usize,
     ) -> Option<CommitRequest> {
+        const MAX_COMMIT_ATTEMPTS: u32 = 10;
         if self
             .consensus_journal_repository
             .record_committed(
@@ -1056,7 +1060,6 @@ where
             return None;
         }
 
-        const MAX_COMMIT_ATTEMPTS: u32 = 10;
         let mut delay_ms = 10u64;
         let mut commit_ok = 1usize; // self
         for _ in 1..=MAX_COMMIT_ATTEMPTS {

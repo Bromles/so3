@@ -424,14 +424,8 @@ mod tests {
         assert_eq!(config.object_api_addr.to_string(), "127.0.0.1:3200");
         assert_eq!(config.rpc_api_addr.to_string(), "127.0.0.1:4200");
         assert_eq!(config.object_request_timeout, Duration::from_secs(15));
-        assert_eq!(
-            config.metadata_dir,
-            PathBuf::from("./tmp/toml-meta")
-        );
-        assert_eq!(
-            config.blob_dir,
-            PathBuf::from("./tmp/toml-blobs")
-        );
+        assert_eq!(config.metadata_dir, PathBuf::from("./tmp/toml-meta"));
+        assert_eq!(config.blob_dir, PathBuf::from("./tmp/toml-blobs"));
         assert_eq!(config.cluster.peers.len(), 2);
     }
 

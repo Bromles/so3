@@ -87,10 +87,7 @@ impl BlobRepository for FileSystemBlobRepository {
         } else if fs::try_exists(&committed_tmp_path).await.unwrap_or(false) {
             committed_tmp_path
         } else {
-            return Err(So3Error::Io(format!(
-                "temp blob not found: {}",
-                temp_blob_id
-            )));
+            return Err(So3Error::Io(format!("temp blob not found: {temp_blob_id}")));
         };
 
         match fs::rename(&source_path, &final_path).await {

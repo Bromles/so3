@@ -38,7 +38,7 @@ impl<I: InboundConsensusUseCase> ConsensusTransport for ConsensusTransportServic
             .pre_accept(domain_req)
             .await?;
 
-        Ok(Response::new(pre_accept_res_to_proto(domain_res)))
+        Ok(Response::new(pre_accept_res_to_proto(&domain_res)))
     }
 
     async fn accept(
@@ -49,7 +49,7 @@ impl<I: InboundConsensusUseCase> ConsensusTransport for ConsensusTransportServic
 
         let domain_res = self.inbound_consensus_use_case.accept(domain_req).await?;
 
-        Ok(Response::new(accept_res_to_proto(domain_res)))
+        Ok(Response::new(accept_res_to_proto(&domain_res)))
     }
 
     async fn commit(

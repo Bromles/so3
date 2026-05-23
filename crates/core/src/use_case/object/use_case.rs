@@ -90,9 +90,10 @@ where
             match client.get_metadata(key).await {
                 Ok(Some(remote_meta)) => {
                     responses += 1;
-                    if best.as_ref().map_or(true, |local| {
-                        remote_meta.version.get() > local.version.get()
-                    }) {
+                    if best
+                        .as_ref()
+                        .is_none_or(|local| remote_meta.version.get() > local.version.get())
+                    {
                         best = Some(remote_meta);
                     }
                 }
@@ -107,8 +108,7 @@ where
 
         if responses < quorum {
             return Err(So3Error::PeerUnavailable(format!(
-                "metadata quorum not reached: {}/{} (need {quorum})",
-                responses, total,
+                "metadata quorum not reached: {responses}/{total} (need {quorum})",
             )));
         }
 
@@ -121,22 +121,19 @@ where
                 let temp_blob_id = BlobId::new();
                 let mut failed = false;
                 while let Some(chunk) = stream.next().await {
-                    match chunk {
-                        Ok(c) => {
-                            if self
-                                .blob_repository
-                                .append_chunk(&temp_blob_id, c)
-                                .await
-                                .is_err()
-                            {
-                                failed = true;
-                                break;
-                            }
-                        }
-                        Err(_) => {
+                    if let Ok(c) = chunk {
+                        if self
+                            .blob_repository
+                            .append_chunk(&temp_blob_id, c)
+                            .await
+                            .is_err()
+                        {
                             failed = true;
                             break;
                         }
+                    } else {
+                        failed = true;
+                        break;
                     }
                 }
                 if failed {

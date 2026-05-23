@@ -1,7 +1,7 @@
-use crate::api::rpc::tonic::tonic_server::TonicRpcServer;
 use crate::api::rpc::RpcApi;
-use crate::api::s3::axum::axum_server::AxumS3Server;
+use crate::api::rpc::tonic::tonic_server::TonicRpcServer;
 use crate::api::s3::S3Api;
+use crate::api::s3::axum::axum_server::AxumS3Server;
 use crate::client::blob_client::BlobClient;
 use crate::client::consensus_transport_client::ConsensusTransportClient;
 use crate::client::metadata_query_client::MetadataQueryTonicClient;
@@ -19,18 +19,18 @@ use crate::domain::error::{So3Error, So3Result};
 use crate::domain::node::NodeId;
 use crate::node::config::NodeConfig;
 use crate::repository::blob::fs::FileSystemBlobRepository;
-use crate::repository::consensus_journal::sqlite::SqliteConsensusJournal;
 use crate::repository::consensus_journal::ConsensusJournalRepository;
-use crate::repository::metadata::sqlite::SqliteObjectMetadataRepository;
+use crate::repository::consensus_journal::sqlite::SqliteConsensusJournal;
 use crate::repository::metadata::ObjectMetadataRepository;
+use crate::repository::metadata::sqlite::SqliteObjectMetadataRepository;
 use crate::repository::node_identity::fs::FileSystemNodeIdentityRepository;
 use crate::repository::registry::RepositoryRegistry;
 use crate::service::consensus_coordinator::service::AccordConsensusCoordinatorService;
 use crate::use_case::blob::use_case::BlobUseCaseImpl;
 use crate::use_case::inbound_consensus::use_case::InboundConsensusUseCaseImpl;
 use crate::use_case::metadata_query::use_case::MetadataQueryUseCaseImpl;
-use crate::use_case::node_identity::use_case::NodeIdentityUseCaseImpl;
 use crate::use_case::node_identity::NodeIdentityUseCase;
+use crate::use_case::node_identity::use_case::NodeIdentityUseCaseImpl;
 use crate::use_case::object::use_case::ObjectUseCaseImpl;
 
 type Journal = SqliteConsensusJournal;
@@ -272,6 +272,7 @@ async fn reconcile_applied_metadata(
                 }
             }
             (ObjectCommand::Delete { key }, CommandResult::Delete) => {
+                #[allow(clippy::collapsible_match)]
                 if metadata_repository.load(key).await?.is_some() {
                     metadata_repository.delete(key).await?;
                 }

@@ -38,8 +38,8 @@ pub trait ConsensusJournalRepository: Send + Sync + 'static {
     /// Returns the highest sequence number recorded for the given node, or 0 if none.
     async fn max_sequence(&self, node_id: &NodeId) -> So3Result<u64>;
     /// Removes an entry that was recorded locally but never reached quorum.
-    /// Used to clean up after a failed coordinate() attempt so that the stalled
-    /// PreAccepted entry does not poison future writes to the same key.
+    /// Used to clean up after a failed `coordinate()` attempt so that the stalled
+    /// `PreAccepted` entry does not poison future writes to the same key.
     async fn delete(&self, command_id: &CommandId) -> So3Result<()>;
     /// Returns the count of Committed-but-not-Applied entries for the given
     /// key that have a strictly earlier timestamp than the one provided.

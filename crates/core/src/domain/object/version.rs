@@ -8,6 +8,7 @@ impl ObjectVersion {
     pub fn initial() -> Self {
         Self(1)
     }
+    #[must_use]
     pub fn next(&self) -> Self {
         Self(self.0 + 1)
     }

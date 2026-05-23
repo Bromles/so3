@@ -13,8 +13,8 @@ use crate::proto::mappers::{
 use async_trait::async_trait;
 use std::time::Duration;
 use tokio::time::timeout;
-use tonic::transport::{Channel, Endpoint};
 use tonic::Response;
+use tonic::transport::{Channel, Endpoint};
 
 pub struct ConsensusTransportClient {
     channel: Channel,
@@ -51,7 +51,7 @@ impl ConsensusPeerClient for ConsensusTransportClient {
                     "pre_accept RPC deadline exceeded".into(),
                 )
             })?
-            .map_err(map_tonic_status)
+            .map_err(|e| map_tonic_status(&e))
             .map(Response::into_inner)
             .map(pre_accept_res_to_domain)?
     }
@@ -66,7 +66,7 @@ impl ConsensusPeerClient for ConsensusTransportClient {
                     "accept RPC deadline exceeded".into(),
                 )
             })?
-            .map_err(map_tonic_status)
+            .map_err(|e| map_tonic_status(&e))
             .map(Response::into_inner)
             .map(accept_res_to_domain)?
     }
@@ -81,7 +81,7 @@ impl ConsensusPeerClient for ConsensusTransportClient {
                     "commit RPC deadline exceeded".into(),
                 )
             })?
-            .map_err(map_tonic_status)
+            .map_err(|e| map_tonic_status(&e))
             .map(Response::into_inner)
             .map(commit_res_to_domain)?
     }
@@ -96,7 +96,7 @@ impl ConsensusPeerClient for ConsensusTransportClient {
                     "apply RPC deadline exceeded".into(),
                 )
             })?
-            .map_err(map_tonic_status)
+            .map_err(|e| map_tonic_status(&e))
             .map(Response::into_inner)
             .map(apply_res_to_domain)?
     }
@@ -111,7 +111,7 @@ impl ConsensusPeerClient for ConsensusTransportClient {
                     "recover RPC deadline exceeded".into(),
                 )
             })?
-            .map_err(map_tonic_status)
+            .map_err(|e| map_tonic_status(&e))
             .map(Response::into_inner)
             .map(recover_res_to_domain)?
     }

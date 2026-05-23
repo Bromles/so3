@@ -3,14 +3,14 @@ use crate::domain::error::{So3Error, So3Result};
 use crate::domain::object::key::ObjectKey;
 use crate::domain::object::metadata::ObjectMetadata;
 use crate::proto::mappers::map_tonic_status;
-use crate::proto::metadata_query::metadata_query_client::MetadataQueryClient as ProtoClient;
 use crate::proto::metadata_query::GetMetadataRequest as ProtoRequest;
+use crate::proto::metadata_query::metadata_query_client::MetadataQueryClient as ProtoClient;
 use crate::proto::metadata_query_mappers::proto_response_to_metadata_option;
 use async_trait::async_trait;
 use std::time::Duration;
 use tokio::time::timeout;
-use tonic::transport::{Channel, Endpoint};
 use tonic::Response;
+use tonic::transport::{Channel, Endpoint};
 
 pub struct MetadataQueryTonicClient {
     channel: Channel,
@@ -37,7 +37,7 @@ impl MetadataQueryClient for MetadataQueryTonicClient {
         let proto_res = timeout(self.rpc_deadline, client.get_metadata(req))
             .await
             .map_err(|_| So3Error::PeerUnavailable("get_metadata RPC deadline exceeded".into()))?
-            .map_err(map_tonic_status)
+            .map_err(|e| map_tonic_status(&e))
             .map(Response::into_inner)?;
 
         proto_response_to_metadata_option(proto_res)

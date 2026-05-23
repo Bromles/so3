@@ -32,7 +32,7 @@ async fn run() -> So3Result<()> {
 
     spawn(async move {
         match shutdown_signal().await {
-            Ok(_) => {
+            Ok(()) => {
                 signal_token.cancel();
             }
             Err(error) => {
@@ -62,7 +62,7 @@ async fn shutdown_signal() -> So3Result<()> {
     let terminate = std::future::pending::<()>();
 
     select! {
-        _ = ctrl_c => Ok(()),
-        _ = terminate => Ok(()),
+        () = ctrl_c => Ok(()),
+        () = terminate => Ok(()),
     }
 }

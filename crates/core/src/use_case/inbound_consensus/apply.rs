@@ -21,9 +21,9 @@ where
     }
 
     async fn ensure_blob_present(&self, command: &ObjectCommand) -> So3Result<()> {
-        let blob_id = match command {
-            ObjectCommand::Write { blob_id, .. } | ObjectCommand::Cas { blob_id, .. } => blob_id,
-            _ => return Ok(()),
+        let (ObjectCommand::Write { blob_id, .. } | ObjectCommand::Cas { blob_id, .. }) = command
+        else {
+            return Ok(());
         };
         if !self.blob_repository.exists(blob_id).await? {
             self.fetch_blob_from_any_peer(blob_id).await?;

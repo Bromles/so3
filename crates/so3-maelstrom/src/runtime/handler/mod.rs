@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use so3_core::domain::error::{So3Error, So3Result};
 
-use crate::protocol::{error_response, ClientRequest, Message, RequestBody, CRASH_CODE};
+use crate::protocol::{CRASH_CODE, ClientRequest, Message, RequestBody, error_response};
 use crate::runtime::handler::blob::{handle_blob_fetch, handle_blob_push};
 use crate::runtime::handler::client::{handle_client_message, handle_forward};
 use crate::runtime::handler::consensus::handle_consensus;
@@ -201,7 +201,6 @@ async fn handle_message(
         | RequestBody::BlobPushOk { .. }
         | RequestBody::BlobFetchOk { .. }
         | RequestBody::MetadataQueryOk { .. }
-        | RequestBody::Add { .. }
         | RequestBody::Error { .. } => Ok(()),
     }
 }

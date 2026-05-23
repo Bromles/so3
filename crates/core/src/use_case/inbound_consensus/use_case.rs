@@ -15,8 +15,8 @@ use crate::service::consensus_coordinator::ConsensusCoordinatorService;
 use crate::use_case::inbound_consensus::InboundConsensusUseCase;
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::Mutex;
 use tokio_stream::StreamExt;
 
