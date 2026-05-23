@@ -21,6 +21,7 @@ package "crates/core::node" {
         -config: NodeConfig
         -object_use_case: Arc<ObjectUseCaseImpl>
         -inbound_consensus_use_case: Arc<InboundConsensusUseCaseImpl>
+        -metadata_query_use_case: Arc<MetadataQueryUseCaseImpl>
         -blob_use_case: Arc<BlobUseCaseImpl>
         +new(config): Result<Node>
         +bind(): Result<BoundNode>
@@ -42,6 +43,8 @@ package "crates/core::node" {
         +metadata_dir: PathBuf
         +blob_dir: PathBuf
         +cluster: ClusterConfig
+        +network_skew_ms: u64
+        +consensus_rpc_deadline: Duration
         +validate(): Result<()>
     }
 
@@ -57,6 +60,7 @@ package "crates/core::node" {
 
 package "crates/core::api" {
     class AxumS3Server {
+        +new(object_use_case): Self
         +start(listener, config, token): Result<()>
     }
 
@@ -69,7 +73,8 @@ package "crates/core::api" {
     }
 
     class TonicRpcServer {
-        +start(listener, token, inbound, blob): Result<()>
+        +new(): Self
+        +start(listener, token, inbound, blob, metadata_query): Result<()>
     }
 
     class ConsensusTransportService <<tonic>> {
@@ -84,26 +89,47 @@ package "crates/core::api" {
         +store_blob(stream)
         +fetch_blob(request)
     }
+
+    class MetadataQueryService <<tonic>> {
+        +get_metadata(request)
+    }
 }
 
 package "crates/core::use_case" {
     class ObjectUseCaseImpl {
+        +consensus_coordinator_service: Arc<CCS>
+        +consensus_journal_repository: Arc<CJR>
+        +object_metadata_repository: Arc<OMR>
+        +blob_repository: Arc<BR>
+        +blob_client_map: HashMap<NodeId, Arc<BC>>
+        +metadata_query_client_map: HashMap<NodeId, Arc<MQC>>
         +head(key): Result<Option<ObjectMetadata>>
         +read(key): Result<Option<StoredObject>>
         +write(key, body): Result<ObjectMetadata>
         +delete(key): Result<()>
         +cas(key, expected_version, body): Result<CasResult>
+        -quorum_read_metadata(key): Result<Option<ObjectMetadata>>
+        -fetch_blob_from_any_peer(blob_id): Result<()>
+        -stream_to_local(blob_id, body): Result<(Sha256Digest, u64)>
     }
 
     class InboundConsensusUseCaseImpl {
+        +node_id: NodeId
+        +hlc: Mutex<HybridLogicalClock>
+        +journal: Arc<CJR>
+        +coordinator: Arc<CCS>
+        +blob_repository: Arc<BR>
+        +blob_clients: HashMap<NodeId, Arc<BPC>>
         +pre_accept(req): Result<PreAcceptResponse>
         +accept(req): Result<AcceptResponse>
         +commit(req): Result<CommitResponse>
         +apply(req): Result<ApplyResponse>
         +recover(req): Result<RecoverResponse>
+        +set_epoch(epoch)
     }
 
     class BlobUseCaseImpl {
+        +blob_repository: Arc<BR>
         +exists(blob_id): Result<bool>
         +append_chunk(blob_id, chunk): Result<()>
         +commit(blob_id): Result<()>
@@ -111,81 +137,155 @@ package "crates/core::use_case" {
         +fetch(blob_id): Result<BlobStream>
     }
 
+    class MetadataQueryUseCaseImpl {
+        -metadata_repository: Arc<OMR>
+        +query(key): Result<Option<ObjectMetadata>>
+    }
+
     class NodeIdentityUseCaseImpl {
+        -repository: Arc<R>
         +ensure(configured): Result<Uuid>
     }
 }
 
-package "crates/core::service" {
+package "crates/core::service::consensus_coordinator" {
     class AccordConsensusCoordinatorService {
+        -node_id: NodeId
+        -epoch: AtomicU64
+        -hlc: Mutex<HybridLogicalClock>
+        -sequence: AtomicU64
+        -network_skew_ms: u64
+        -consensus_peer_client_map: HashMap<NodeId, Arc<CPC>>
+        -engine: Arc<AccordApplyEngine>
+        -consensus_journal_repository: Arc<CJR>
+        -apply_notify: Arc<Notify>
+        -in_flight_operations: AtomicU64
+        -write_buffer: Arc<DashMap<ObjectKey, WriteBufferEntry>>
+        +new(node_id, epoch, ...): Result<Self>
         +coordinate(command): Result<CommandResult>
-        -recover_and_complete()
-        -complete_from_commit()
-        -apply_local()
+        +apply(req): Result<CommandResult>
+        +register_committed(key, timestamp, command_id)
+        +get_buffered_entry(key): Option<BufferedEntry>
+        +recover_stalled_entries()
+        +set_epoch(epoch)
+        -complete_from_commit(commit_req, peers, quorum): Result<CompletionMetrics>
+        -recover_and_complete(...): Result<CommandResult>
+        -recover_and_apply_stalled_chain(stalled_id): Result<()>
+        -apply_with_recovery(req): Result<CommandResult>
+    }
+
+    class AccordApplyEngine {
+        -reorder_buffer: DashMap<ObjectKey, BTreeMap<LogicalTimestamp, CommandId>>
+        -key_locks: DashMap<ObjectKey, Arc<Mutex<()>>>
+        -apply_notify: Arc<Notify>
+        -journal: Arc<CJR>
+        -metadata: Arc<OMR>
+        +new(journal, metadata, apply_notify): Self
+        +apply(req): Result<CommandResult>
+        +populate_from_journal(entries)
+        +register_committed(key, timestamp, command_id)
+        +peek_next_version(key): Result<ObjectVersion>
     }
 }
 
 package "crates/core::client" {
-    class ConsensusTransportClient <<tonic клиент>> {
-        +pre_accept(req)
-        +accept(req)
-        +commit(req)
-        +apply(req)
-        +recover(req)
+    class ConsensusTransportClient <<tonic>> {
+        +new(endpoint): Result<Self>
+        +with_deadline(endpoint, rpc_deadline): Result<Self>
+        +pre_accept(req): Result<PreAcceptResponse>
+        +accept(req): Result<AcceptResponse>
+        +commit(req): Result<CommitResponse>
+        +apply(req): Result<ApplyResponse>
+        +recover(req): Result<RecoverResponse>
     }
 
-    class BlobClient <<tonic клиент>> {
-        +push(blob_id, size, sha256, data)
-        +fetch(blob_id)
+    class BlobClient <<tonic>> {
+        +new(endpoint): Result<Self>
+        +push(blob_id, size, sha256, data): Result<()>
+        +fetch(blob_id): Result<BlobStream>
+    }
+
+    class MetadataQueryTonicClient <<tonic>> {
+        +new(endpoint, rpc_deadline): Result<Self>
+        +get_metadata(key): Result<Option<ObjectMetadata>>
     }
 }
 
 package "crates/core::repository" {
     class SqliteObjectMetadataRepository {
-        +load(key)
-        +store(metadata)
-        +delete(key)
+        +new(metadata_dir): Result<Self>
+        +load(key): Result<Option<ObjectMetadata>>
+        +store(metadata): Result<()>
+        +delete(key): Result<()>
     }
 
     class SqliteConsensusJournal {
-        +load(command_id)
-        +check_conflicts_and_record_pre_accepted()
-        +record_ballot()
-        +record_accepted()
-        +record_committed()
-        +record_applied()
-        +list_by_state(state)
-        +max_sequence(node_id)
+        +new(metadata_dir): Result<Self>
+        +load(command_id): Result<Option<JournalEntry>>
+        +check_conflicts_and_record_pre_accepted(): Result<DependencySet>
+        +record_ballot(command_id, ballot): Result<()>
+        +record_accepted(command_id, ballot, timestamp, deps): Result<()>
+        +record_committed(command_id, timestamp, deps): Result<()>
+        +record_applied(command_id, result): Result<()>
+        +list_by_state(state): Result<Vec<JournalEntry>>
+        +max_sequence(node_id): Result<u64>
+        +delete(command_id): Result<()>
+        +count_earlier_committed(key, timestamp): Result<usize>
+        +list_applied_with_later_timestamp(key, timestamp): Result<Vec<JournalEntry>>
     }
 
     class FileSystemBlobRepository {
-        +append_chunk(blob_id, chunk)
-        +commit(blob_id)
-        +abort(blob_id)
-        +open_reader(blob_id)
-        +exists(blob_id)
-        +delete(blob_id)
+        +new(blob_dir): Result<Self>
+        +append_chunk(blob_id, chunk): Result<()>
+        +commit(blob_id): Result<()>
+        +commit_as(temp_blob_id, final_blob_id): Result<()>
+        +abort(blob_id): Result<()>
+        +open_reader(blob_id): Result<BlobStream>
+        +exists(blob_id): Result<bool>
+        +delete(blob_id): Result<()>
     }
 
     class FileSystemNodeIdentityRepository {
-        +load()
-        +store(node_id)
+        +new(metadata_dir): Result<Self>
+        +load(): Result<Option<Uuid>>
+        +store(node_id): Result<()>
+    }
+
+    class RepositoryRegistry {
+        +metadata_repository: SqliteObjectMetadataRepository
+        +blob_repository: FileSystemBlobRepository
+        +consensus_journal: SqliteConsensusJournal
+        +new(metadata_dir, blob_dir): Result<Self>
     }
 }
 
 package "crates/core::domain" {
     enum ObjectCommand {
-        Read
-        Write
-        Cas
-        Delete
+        Read { key }
+        Write { key, blob_id, sha256, size }
+        Cas { key, expected_version, blob_id, sha256, size }
+        Delete { key }
     }
 
     enum CommandResult {
-        Read
-        Write
-        Cas
+        Read(ReadResult)
+        Write(WriteResult)
+        Cas(CasResult)
         Delete
+    }
+
+    enum ReadResult {
+        Found(ObjectMetadata)
+        NotFound
+    }
+
+    class WriteResult {
+        +metadata: ObjectMetadata
+    }
+
+    enum CasResult {
+        Updated(ObjectMetadata)
+        Conflict { current_version }
     }
 
     class ObjectMetadata {
@@ -195,6 +295,7 @@ package "crates/core::domain" {
         +sha256: Sha256Digest
         +size: u64
         +last_modified_ms: u64
+        +deleted: bool
     }
 
     class StoredObject {
@@ -207,12 +308,45 @@ package "crates/core::domain" {
         +sequence: u64
     }
 
+    class DependencySet {
+        +0: Vec<CommandId>
+    }
+
+    class AppliedSet {
+        +0: Vec<CommandId>
+    }
+
     class Ballot {
         +round: u64
         +node_id: NodeId
+        +initial(node_id): Ballot
+        +next(node_id): Ballot
     }
 
-    class LogicalTimestamp
+    class LogicalTimestamp {
+        +epoch: u64
+        +physical_millis: u64
+        +logical: u64
+        +node_id: NodeId
+    }
+
+    class HybridLogicalClock {
+        +new(node_id): Self
+        +tick(epoch, network_skew_ms): LogicalTimestamp
+        +accept_or_observe(epoch, remote): LogicalTimestamp
+        +observe(epoch, remote): LogicalTimestamp
+    }
+
+    class JournalEntry {
+        +command_id: CommandId
+        +command: ObjectCommand
+        +state: JournalState
+        +timestamp_zero: LogicalTimestamp
+        +timestamp: Option<LogicalTimestamp>
+        +dependencies: DependencySet
+        +ballot: Option<Ballot>
+        +result: Option<CommandResult>
+    }
 
     enum JournalState {
         PreAccepted
@@ -220,16 +354,35 @@ package "crates/core::domain" {
         Committed
         Applied
     }
+
+    class ObjectKey
+    class ObjectVersion
+    class BlobId
+    class Sha256Digest
+    class BlobStream
+    class NodeId
 }
 
 package "crates/core::proto" {
     class mappers {
         +pre_accept_req_to_proto()
         +pre_accept_req_to_domain()
-        +apply_res_to_proto()
+        +accept_req_to_proto()
+        +accept_res_to_domain()
+        +commit_req_to_proto()
+        +apply_req_to_proto()
         +apply_res_to_domain()
+        +recover_req_to_proto()
+        +recover_res_to_domain()
         +object_command_to_proto()
         +command_result_to_domain()
+    }
+
+    class metadata_query_mappers {
+        +metadata_to_proto()
+        +proto_to_metadata()
+        +metadata_option_to_proto_response()
+        +proto_response_to_metadata_option()
     }
 
     class consensus_proto <<prost>> {
@@ -246,29 +399,45 @@ package "crates/core::proto" {
         +StoreBlobFooter
         +FetchBlobRequest
     }
+
+    class metadata_query_proto <<prost>> {
+        +GetMetadataRequest
+        +GetMetadataResponse
+    }
 }
 
 package "crates/so3-maelstrom" {
+    class MaelstromService {
+        +handle_read(msg_id, key): ResponseBody
+        +handle_write(msg_id, key, value): ResponseBody
+        +handle_cas(msg_id, key, from, to, create_if_not_exists): ResponseBody
+        +handle_set_read(msg_id): ResponseBody
+        +handle_add(msg_id, element): ResponseBody
+    }
+
     class SharedRuntime {
-        +is_coordinator(): bool
-        +coordinator_id(): &str
-        +send_message()
+        +service: MaelstromService
+        +local_handler: Arc<Handler>
+        +local_blobs: Arc<BlobRepo>
+        +local_metadata_query: Arc<MetadataQueryUC>
+        +shared: Arc<SharedState>
+        +pending_forwards: Mutex<HashMap>
+        +send_message(): Result<()>
     }
 
     class SharedState {
         +node_id: String
-        +pending_consensus: HashMap
-        +pending_blobs: HashMap
+        +output: UnboundedSender<Vec<u8>>
+        +pending_consensus: Mutex<HashMap>
+        +pending_blobs: Mutex<HashMap>
+        +pending_metadata_queries: Mutex<HashMap>
         +next_msg_id: AtomicU64
-    }
-
-    class MaelstromService {
-        +handle_read(msg_id, key)
-        +handle_write(msg_id, key, value)
-        +handle_cas(msg_id, key, from, to, create_if_not_exists)
+        +next_msg_id(): u64
     }
 
     class MaelstromConsensusPeerClient {
+        +peer_id: String
+        +shared: Arc<SharedState>
         +pre_accept(req)
         +accept(req)
         +commit(req)
@@ -277,8 +446,16 @@ package "crates/so3-maelstrom" {
     }
 
     class MaelstromBlobPeerClient {
+        +peer_id: String
+        +shared: Arc<SharedState>
         +push(blob_id, size, sha256, data)
         +fetch(blob_id)
+    }
+
+    class MaelstromMetadataQueryPeerClient {
+        +peer_id: String
+        +shared: Arc<SharedState>
+        +get_metadata(key)
     }
 }
 
@@ -289,12 +466,14 @@ Node *-- NodeConfig
 NodeConfig o-- ClusterConfig
 ClusterConfig o-- PeerConfig
 
+Node --> RepositoryRegistry : создаёт
 Node --> SqliteObjectMetadataRepository : открывает
 Node --> SqliteConsensusJournal : открывает
 Node --> FileSystemBlobRepository : открывает
 Node --> FileSystemNodeIdentityRepository : идентичность
 Node --> ObjectUseCaseImpl : связывает
 Node --> InboundConsensusUseCaseImpl : связывает
+Node --> MetadataQueryUseCaseImpl : связывает
 Node --> BlobUseCaseImpl : связывает
 BoundNode --> AxumS3Server : S3-подобный API
 BoundNode --> TonicRpcServer : приватный RPC
@@ -303,22 +482,30 @@ AxumS3Server --> ObjectApiController
 ObjectApiController --> ObjectUseCaseImpl
 TonicRpcServer --> ConsensusTransportService
 TonicRpcServer --> BlobService
+TonicRpcServer --> MetadataQueryService
 ConsensusTransportService --> InboundConsensusUseCaseImpl
 ConsensusTransportService --> mappers
 BlobService --> BlobUseCaseImpl
-BlobService --> blob_proto
+MetadataQueryService --> MetadataQueryUseCaseImpl
+MetadataQueryService --> metadata_query_mappers
 
 ObjectUseCaseImpl --> AccordConsensusCoordinatorService
 ObjectUseCaseImpl --> FileSystemBlobRepository
 ObjectUseCaseImpl --> BlobClient
+ObjectUseCaseImpl --> MetadataQueryTonicClient
+ObjectUseCaseImpl --> SqliteConsensusJournal
 
+AccordConsensusCoordinatorService *-- AccordApplyEngine
 AccordConsensusCoordinatorService --> SqliteConsensusJournal
 AccordConsensusCoordinatorService --> SqliteObjectMetadataRepository
-AccordConsensusCoordinatorService --> FileSystemBlobRepository
 AccordConsensusCoordinatorService --> ConsensusTransportClient
 AccordConsensusCoordinatorService --> BlobClient
+AccordApplyEngine --> SqliteConsensusJournal
+AccordApplyEngine --> SqliteObjectMetadataRepository
 ConsensusTransportClient --> mappers
 BlobClient --> blob_proto
+MetadataQueryTonicClient --> metadata_query_mappers
+MetadataQueryTonicClient --> metadata_query_proto
 AccordConsensusCoordinatorService ..> ObjectCommand
 AccordConsensusCoordinatorService ..> CommandResult
 AccordConsensusCoordinatorService ..> CommandId
@@ -326,41 +513,60 @@ AccordConsensusCoordinatorService ..> Ballot
 AccordConsensusCoordinatorService ..> LogicalTimestamp
 
 InboundConsensusUseCaseImpl --> SqliteConsensusJournal
-InboundConsensusUseCaseImpl --> SqliteObjectMetadataRepository
+InboundConsensusUseCaseImpl --> AccordConsensusCoordinatorService
 InboundConsensusUseCaseImpl --> FileSystemBlobRepository
 InboundConsensusUseCaseImpl --> BlobClient
 
 SqliteConsensusJournal --> JournalState
 StoredObject *-- ObjectMetadata
 CommandResult --> ObjectMetadata
+CommandResult --> ReadResult
+CommandResult --> WriteResult
+CommandResult --> CasResult
 
 SharedRuntime *-- SharedState
 SharedRuntime --> MaelstromService
 SharedRuntime --> InboundConsensusUseCaseImpl
 SharedRuntime --> FileSystemBlobRepository
+SharedRuntime --> MetadataQueryUseCaseImpl
 MaelstromService --> ObjectUseCaseImpl
 AccordConsensusCoordinatorService --> MaelstromConsensusPeerClient
 ObjectUseCaseImpl --> MaelstromBlobPeerClient
+ObjectUseCaseImpl --> MaelstromMetadataQueryPeerClient
 MaelstromConsensusPeerClient --> mappers
+MaelstromMetadataQueryPeerClient --> metadata_query_mappers
 
 note right of AccordConsensusCoordinatorService
-Текущие фазы:
-- локальная запись PreAccepted
-- PreAccept другим узлам
-- необязательный Accept
-- повтор Commit до кворума
-- локальный Apply
-- Apply другим узлам в фоновых задачах
+Фазы координации:
+- PreAccept: локальная запись + quorum peers
+- Fast path: quorum согласен на T₀, нет зависимостей
+- Slow path: Accept с финальным timestamp
+- Commit: повтор с backoff до кворума
+- Apply: асинхронный (spawn) для Write/Delete,
+  синхронный для Cas
+- Recovery: BFS-обход stalled-зависимостей
+- Write buffer: предикативный возврат клиенту
+  до завершения Apply (DashMap)
+end note
+
+note right of AccordApplyEngine
+Движок Apply:
+- Reorder buffer: ожидание команд
+  с меньшим timestamp по тому же ключу
+- Dependency wait: ожидание применения
+  явных зависимостей
+- Key locks: сериализация Apply по ключу
+- Idempotency: проверка JournalState::Applied
 end note
 
 note bottom of SharedRuntime
 Адаптер Maelstrom:
-- детерминированный лидер = node_ids.first()
-- followers пересылают клиентские команды
+- каждый узел координирует клиентские запросы локально
 - consensus payloads используют core protobuf
-- blob payloads являются одиночными JSON byte arrays
-- SharedState хранит pending consensus/blob,
-  SharedRuntime хранит pending forward
+- blob payloads — одиночные JSON byte arrays
+- metadata query — protobuf поверх JSON
+- SharedState хранит pending consensus/blob/metadata_query
+- SharedRuntime хранит pending forward
 end note
 
 @enduml

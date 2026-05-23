@@ -314,7 +314,11 @@ mod tests {
         object_api_addr = "127.0.0.1:3200"
         rpc_api_addr = "127.0.0.1:4200"
         object_request_timeout_secs = 15
+        network_skew_ms = 50
+        consensus_rpc_deadline_ms = 3000
         data_dir = "./tmp/toml"
+        metadata_dir = "./tmp/toml-meta"
+        blob_dir = "./tmp/toml-blobs"
 
         [cluster]
         peers = [
@@ -422,11 +426,11 @@ mod tests {
         assert_eq!(config.object_request_timeout, Duration::from_secs(15));
         assert_eq!(
             config.metadata_dir,
-            PathBuf::from("./tmp/toml").join(super::DEFAULT_METADATA_DIR_NAME)
+            PathBuf::from("./tmp/toml-meta")
         );
         assert_eq!(
             config.blob_dir,
-            PathBuf::from("./tmp/toml").join(super::DEFAULT_BLOB_DIR_NAME)
+            PathBuf::from("./tmp/toml-blobs")
         );
         assert_eq!(config.cluster.peers.len(), 2);
     }
