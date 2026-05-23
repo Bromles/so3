@@ -16,7 +16,7 @@ use crate::domain::object::version::ObjectVersion;
 use crate::repository::metadata::interface::ObjectMetadataRepository;
 
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const SQLITE_MAX_CONNECTIONS: u32 = 1;
+const SQLITE_MAX_CONNECTIONS: u32 = 4;
 const DATABASE_FILE_NAME: &str = "objects.sqlite";
 
 const CREATE_TABLE_SQL: &str = r"

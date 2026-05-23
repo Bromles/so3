@@ -1,4 +1,5 @@
 use crate::client::interface::ConsensusPeerClient;
+use crate::domain::clock::physical_millis_now;
 use crate::domain::clock::{HybridLogicalClock, LogicalTimestamp};
 use crate::domain::command::{CommandResult, ObjectCommand};
 use crate::domain::consensus::ballot::Ballot;
@@ -11,11 +12,14 @@ use crate::domain::consensus::transport::{
 use crate::domain::error::{So3Error, So3Result};
 use crate::domain::node::NodeId;
 use crate::domain::object::key::ObjectKey;
+use crate::domain::object::metadata::ObjectMetadata;
 use crate::repository::consensus_journal::ConsensusJournalRepository;
 use crate::repository::metadata::ObjectMetadataRepository;
 use crate::service::consensus_coordinator::apply_engine::AccordApplyEngine;
+use crate::service::consensus_coordinator::BufferedEntry;
 use crate::service::consensus_coordinator::ConsensusCoordinatorService;
 use async_trait::async_trait;
+use dashmap::DashMap;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -23,6 +27,11 @@ use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinSet;
 use tokio::time::{sleep, Duration, Instant};
 use tracing::info;
+
+enum WriteBufferEntry {
+    Write { timestamp: LogicalTimestamp, metadata: ObjectMetadata },
+    Deleted { timestamp: LogicalTimestamp },
+}
 
 pub struct AccordConsensusCoordinatorService<CJR, CPC, OMR>
 where
@@ -36,10 +45,11 @@ where
     sequence: AtomicU64,
     network_skew_ms: u64,
     consensus_peer_client_map: HashMap<NodeId, Arc<CPC>>,
-    engine: AccordApplyEngine<CJR, OMR>,
+    engine: Arc<AccordApplyEngine<CJR, OMR>>,
     consensus_journal_repository: Arc<CJR>,
     apply_notify: Arc<Notify>,
     in_flight_operations: AtomicU64,
+    write_buffer: Arc<DashMap<ObjectKey, WriteBufferEntry>>,
 }
 
 struct InFlightOperationGuard<'a> {
@@ -106,6 +116,7 @@ where
             Arc::clone(&object_metadata_repository),
             Arc::clone(&apply_notify),
         );
+        let engine = Arc::new(engine);
 
         let committed = consensus_journal_repository
             .list_by_state(JournalState::Committed)
@@ -123,6 +134,7 @@ where
             consensus_journal_repository,
             apply_notify,
             in_flight_operations: AtomicU64::new(0),
+            write_buffer: Arc::new(DashMap::new()),
         })
     }
 
@@ -598,7 +610,7 @@ where
 
         let key = command_object_key(&commit_req.command).clone();
         self.engine.register_committed(
-            key,
+            key.clone(),
             commit_req.timestamp.clone(),
             commit_req.command_id.clone(),
         );
@@ -656,20 +668,118 @@ where
             timestamp: commit_req.timestamp.clone(),
             dependencies: commit_req.dependencies.clone(),
         };
-        let apply_started = Instant::now();
-        let apply_result = self.apply_with_recovery(&apply_req).await;
-        let apply_ms = elapsed_ms(apply_started);
-        for peer in peers.iter().cloned() {
-            let req = apply_req.clone();
-            tokio::spawn(async move {
-                let _ = peer.apply(req).await;
+
+        let is_cas = matches!(commit_req.command, ObjectCommand::Cas { .. });
+        if is_cas {
+            let apply_started = Instant::now();
+            let apply_result = self.apply_with_recovery(&apply_req).await;
+            let apply_ms = elapsed_ms(apply_started);
+            for peer in peers.iter().cloned() {
+                let req = apply_req.clone();
+                tokio::spawn(async move {
+                    let _ = peer.apply(req).await;
+                });
+            }
+            let result = apply_result?;
+            return Ok(CompletionMetrics {
+                result,
+                commit_ms,
+                apply_ms,
+                commit_attempts,
+                commit_ok: final_commit_ok,
             });
         }
-        let result = apply_result?;
+
+        let apply_key = key.clone();
+        let is_delete = matches!(commit_req.command, ObjectCommand::Delete { .. });
+        if is_delete {
+            self.write_buffer.insert(
+                key,
+                WriteBufferEntry::Deleted {
+                    timestamp: commit_req.timestamp.clone(),
+                },
+            );
+        } else {
+            let version = self.engine.peek_next_version(&apply_key).await?;
+            let metadata = match &commit_req.command {
+                ObjectCommand::Write {
+                    key: cmd_key,
+                    blob_id,
+                    sha256,
+                    size,
+                } => ObjectMetadata {
+                    key: cmd_key.clone(),
+                    version,
+                    blob_id: blob_id.clone(),
+                    sha256: sha256.clone(),
+                    size: *size,
+                    last_modified_ms: physical_millis_now(),
+                    deleted: false,
+                },
+                _ => unreachable!(),
+            };
+            self.write_buffer.insert(
+                key,
+                WriteBufferEntry::Write {
+                    timestamp: commit_req.timestamp.clone(),
+                    metadata: metadata.clone(),
+                },
+            );
+        }
+
+        let engine = Arc::clone(&self.engine);
+        let write_buffer = Arc::clone(&self.write_buffer);
+        let spawn_key = apply_key.clone();
+        let spawn_ts = commit_req.timestamp.clone();
+        let peers_owned: Vec<Arc<CPC>> = peers.iter().cloned().collect();
+        tokio::spawn(async move {
+            let result = engine.apply(&apply_req).await;
+            if let Some(entry) = write_buffer.get(&spawn_key) {
+                let is_mine = match entry.value() {
+                    WriteBufferEntry::Write { timestamp, .. } => *timestamp == spawn_ts,
+                    WriteBufferEntry::Deleted { timestamp } => *timestamp == spawn_ts,
+                };
+                drop(entry);
+                if is_mine {
+                    write_buffer.remove(&spawn_key);
+                }
+            }
+            if let Ok(r) = result {
+                for peer in peers_owned {
+                    let req = ApplyRequest {
+                        command_id: apply_req.command_id.clone(),
+                        command: apply_req.command.clone(),
+                        timestamp_zero: apply_req.timestamp_zero.clone(),
+                        timestamp: apply_req.timestamp.clone(),
+                        dependencies: apply_req.dependencies.clone(),
+                    };
+                    tokio::spawn(async move {
+                        let _ = peer.apply(req).await;
+                    });
+                }
+            }
+        });
+
+        let result = if is_delete {
+            CommandResult::Delete
+        } else {
+            match self.write_buffer.get(&apply_key) {
+                Some(entry) => match entry.value() {
+                    WriteBufferEntry::Write { metadata, .. } => {
+                        CommandResult::Write(crate::domain::command::WriteResult {
+                            metadata: metadata.clone(),
+                        })
+                    }
+                    WriteBufferEntry::Deleted { .. } => CommandResult::Delete,
+                },
+                None => CommandResult::Delete,
+            }
+        };
+
         Ok(CompletionMetrics {
             result,
             commit_ms,
-            apply_ms,
+            apply_ms: 0,
             commit_attempts,
             commit_ok: final_commit_ok,
         })
@@ -1477,5 +1587,15 @@ where
         command_id: CommandId,
     ) {
         self.engine.register_committed(key, timestamp, command_id);
+    }
+
+    fn get_buffered_entry(&self, key: &ObjectKey) -> Option<BufferedEntry> {
+        let entry = self.write_buffer.get(key)?;
+        match entry.value() {
+            WriteBufferEntry::Write { metadata, .. } => {
+                Some(BufferedEntry::Write(metadata.clone()))
+            }
+            WriteBufferEntry::Deleted { .. } => Some(BufferedEntry::Deleted),
+        }
     }
 }

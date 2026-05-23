@@ -60,6 +60,14 @@ where
         }
     }
 
+    pub async fn peek_next_version(&self, key: &ObjectKey) -> So3Result<ObjectVersion> {
+        Ok(self
+            .metadata
+            .load(key)
+            .await?
+            .map_or_else(ObjectVersion::initial, |m| m.version.next()))
+    }
+
     pub fn populate_from_journal(&self, entries: Vec<JournalEntry>) {
         for e in entries {
             if let Some(ts) = e.timestamp {

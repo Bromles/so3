@@ -195,6 +195,11 @@ def parse_args(argv: Sequence[str]) -> tuple[argparse.Namespace, list[str]]:
     )
     parser.add_argument("--keep-data-dirs", action="store_true")
     parser.add_argument(
+        "--no-plot",
+        action="store_true",
+        help="skip plot generation",
+    )
+    parser.add_argument(
         "--debug-k6",
         action="store_true",
         help="stream k6 output instead of writing stdout/stderr files only",

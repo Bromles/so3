@@ -19,7 +19,7 @@ use crate::repository::consensus_journal::mappers::{
 use crate::repository::consensus_journal::ConsensusJournalRepository;
 
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const SQLITE_MAX_CONNECTIONS: u32 = 1;
+const SQLITE_MAX_CONNECTIONS: u32 = 4;
 const DATABASE_FILE_NAME: &str = "consensus.sqlite";
 
 const SELECT_COLS: &str = "origin_node_id, sequence, state, command, deps, \
@@ -122,21 +122,7 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
         let (t0_epoch, t0_physical, t0_logical) = Self::ts_to_i64s(timestamp_zero)?;
         let cmd_type = command_type_tag(command);
 
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-
-        // Reads are side-effect-free: no command needs to wait for a Read.
-        // Reads still depend on Writes/Deletes/Cas on the same key so they
-        // observe the correct state, but excluding Reads from dependency
-        // sets breaks the O(n) dependency chain that forms when multiple
-        // Reads pile up behind a stalled Write.
-        //
-        // Dependencies are transitive: if W2 depends on W1, any command
-        // that waits for W2 transitively waits for W1.  So it suffices to
-        // record only the *latest* (by committed timestamp) unapplied
-        // non-Read command as a dependency.  This keeps the dependency set
-        // bounded regardless of how many writes have accumulated on a hot
-        // key while earlier writes are still being applied.
-        let rows = query(
+        let deps = query(
             "SELECT origin_node_id, sequence FROM consensus_journal \
              WHERE key = ? AND state < ? AND command_type != ? \
                AND NOT (origin_node_id = ? AND sequence = ?) \
@@ -145,14 +131,14 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
              LIMIT 1",
         )
         .bind(command_key(command))
-        .bind(JournalState::Applied.as_i32())
+        .bind(JournalState::Committed.as_i32())
         .bind(COMMAND_TYPE_READ)
         .bind(command_id.origin_node_id.as_ref())
         .bind(seq)
-        .fetch_all(&mut *tx)
+        .fetch_all(&self.pool)
         .await?;
 
-        let deps: Vec<CommandId> = rows
+        let dep_ids: Vec<CommandId> = deps
             .iter()
             .map(|r| {
                 let node_id: String = r.try_get("origin_node_id")?;
@@ -176,16 +162,15 @@ impl ConsensusJournalRepository for SqliteConsensusJournal {
         .bind(command_key(command))
         .bind(cmd_type)
         .bind(encode_command(command)?)
-        .bind(encode_deps(&deps)?)
+        .bind(encode_deps(&dep_ids)?)
         .bind(t0_epoch)
         .bind(t0_physical)
         .bind(t0_logical)
         .bind(timestamp_zero.node_id.as_ref())
-        .execute(&mut *tx)
+        .execute(&self.pool)
         .await?;
 
-        tx.commit().await?;
-        Ok(DependencySet(deps))
+        Ok(DependencySet(dep_ids))
     }
 
     async fn record_ballot(&self, command_id: &CommandId, ballot: &Ballot) -> So3Result<()> {

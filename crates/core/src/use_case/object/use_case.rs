@@ -11,6 +11,7 @@ use crate::domain::object::version::ObjectVersion;
 use crate::repository::blob::BlobRepository;
 use crate::repository::consensus_journal::ConsensusJournalRepository;
 use crate::repository::metadata::ObjectMetadataRepository;
+use crate::service::consensus_coordinator::BufferedEntry;
 use crate::service::consensus_coordinator::ConsensusCoordinatorService;
 use crate::use_case::object::ObjectUseCase;
 use async_trait::async_trait;
@@ -72,6 +73,13 @@ where
         &self,
         key: &ObjectKey,
     ) -> So3Result<Option<ObjectMetadata>> {
+        if let Some(entry) = self.consensus_coordinator_service.get_buffered_entry(key) {
+            return Ok(match entry {
+                BufferedEntry::Write(meta) => Some(meta),
+                BufferedEntry::Deleted => None,
+            });
+        }
+
         let total = 1 + self.metadata_query_client_map.len();
         let quorum = total / 2 + 1;
 
