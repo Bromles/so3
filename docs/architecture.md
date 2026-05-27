@@ -82,7 +82,7 @@ flowchart LR
 - `last-modified`;
 - `x-amz-version-id`;
 - `x-amz-object-size`;
-- `x-amz-repository-class: STANDARD`.
+- `x-amz-storage-class: STANDARD`.
 
 ## Поток записи
 
