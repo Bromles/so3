@@ -1,0 +1,24 @@
+flowchart TB
+    S3["S3-подобный HTTP\nAxum"]
+    RPC["Приватный gRPC\ntonic"]
+    OUC["ObjectUseCaseImpl"]
+    IUC["InboundConsensusUseCaseImpl"]
+    COORD["Accord-координатор"]
+    WB["WriteBuffer\nDashMap"]
+    AE["ApplyEngine\nбуфер переупорядочивания"]
+    CLIENTS["tonic-клиенты\nсоседних узлов"]
+    META["SQLite\nметаданные"]
+    JOURNAL["SQLite\nжурнал согласования"]
+    BLOB["Файловая система\nсодержимое"]
+    S3 --> OUC
+    RPC --> IUC
+    OUC --> COORD
+    IUC --> COORD
+    COORD --> WB
+    COORD --> AE
+    AE --> META
+    COORD --> JOURNAL
+    AE --> JOURNAL
+    OUC --> BLOB
+    RPC --> BLOB
+    COORD --> CLIENTS

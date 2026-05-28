@@ -1,0 +1,12 @@
+flowchart TB
+    API["api — Axum-обработчики, tonic-сервисы"]
+    UC["use_case — ObjectUseCase, InboundConsensus, Blob"]
+    CLIENT["client — tonic-клиенты узлов"]
+    SVC["service — Accord-координатор, ApplyEngine"]
+    REPO["repository — SQLite, файловая система"]
+    DOMAIN["domain — команды, метаданные, часы"]
+    API --> UC
+    UC --> SVC
+    UC --> CLIENT
+    SVC --> REPO
+    REPO --> DOMAIN

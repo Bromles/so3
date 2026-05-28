@@ -1,0 +1,22 @@
+sequenceDiagram
+    participant К as Клиент
+    participant N as Узел-координатор
+    participant BP as Blob-реплики
+    participant CP as Consensus-реплики
+    participant W as WriteBuffer
+    К->>N: PUT /bucket/key
+    N->>N: потоковая запись + SHA-256
+    N->>BP: push(blob) параллельно
+    BP-->>N: кворум сохранил
+    N->>N: coordinate(Write)
+    N->>CP: PreAccept параллельно
+    alt быстрый путь
+        N->>N: Committed
+    else медленный путь
+        N->>CP: Accept параллельно
+        N->>N: Committed
+    end
+    N->>CP: Commit до кворума
+    N->>W: поместить метаданные
+    N-->>К: 200 OK
+    N->>N: async Apply (фон)

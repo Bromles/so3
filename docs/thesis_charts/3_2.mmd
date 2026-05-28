@@ -1,0 +1,7 @@
+stateDiagram-v2
+    [*] --> PreAccepted
+    PreAccepted --> Committed : быстрый путь\n(кворум без корректировок)
+    PreAccepted --> Accepted : медленный путь\n(корректировки или зависимости)
+    Accepted --> Committed : подтверждение кворума
+    Committed --> Applied : применение\n(WriteBuffer → ApplyEngine)
+    Applied --> [*]

@@ -1,0 +1,11 @@
+flowchart LR
+    Client["S3-клиент"]
+    subgraph Кластер
+        N1["Узел 1"]
+        N2["Узел 2"]
+        N3["Узел 3"]
+    end
+    Client --> N1
+    Client --> N2
+    Client --> N3
+    N1 --- N2 --- N3 --- N1

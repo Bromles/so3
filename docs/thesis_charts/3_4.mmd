@@ -1,0 +1,20 @@
+sequenceDiagram
+    participant К as Клиент
+    participant N as Узел
+    participant W as WriteBuffer
+    participant P as Другие узлы
+    К->>N: GET /bucket/key
+    N->>W: проверить буфер
+    alt запись найдена
+        W-->>N: метаданные из буфера
+    else промах
+        N->>P: запросить метаданные
+        P-->>N: метаданные с версиями
+        N->>N: выбрать макс. версию
+    end
+    N->>N: прочитать локальный blob
+    alt blob отсутствует
+        N->>P: fetch от узла
+        P-->>N: blob-данные
+    end
+    N-->>К: 200 OK
