@@ -1,24 +1,28 @@
 flowchart TB
-    S3["S3-подобный HTTP\nAxum"]
-    RPC["Приватный gRPC\ntonic"]
-    OUC["ObjectUseCaseImpl"]
-    IUC["InboundConsensusUseCaseImpl"]
+    S3["S3-подобный HTTP API"]
+    RPC["Приватный gRPC API"]
+    OUC["Обработчик объектных операций"]
+    IUC["Обработчик входящего консенсуса"]
+    BUC["Обработчик операций над содержимым объектов"]
     COORD["Accord-координатор"]
-    WB["WriteBuffer\nDashMap"]
-    AE["ApplyEngine\nбуфер переупорядочивания"]
-    CLIENTS["tonic-клиенты\nсоседних узлов"]
-    META["SQLite\nметаданные"]
-    JOURNAL["SQLite\nжурнал согласования"]
-    BLOB["Файловая система\nсодержимое"]
+    WB["Кэш операций"]
+    AE["Движок консенсуса + \nбуфер переупорядочивания"]
+    CLIENTS["gRPC-клиенты соседних узлов"]
+    META["SQLite: метаданные"]
+    JOURNAL["SQLite: журнал согласования"]
+    BLOB["Файловая система"]
+
     S3 --> OUC
     RPC --> IUC
+    RPC --> BUC
     OUC --> COORD
+    OUC --> BLOB
     IUC --> COORD
     COORD --> WB
     COORD --> AE
     AE --> META
     COORD --> JOURNAL
     AE --> JOURNAL
-    OUC --> BLOB
-    RPC --> BLOB
+    BUC --> BLOB
+    OUC --> CLIENTS
     COORD --> CLIENTS
