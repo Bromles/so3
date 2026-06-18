@@ -115,9 +115,10 @@ package "crates/core::use_case" {
 
     class InboundConsensusUseCaseImpl {
         +node_id: NodeId
+        +epoch: AtomicU64
         +hlc: Mutex<HybridLogicalClock>
         +journal: Arc<CJR>
-        +coordinator: Arc<CCS>
+        ~coordinator: Arc<CCS>
         +blob_repository: Arc<BR>
         +blob_clients: HashMap<NodeId, Arc<BPC>>
         +pre_accept(req): Result<PreAcceptResponse>
@@ -499,7 +500,6 @@ AccordConsensusCoordinatorService *-- AccordApplyEngine
 AccordConsensusCoordinatorService --> SqliteConsensusJournal
 AccordConsensusCoordinatorService --> SqliteObjectMetadataRepository
 AccordConsensusCoordinatorService --> ConsensusTransportClient
-AccordConsensusCoordinatorService --> BlobClient
 AccordApplyEngine --> SqliteConsensusJournal
 AccordApplyEngine --> SqliteObjectMetadataRepository
 ConsensusTransportClient --> mappers
